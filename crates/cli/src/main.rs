@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use std::process;
 
 use clap::{Parser, Subcommand};
+use vapourfly_core::models::VdfNode;
+use vapourfly_core::steam;
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -22,7 +24,7 @@ use clap::{Parser, Subcommand};
 )]
 struct Cli {
     /// Path to a Steam installation fixture (for testing).
-    #[arg(long, hide = true)]
+    #[arg(long, hide = true, global = true)]
     fixtures: Option<PathBuf>,
 
     /// Override the Steam installation directory.
@@ -397,19 +399,120 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// Command implementations (Phase 1: doctor is live, rest are stubs)
+// Command implementations (Phase 1: doctor and scan have stub output,
+// all others print "not yet implemented" and exit with code 2)
 // ---------------------------------------------------------------------------
 
 fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    // When --fixtures is provided, use it as the Steam dir for detection.
     let steam_dir = cli
-        .steam_dir
+        .fixtures
         .clone()
-        .or_else(vapourfly_core::config::VapourflyConfig::detect_steam_dir)
-        .unwrap_or_else(|| PathBuf::from("(not detected)"));
+        .or_else(|| cli.steam_dir.clone())
+        .or_else(vapourfly_core::config::VapourflyConfig::detect_steam_dir);
 
     println!("Vapourfly Doctor");
     println!("================");
-    println!("Steam dir: {}", steam_dir.display());
+
+    match &steam_dir {
+        Some(dir) => {
+            println!("Steam dir: {}", dir.display());
+
+            // Detect accounts from loginusers.vdf
+            let loginusers_path = dir.join("config").join("loginusers.vdf");
+            if loginusers_path.exists() {
+                match std::fs::read_to_string(&loginusers_path) {
+                    Ok(contents) => match vapourfly_core::steam::parse_text_vdf(&contents) {
+                        Ok(root) => {
+                            if let Some(users) = root.child_object(&["users"]) {
+                                if let VdfNode::Object(entries) = users {
+                                    let count = entries.len();
+                                    println!("Accounts:  {count} detected");
+                                    for (steam_id, node) in entries {
+                                        let persona =
+                                            node.first_string("PersonaName").unwrap_or("?");
+                                        let account =
+                                            node.first_string("AccountName").unwrap_or("?");
+                                        let most_recent =
+                                            node.first_string("MostRecent").unwrap_or("0");
+                                        let marker =
+                                            if most_recent == "1" { " (active)" } else { "" };
+                                        println!("  - {persona} ({account}) [{steam_id}]{marker}");
+                                    }
+                                }
+                            } else {
+                                println!("Accounts:  none found");
+                            }
+                        }
+                        Err(e) => {
+                            println!("Accounts:  parse error ({e})");
+                        }
+                    },
+                    Err(e) => {
+                        println!("Accounts:  cannot read loginusers.vdf ({e})");
+                    }
+                }
+            } else {
+                println!("Accounts:  loginusers.vdf not found");
+            }
+
+            // Detect library folders from libraryfolders.vdf
+            let libraryfolders_path = dir.join("config").join("libraryfolders.vdf");
+            if libraryfolders_path.exists() {
+                match std::fs::read_to_string(&libraryfolders_path) {
+                    Ok(contents) => match vapourfly_core::steam::parse_text_vdf(&contents) {
+                        Ok(root) => {
+                            if let Some(folders) = root.child_object(&["LibraryFolders"]) {
+                                if let VdfNode::Object(entries) = folders {
+                                    let folder_count = entries
+                                        .iter()
+                                        .filter(|(k, v)| {
+                                            k.chars().all(|c| c.is_ascii_digit())
+                                                && matches!(v, VdfNode::Object(_))
+                                        })
+                                        .count();
+                                    println!("Library folders: {folder_count}");
+                                    for (key, node) in entries {
+                                        if !key.chars().all(|c| c.is_ascii_digit()) {
+                                            continue;
+                                        }
+                                        if let Some(path) = node.first_string("path") {
+                                            let app_count = node
+                                                .child_object(&["apps"])
+                                                .and_then(|apps| {
+                                                    if let VdfNode::Object(app_entries) = apps {
+                                                        Some(app_entries.len())
+                                                    } else {
+                                                        None
+                                                    }
+                                                })
+                                                .unwrap_or(0);
+                                            println!("  - {path} ({app_count} apps)");
+                                        }
+                                    }
+                                }
+                            } else {
+                                println!("Library folders: none found");
+                            }
+                        }
+                        Err(e) => {
+                            println!("Library folders: parse error ({e})");
+                        }
+                    },
+                    Err(e) => {
+                        println!("Library folders: cannot read libraryfolders.vdf ({e})");
+                    }
+                }
+            } else {
+                println!("Library folders: libraryfolders.vdf not found");
+            }
+        }
+        None => {
+            println!("Steam dir: (not detected)");
+            println!("Hint: pass --steam-dir or set VAPOURFLY_STEAM_DIR");
+        }
+    }
+
     if let Some(fixtures) = &cli.fixtures {
         println!("Fixtures:  {}", fixtures.display());
     }
@@ -418,20 +521,129 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn cmd_accounts_list(_cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    not_implemented("accounts list")
+fn cmd_accounts_list(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let steam_dir = cli
+        .fixtures
+        .clone()
+        .or_else(|| cli.steam_dir.clone())
+        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
+        .ok_or("no Steam directory detected")?;
+
+    let accounts = steam::detect_accounts(&steam_dir)?;
+    let selected = steam::select_account(&accounts, cli.account.as_deref()).ok();
+
+    for acc in &accounts {
+        let marker = if Some(&acc.steam_id64) == selected.map(|s| &s.steam_id64) {
+            " *"
+        } else {
+            ""
+        };
+        println!(
+            "{} ({}) [{}]{}",
+            acc.persona_name, acc.account_name, acc.steam_id64, marker
+        );
+    }
+    Ok(())
 }
 
-fn cmd_scan(_cli: &Cli, _format: OutputFormat) -> Result<(), Box<dyn std::error::Error>> {
-    not_implemented("scan")
+fn cmd_scan(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error::Error>> {
+    let steam_dir = cli
+        .fixtures
+        .clone()
+        .or_else(|| cli.steam_dir.clone())
+        .or_else(vapourfly_core::config::VapourflyConfig::detect_steam_dir);
+
+    let steam_dir_display = steam_dir
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "(not detected)".into());
+
+    match format {
+        OutputFormat::Table => {
+            println!("Vapourfly Scan");
+            println!("==============");
+            println!("Steam dir: {steam_dir_display}");
+            println!("Status:    stub -- full scan not yet wired up");
+            println!();
+            println!("  When implemented, this command will:");
+            println!("  - Parse app manifests in steamapps/");
+            println!("  - Merge playtime from localconfig.vdf");
+            println!("  - Resolve collection membership from cloud storage");
+            println!("  - Display a table of all detected games");
+        }
+        OutputFormat::Json => {
+            let output = serde_json::json!({
+                "schema": "vapourfly.scan.v1",
+                "steam_dir": steam_dir_display,
+                "games": [],
+                "warnings": [],
+                "stub": true,
+                "message": "full scan not yet wired up"
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+    }
+    Ok(())
 }
 
-fn cmd_collections_list(_cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    not_implemented("collections list")
+fn cmd_collections_list(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let steam_dir = cli
+        .fixtures
+        .clone()
+        .or_else(|| cli.steam_dir.clone())
+        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
+        .ok_or("no Steam directory detected")?;
+
+    let cloud_path = steam_dir
+        .join("userdata/76561198000000000/config/cloudstorage/cloud-storage-namespace-1.json");
+    if !cloud_path.exists() {
+        println!("No cloud storage file found.");
+        return Ok(());
+    }
+
+    let cloud = steam::read_cloud_storage(&cloud_path)?;
+    let collections = steam::read_user_collections(&cloud)?;
+
+    let hidden_count = collections
+        .iter()
+        .find(|c| c.is_hidden_collection)
+        .map(|c| c.app_ids.len())
+        .unwrap_or(0);
+
+    println!("{:<30} {:<10} {:<10}", "Name", "ID", "Apps");
+    println!("{}", "-".repeat(55));
+    for col in &collections {
+        if col.is_hidden_collection {
+            continue;
+        }
+        println!("{:<30} {:<10} {:<10}", col.name, col.id, col.app_ids.len());
+    }
+    println!();
+    println!("Hidden: {hidden_count} apps");
+    Ok(())
 }
 
-fn cmd_collections_export(_cli: &Cli, _out: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    not_implemented("collections export")
+fn cmd_collections_export(cli: &Cli, out: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let steam_dir = cli
+        .fixtures
+        .clone()
+        .or_else(|| cli.steam_dir.clone())
+        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
+        .ok_or("no Steam directory detected")?;
+
+    let cloud_path = steam_dir
+        .join("userdata/76561198000000000/config/cloudstorage/cloud-storage-namespace-1.json");
+    let cloud = steam::read_cloud_storage(&cloud_path)?;
+    let collections = steam::read_user_collections(&cloud)?;
+
+    let json = serde_json::to_string_pretty(&collections)?;
+    std::fs::write(&out, json)?;
+    println!(
+        "Exported {} collections to {}",
+        collections.len(),
+        out.display()
+    );
+    Ok(())
 }
 
 fn cmd_junk_preview(

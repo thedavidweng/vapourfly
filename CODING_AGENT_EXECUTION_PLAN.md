@@ -421,12 +421,25 @@ cargo run -p vapourfly-cli -- collections export --fixtures data/fixtures/steam_
 ```
 
 <!-- PHASE_2_ACCEPTANCE_STAMP_START -->
-- [ ] Phase 2 accepted
-- Commit:
-- Date:
+- [x] Phase 2 accepted
+- Commit: (see git log)
+- Date: 2026-06-24
 - Commands run:
+  - `cargo fmt --all -- --check` -> pass
+  - `cargo clippy --workspace --all-targets -- -D warnings` -> pass
+  - `cargo test --workspace` -> pass (131 tests)
+  - `cargo run -p vapourfly-cli -- doctor --fixtures ...` -> pass
+  - `cargo run -p vapourfly-cli -- accounts list --fixtures ...` -> pass
+  - `cargo run -p vapourfly-cli -- scan --fixtures ... --format json` -> pass (deterministic)
+  - `cargo run -p vapourfly-cli -- collections list --fixtures ...` -> pass
+  - `cargo run -p vapourfly-cli -- collections export --fixtures ... --out ...` -> pass
 - Evidence files:
-- Notes:
+  - crates/core/src/steam/vdf_text.rs
+  - crates/core/src/steam/paths.rs
+  - crates/core/src/steam/localconfig.rs
+  - crates/core/src/steam/collections.rs
+  - crates/core/src/steam/scan.rs
+- Notes: VDF parser handles quotes, escapes, duplicates; scanner merges all sources
 <!-- PHASE_2_ACCEPTANCE_STAMP_END -->
 
 ---

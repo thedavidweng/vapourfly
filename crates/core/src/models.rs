@@ -32,6 +32,75 @@ pub enum VdfNode {
     String(String),
 }
 
+impl VdfNode {
+    /// Navigate to a nested object by following a chain of keys.
+    ///
+    /// Returns `None` if any key along the path is missing or is not an
+    /// [`Object`](VdfNode::Object).
+    ///
+    /// ```
+    /// use vapourfly_core::models::VdfNode;
+    ///
+    /// let root = VdfNode::Object(vec![
+    ///     ("a".into(), VdfNode::Object(vec![
+    ///         ("b".into(), VdfNode::Object(vec![
+    ///             ("c".into(), VdfNode::String("val".into())),
+    ///         ])),
+    ///     ])),
+    /// ]);
+    /// assert_eq!(root.child_object(&["a", "b"]).unwrap().first_string("c"), Some("val"));
+    /// assert!(root.child_object(&["a", "missing"]).is_none());
+    /// ```
+    pub fn child_object(&self, path: &[&str]) -> Option<&VdfNode> {
+        let mut current = self;
+        for key in path {
+            match current {
+                VdfNode::Object(entries) => {
+                    current = &entries.iter().find(|(k, _)| k == key)?.1;
+                }
+                _ => return None,
+            }
+        }
+        Some(current)
+    }
+
+    /// Return every value associated with `key`, preserving insertion order.
+    ///
+    /// Useful when a VDF file contains duplicate keys (common in Steam
+    /// configuration files). Returns an empty `Vec` if the node is not an
+    /// object or the key is absent.
+    pub fn child_values(&self, key: &str) -> Vec<&VdfNode> {
+        match self {
+            VdfNode::Object(entries) => entries
+                .iter()
+                .filter(|(k, _)| k == key)
+                .map(|(_, v)| v)
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Return the first string value for `key`, or `None`.
+    ///
+    /// Convenience wrapper around [`child_values`](Self::child_values) for the
+    /// common case where you only care about the first match and it is a
+    /// string.
+    pub fn first_string(&self, key: &str) -> Option<&str> {
+        match self {
+            VdfNode::Object(entries) => {
+                entries
+                    .iter()
+                    .find(|(k, _)| k == key)
+                    .and_then(|(_, v)| match v {
+                        VdfNode::String(s) => Some(s.as_str()),
+                        _ => None,
+                    })
+            }
+            _ => None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Steam application types
 // ---------------------------------------------------------------------------

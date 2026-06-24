@@ -17,3 +17,6 @@ sha2 = { workspace = true }
 tempfile = { workspace = true }
 toml = { workspace = true }
 strsim = "0.11"
+
+[dev-dependencies]
+serial_test = { workspace = true }
