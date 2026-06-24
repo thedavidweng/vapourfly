@@ -1,5 +1,13 @@
 # Documentation Changelog
 
+## 2026-06-24 - Phase 0 baseline
+
+- Added .gitignore, README, LICENSE (MIT OR Apache-2.0), CONTRIBUTING, SECURITY, CHANGELOG.
+- Created sanitized test fixtures in data/fixtures/steam_minimal/.
+- Added rust-toolchain.toml (MSRV 1.88), .cargo/config.toml, deny.toml, justfile.
+- Added GitHub Actions CI workflow.
+- Updated IMPLEMENTATION_GATES to reference CODING_AGENT_EXECUTION_PLAN.md.
+
 ## 2026-06-24 v0.2开工版
 
 - Unified GUI stack to `egui/eframe`.

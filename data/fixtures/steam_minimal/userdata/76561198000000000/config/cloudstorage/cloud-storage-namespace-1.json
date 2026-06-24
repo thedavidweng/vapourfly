@@ -1,0 +1,47 @@
+[
+	[
+		"user-collections.favorite",
+		{
+			"key": "user-collections.favorite",
+			"timestamp": 1774229861,
+			"value": "{\"id\":\"favorite\",\"name\":\"Favorites\",\"added\":[730,223850],\"removed\":[]}",
+			"version": "1880"
+		}
+	],
+	[
+		"user-collections.hidden",
+		{
+			"key": "user-collections.hidden",
+			"timestamp": 1737614952,
+			"value": "{\"id\":\"hidden\",\"name\":\"Hidden\",\"added\":[],\"removed\":[]}",
+			"version": "1674"
+		}
+	],
+	[
+		"user-collections.deleted-one",
+		{
+			"key": "user-collections.deleted-one",
+			"timestamp": 1594214055,
+			"is_deleted": true,
+			"version": "942"
+		}
+	],
+	[
+		"sc-version",
+		{
+			"key": "sc-version",
+			"timestamp": 1652357518,
+			"value": "6",
+			"version": "942"
+		}
+	],
+	[
+		"user-collections.from-tag-Indie",
+		{
+			"key": "user-collections.from-tag-Indie",
+			"timestamp": 1642184703,
+			"value": "{\"id\":\"from-tag-Indie\",\"name\":\"Indie\",\"added\":[730,999],\"removed\":[]}",
+			"version": "942"
+		}
+	]
+]

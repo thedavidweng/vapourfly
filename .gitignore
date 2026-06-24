@@ -1,0 +1,48 @@
+# Rust build artifacts
+target/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor and IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+
+# Logs
+*.log
+logs/
+
+# Local Steam samples (not sanitized for commit)
+reference/steam-samples/
+
+# Cache directories
+.cache/
+tmp/
+
+# Generated backups (created by Vapourfly during write operations)
+*.bak
+backups/
+
+# Environment and secrets
+.env
+.env.*
+*.pem
+*.key
+*token*.txt
+*secret*.txt
+
+# Build artifacts from cargo
+**/*.rs.bk
+Cargo.lock
+
+# Benchmarks and profiling
+perf.data
+perf.data.old
+cachegrind.out.*
+callgrind.out.*

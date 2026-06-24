@@ -2,6 +2,8 @@
 
 **Version**: 2026-06-24
 
+> **Phase authority**: See CODING_AGENT_EXECUTION_PLAN.md for detailed phase order, acceptance stamps, and stop conditions.
+
 This file defines the minimum checks before moving between phases.
 
 ## Phase 0 -> Phase 1

@@ -1,0 +1,20 @@
+"LibraryFolders"
+{
+	"TimeNextStatsReport"		"0"
+	"ContentStatsID"		"0"
+	"1"
+	{
+		"path"		"./"
+		"label"		""
+		"contentid"		"0"
+		"totalsize"		"0"
+		"update_clean_bytes_tally"		"0"
+		"time_last_update_corruption"		"0"
+		"apps"
+		{
+			"730"		"0"
+			"223850"		"0"
+		}
+	}
+	"ContentStatsID"		"0"
+}
