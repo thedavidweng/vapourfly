@@ -1,0 +1,570 @@
+"InstallConfigStore"
+{
+	"Software"
+	{
+		"Valve"
+		{
+			"Steam"
+			{
+				"AutoUpdateWindowEnabled"		"0"
+				"ipv6check_http_state"		"good"
+				"ipv6check_udp_state"		"good"
+				"CMWebSocket"
+				{
+					"cmp2-ord1.steamserver.net:27018"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"ord1"
+						"LastPingValue"		"85"
+						"LastLoadValue"		"14"
+					}
+					"cmp2-iad1.steamserver.net:27018"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"iad1"
+					}
+					"cmp1-lax1.steamserver.net:443"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"lax1"
+						"LastPingValue"		"75"
+						"LastLoadValue"		"8"
+					}
+					"cmp1-iad1.steamserver.net:443"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"iad1"
+					}
+					"cmp1-dfw2.steamserver.net:443"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"dfw2"
+					}
+					"cmp2-atl3.steamserver.net:27018"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"atl3"
+					}
+					"cmp1-lhr1.steamserver.net:27020"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"lhr1"
+					}
+					"ext2-par1.steamserver.net:27028"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"par1"
+					}
+					"ext1-par1.steamserver.net:27030"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"par1"
+					}
+					"ext1-par1.steamserver.net:27024"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"par1"
+					}
+					"ext1-par1.steamserver.net:27019"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"par1"
+					}
+					"ext2-par1.steamserver.net:27033"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"par1"
+					}
+					"cmp1-ams1.steamserver.net:443"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"ams1"
+					}
+					"ext2-par1.steamserver.net:27034"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"par1"
+					}
+					"ext1-par1.steamserver.net:27038"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"par1"
+					}
+					"cmp2-ams1.steamserver.net:27018"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"ams1"
+					}
+					"cmp2-mad1.steamserver.net:27018"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"mad1"
+					}
+					"cmp1-fra1.steamserver.net:27020"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"fra1"
+					}
+					"cmp1-fra1.steamserver.net:27022"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"fra2"
+					}
+					"cmp1-fra2.steamserver.net:443"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"fra1"
+					}
+					"cmp2-fra1.steamserver.net:27023"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"fra2"
+					}
+					"cmp1-fra2.steamserver.net:27024"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"fra2"
+					}
+					"cmp2-ord1.steamserver.net:443"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"ord1"
+					}
+					"cmp2-sea1.steamserver.net:27018"
+					{
+						"LastPingTimestamp"		"1780981001"
+						"dc"		"sea1"
+						"LastPingValue"		"31"
+						"LastLoadValue"		"1"
+					}
+					"cmp2-lax1.steamserver.net:443"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"lax1"
+					}
+					"cmp2-iad1.steamserver.net:443"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"iad1"
+					}
+					"cmp2-dfw2.steamserver.net:443"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"dfw2"
+					}
+					"cmp1-atl3.steamserver.net:443"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"atl3"
+					}
+					"cmp2-lhr1.steamserver.net:27020"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"lhr1"
+					}
+					"cmp2-lhr1.steamserver.net:27018"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"lhr1"
+					}
+					"ext2-par1.steamserver.net:27030"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"par1"
+					}
+					"ext2-par1.steamserver.net:27019"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"par1"
+					}
+					"ext1-par1.steamserver.net:27037"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"par1"
+					}
+					"ext1-par1.steamserver.net:27032"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"par1"
+					}
+					"ext2-par1.steamserver.net:27025"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"par1"
+					}
+					"ext2-par1.steamserver.net:27036"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"par1"
+					}
+					"ext2-par1.steamserver.net:443"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"par1"
+					}
+					"ext1-par1.steamserver.net:27022"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"par1"
+					}
+					"ext1-par1.steamserver.net:27035"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"par1"
+					}
+					"ext2-par1.steamserver.net:27022"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"par1"
+					}
+					"cmp1-ams1.steamserver.net:27018"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"ams1"
+					}
+					"cmp1-fra2.steamserver.net:27020"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"fra1"
+					}
+					"cmp2-fra1.steamserver.net:27022"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"fra2"
+					}
+					"cmp1-fra2.steamserver.net:27021"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"fra2"
+					}
+					"cmp1-fra1.steamserver.net:27018"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"fra1"
+					}
+					"cmp2-fra2.steamserver.net:27018"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"fra1"
+					}
+					"cmp2-fra1.steamserver.net:27021"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"fra2"
+					}
+					"cmp1-fra2.steamserver.net:27022"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"fra2"
+					}
+					"cmp1-fra1.steamserver.net:27019"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"fra1"
+					}
+					"cmp1-mad1.steamserver.net:27018"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"mad1"
+					}
+					"cmp2-sea1.steamserver.net:443"
+					{
+						"LastPingTimestamp"		"1780981001"
+						"dc"		"sea1"
+						"LastPingValue"		"31"
+						"LastLoadValue"		"2"
+					}
+					"cmp1-sea1.steamserver.net:443"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"sea1"
+					}
+					"cmp1-sea1.steamserver.net:27018"
+					{
+						"LastPingTimestamp"		"1780981001"
+						"dc"		"sea1"
+						"LastPingValue"		"26"
+						"LastLoadValue"		"2"
+					}
+					"cmp2-lax1.steamserver.net:27018"
+					{
+						"LastPingTimestamp"		"1780981001"
+						"dc"		"lax1"
+						"LastPingValue"		"73"
+						"LastLoadValue"		"7"
+					}
+					"cmp1-lax1.steamserver.net:27018"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"lax1"
+					}
+					"cmp1-ord1.steamserver.net:443"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"ord1"
+					}
+					"cmp1-ord1.steamserver.net:27018"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"ord1"
+					}
+					"cmp1-iad1.steamserver.net:27018"
+					{
+						"LastPingTimestamp"		"0"
+						"dc"		"iad1"
+					}
+				}
+				"RecentWebSocket443Failures"		""
+				"RecentWebSocketNon443Failures"		""
+				"RecentUDPFailures"		""
+				"RecentTCPFailures"		""
+				"Accounts"
+				{
+					"wengjiachen666"
+					{
+						"SteamID"		"76561198283778212"
+					}
+				}
+				"CellIDServerOverride"		"94"
+				"MTBF"		"167975238"
+				"cip"		"020000006eb40e57e5f7840f000012246970"
+				"SurveyDate"		"2025-04-01"
+				"SurveyDateVersion"		"1922092537351054892"
+				"SurveyDateType"		"3"
+				"Rate"		"30000"
+				"FirstRun"		"1"
+				"depots"
+				{
+					"632473"
+					{
+						"DecryptionKey"		"d8f0c338ee47ed810ea03c7b20bea833cdf9eb8862d96cbb39d3f48da62920bf"
+					}
+					"397462"
+					{
+						"DecryptionKey"		"4337e8d5163008fd8a5b4876687733d57abff5982c02a9764670239c90ee9e32"
+					}
+					"475554"
+					{
+						"DecryptionKey"		"00919b8430902e236141946ccb41baf927c9683f3c084fc6f35bb4a4e059fde3"
+					}
+					"287982"
+					{
+						"DecryptionKey"		"cde736bc19e35c54b9cffadb1e2d83ce76777c30aefe71a2d140ad02ff2262b8"
+					}
+					"287980"
+					{
+						"DecryptionKey"		"029ac49725b8ebd99639c62776dde88b987961225f743d8f82d1706d345375e4"
+					}
+					"34481"
+					{
+						"DecryptionKey"		"7f14fd69da9fbdcd27560ce57746e561ef82609cdfae640941f2d2a7a4f2036c"
+					}
+					"34482"
+					{
+						"DecryptionKey"		"a78818b18d8794c108f2729ec06488b0e43d91b102235460fdd4a02ae4d9e578"
+					}
+					"34483"
+					{
+						"DecryptionKey"		"9a14b430f886c508474ed71dcf5816eb63bc1815ebbf5f20a1cd51958b339d70"
+					}
+					"34490"
+					{
+						"DecryptionKey"		"d232419a0bb404164394630ac98c14554823ee3d0bc64495a2abad1bb76bddc7"
+					}
+					"34491"
+					{
+						"DecryptionKey"		"5b6af7c018c10a56e75f754e133fdd81572c6c13f1e9b3139afe375029a7bc2f"
+					}
+					"34492"
+					{
+						"DecryptionKey"		"6b391457ddad535564979495bac2dc03ea78210b114a68311dd1e83565e90daf"
+					}
+					"34493"
+					{
+						"DecryptionKey"		"763caee4d195de8fec9a8d9f0bd3d4643b67100fca9d8cec3a3eba00b755799d"
+					}
+					"34494"
+					{
+						"DecryptionKey"		"eb6cf5a589a9f5ad5d4bb2e2bfe16b98adf956e4c52e1278fe2a4823ba187e6a"
+					}
+					"34495"
+					{
+						"DecryptionKey"		"b32db2662362a2194cf0d520c88e5201e589ba1dcd87d919a1e5b882e377b455"
+					}
+					"34496"
+					{
+						"DecryptionKey"		"940776100de6af7b7d2e23a398c98275deb9a5c30bf631c71b74a44fa2db6ecd"
+					}
+					"34497"
+					{
+						"DecryptionKey"		"c78a87e9bc733041c67579f966a7b6b65be8c2f41913f2112b272d1144c1faba"
+					}
+					"34498"
+					{
+						"DecryptionKey"		"330a1d7be2c91dc1e53fc97b1d9e291443b0e779ce07adf8638b17515725cadc"
+					}
+					"102000"
+					{
+						"DecryptionKey"		"ef25beb1c35900c6d63238ba34db19a5042ff1587b0aa1bb60c4eed979c753f1"
+					}
+					"102001"
+					{
+						"DecryptionKey"		"94d831cd59c9f7ef04959032712dd9b5780bb2841ea538828cb77f63567e4cb3"
+					}
+					"102002"
+					{
+						"DecryptionKey"		"5f95efe40df84de0a2177f7e244ac755396fa334622345933bff08fc71c1cd00"
+					}
+					"102003"
+					{
+						"DecryptionKey"		"23eae231c1842cdfb8af08859a33216e1262e7b79b481710fa7432a8b587e679"
+					}
+					"210450"
+					{
+						"DecryptionKey"		"ceecd6b2b7d7d12dc819ed2a17378ec5187ad7e756d8d529f962ef78846c79b5"
+					}
+					"210451"
+					{
+						"DecryptionKey"		"b311c1c530d9a948499ed578378158368f444514a3a7a01ed92670be2467a467"
+					}
+					"235582"
+					{
+						"DecryptionKey"		"b018f25b4d320340ed84c1ceca3193a6336ee76fe13fd1cab4d7c1fc2466378c"
+					}
+					"235583"
+					{
+						"DecryptionKey"		"ed2d63e14ba20b85556a5352b24a65264b610536b4ab065b6a86f253215b6846"
+					}
+					"235587"
+					{
+						"DecryptionKey"		"9805f8a2124d2e53b850218e01953c7435eb51db3e5fd87a8d313dd3c09df7c4"
+					}
+					"235588"
+					{
+						"DecryptionKey"		"09589fdeea15835dec31144b54d1d19ebc4dc5a12c00246e0f24870db968633b"
+					}
+					"266721"
+					{
+						"DecryptionKey"		"6b93f3d0658af88483445875d2371e7421bb8c76d3cb4dae56223c0c2e812530"
+					}
+					"774173"
+					{
+						"DecryptionKey"		"e3c55a2a1de897657fb5347590d09a3c41d944a2b041848d5cdacb44afed102f"
+					}
+					"1483873"
+					{
+						"DecryptionKey"		"42b18e61776276b0d3cd1bbb0ddde9c35284f6cdc57a88fd55c8f20cd3d78660"
+					}
+					"2828508"
+					{
+						"DecryptionKey"		"86a8e078c58ea7fbf57bdf1b2611116fe069f5e590cfa11058ca6610e0961700"
+					}
+					"1712833"
+					{
+						"DecryptionKey"		"178a80fc3607158abf87c4971467645e6e024d3e9a5c10b2482910a73393fbb0"
+					}
+					"241100"
+					{
+						"DecryptionKey"		"141426adc496d4a9070cfa549623bd7f84bf70711e9c213881191eaad8cc90a4"
+					}
+					"1325862"
+					{
+						"DecryptionKey"		"2ab89d377cf2c0d61987916fea2f0ba741f27c75233bae8ee97bcd4a3d43fd18"
+					}
+					"341802"
+					{
+						"DecryptionKey"		"e2113a997e3ff5b772be46811bab8ec43ed7e423dc2737fc54626fbe2c2b49ef"
+					}
+					"219153"
+					{
+						"DecryptionKey"		"36914ef27763ac7dce257f1590b6e79691ca6a8344717af702f8561696084724"
+					}
+					"274174"
+					{
+						"DecryptionKey"		"d1457cd83d22f30c48dfd29c06349b6485c37bea55a586477ae24e4586aba25f"
+					}
+					"274170"
+					{
+						"DecryptionKey"		"22bf3115079960ae0586bcda8a1a0f2d0cfdbbd3dc5e5eea0315b6e38bb007f1"
+					}
+					"223854"
+					{
+						"DecryptionKey"		"300dd5b8d611c9c32c245106d9b3536c2662a9904bf26457b5c456ed3a8cb52a"
+					}
+					"223855"
+					{
+						"DecryptionKey"		"6dcde23dd4a79de2f94c31253c4e03d58ab1321af3740f962efdb97151f704c7"
+					}
+					"223861"
+					{
+						"DecryptionKey"		"5cf5b12f619d1e15213bcc636dafdf59b35a8391e13c5f69be47b6803f6c375e"
+					}
+					"223862"
+					{
+						"DecryptionKey"		"97be9f16311756a713ef1ccb4ed6474c80414f4825d9f467c3a26c6b45be2707"
+					}
+					"231951"
+					{
+						"DecryptionKey"		"323e9542ca2063fef5923e132afff8a14451b7fe9fbc52e5c46cbabd9a9807f5"
+					}
+					"231952"
+					{
+						"DecryptionKey"		"3199ecf5b63c55c5f1c73028c53d876a6430c392bc3af80302a1ff8d74073083"
+					}
+					"231953"
+					{
+						"DecryptionKey"		"a038d98150719845bf31ad8d9033c71c19731a81dcf6495376517c8a65a53d8c"
+					}
+				}
+				"LastConfigstoreUploadTime"		"1780981174"
+				"RecentDownloadRate"		"33097219"
+				"tools"
+				{
+					"632470"
+					{
+						"SizeOnDisk"		"0"
+					}
+					"287980"
+					{
+						"SizeOnDisk"		"0"
+					}
+					"774171"
+					{
+						"SizeOnDisk"		"0"
+					}
+				}
+				"SurveyID"		"5d98ad2c0436de57"
+			}
+		}
+	}
+	"streaming"
+	{
+		"ClientID"		"4569165439267466719"
+	}
+	"music"
+	{
+		"LocalLibrary"
+		{
+			"Directories"
+			{
+				"0"		"020000002d916f2384f7857f30110170bfef1ad2b72e8ffe151c16a0fe9a10f8403f635f1b4ae408af7dcc77d9ab82c508d57c7f5aec7b6ded580b0f579ba11d1b03cf670808b99600eb"
+				"1"		"020000002d916f2384f7857f30110170bfef1ad2b72e8ffe151c16a0fe9b0ce95b3d1124426af80da647ca62efbbb8d84df4090f2a83091bb1681e045893ea6e6f66ae0a67d74aceb1bb66aa7df6999790211e83840e2b4934c2d117e03d524e6eb5480f2b1c29a9b093cbf33bc08d79080848815c20"
+			}
+		}
+	}
+	"WebStorage"
+	{
+		"DownloadsStoreRecentlyCompleted"		"{\"version\":2,\"data\":[{\"appid\":7940,\"active\":false,\"paused\":false,\"completed\":true,\"deferred_time\":0,\"queue_index\":-1,\"update_result\":0,\"update_error\":\"\",\"completed_time\":1779662662,\"buildid\":0,\"target_buildid\":2737681,\"launch_on_completion\":false,\"update_type_info\":[{\"has_update\":true,\"completed_update\":true,\"estimated_time_remaining_sec\":0,\"progress\":[{\"bytes_in_progress\":9598076961,\"bytes_total\":9598076961,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":1011695269,\"bytes_total\":1011695269,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":1009829728,\"bytes_total\":1009829728,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":1011695269,\"bytes_total\":1011695269,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":1011695269,\"bytes_total\":1011695269,\"estimated_time_remaining_sec\":0}],\"overall_percent_complete\":100,\"overall_estimated_time_remaining_sec\":0},{\"has_update\":false,\"completed_update\":false,\"estimated_time_remaining_sec\":-1,\"progress\":[{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1}],\"overall_percent_complete\":0,\"overall_estimated_time_remaining_sec\":-1},{\"has_update\":false,\"completed_update\":false,\"estimated_time_remaining_sec\":-1,\"progress\":[{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1}],\"overall_percent_complete\":0,\"overall_estimated_time_remaining_sec\":-1}]},{\"appid\":223850,\"active\":false,\"paused\":false,\"completed\":true,\"deferred_time\":0,\"queue_index\":-1,\"update_result\":0,\"update_error\":\"\",\"completed_time\":1779397211,\"buildid\":0,\"target_buildid\":22900589,\"launch_on_completion\":false,\"update_type_info\":[{\"has_update\":true,\"completed_update\":true,\"estimated_time_remaining_sec\":0,\"progress\":[{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":412115023,\"bytes_total\":412115023,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":341460112,\"bytes_total\":341460112,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":412115023,\"bytes_total\":412115023,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":412115023,\"bytes_total\":412115023,\"estimated_time_remaining_sec\":0}],\"overall_percent_complete\":100,\"overall_estimated_time_remaining_sec\":0},{\"has_update\":false,\"completed_update\":false,\"estimated_time_remaining_sec\":-1,\"progress\":[{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1}],\"overall_percent_complete\":0,\"overall_estimated_time_remaining_sec\":-1},{\"has_update\":false,\"completed_update\":false,\"estimated_time_remaining_sec\":-1,\"progress\":[{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1}],\"overall_percent_complete\":0,\"overall_estimated_time_remaining_sec\":-1}]},{\"appid\":287980,\"active\":false,\"paused\":false,\"completed\":true,\"deferred_time\":0,\"queue_index\":-1,\"update_result\":0,\"update_error\":\"\",\"completed_time\":1769682145,\"buildid\":15988500,\"target_buildid\":20395223,\"launch_on_completion\":false,\"update_type_info\":[{\"has_update\":true,\"completed_update\":true,\"estimated_time_remaining_sec\":22,\"progress\":[{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":133750662,\"bytes_total\":133750662,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":37347984,\"bytes_total\":37347984,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":133750662,\"bytes_total\":133750662,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":133750662,\"bytes_total\":1333356104,\"estimated_time_remaining_sec\":22},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":133750662,\"bytes_total\":133750662,\"estimated_time_remaining_sec\":0}],\"overall_percent_complete\":16,\"overall_estimated_time_remaining_sec\":22},{\"has_update\":false,\"completed_update\":false,\"estimated_time_remaining_sec\":-1,\"progress\":[{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1}],\"overall_percent_complete\":0,\"overall_estimated_time_remaining_sec\":-1},{\"has_update\":false,\"completed_update\":false,\"estimated_time_remaining_sec\":-1,\"progress\":[{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1}],\"overall_percent_complete\":0,\"overall_estimated_time_remaining_sec\":-1}],\"overall_percent_complete\":16},{\"appid\":1483870,\"active\":false,\"paused\":false,\"completed\":true,\"deferred_time\":0,\"queue_index\":-1,\"update_result\":0,\"update_error\":\"\",\"completed_time\":1769682091,\"buildid\":20532635,\"target_buildid\":21686638,\"launch_on_completion\":false,\"update_type_info\":[{\"has_update\":true,\"completed_update\":true,\"estimated_time_remaining_sec\":14,\"progress\":[{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":680376882,\"bytes_total\":680376882,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":385362800,\"bytes_total\":385362800,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":680376882,\"bytes_total\":680376882,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":680376882,\"bytes_total\":1467106766,\"estimated_time_remaining_sec\":14},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":0},{\"bytes_in_progress\":680376882,\"bytes_total\":680376882,\"estimated_time_remaining_sec\":0}],\"overall_percent_complete\":62,\"overall_estimated_time_remaining_sec\":14},{\"has_update\":false,\"completed_update\":false,\"estimated_time_remaining_sec\":-1,\"progress\":[{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1}],\"overall_percent_complete\":0,\"overall_estimated_time_remaining_sec\":-1},{\"has_update\":false,\"completed_update\":false,\"estimated_time_remaining_sec\":-1,\"progress\":[{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1},{\"bytes_in_progress\":0,\"bytes_total\":0,\"estimated_time_remaining_sec\":-1}],\"overall_percent_complete\":0,\"overall_estimated_time_remaining_sec\":-1}],\"overall_percent_complete\":62}]}"
+		"continuously_render_store"		"false"
+	}
+	"SDL_GamepadBind"		"050000005e040000e0020000f31f6d04,Controller,a:b0,b:b1,x:b5,y:b6,back:b4,guide:b2,start:b3,leftstick:b12,rightstick:b15,leftshoulder:b11,rightshoulder:b14,dpup:b10,dpdown:b7,dpleft:b8,dpright:b9,leftx:a0,lefty:a1~,rightx:a3,righty:a4~,lefttrigger:+a2,righttrigger:+a5,crc:6900,"
+	"UpdateRates"
+	{
+		"1:7614dcd5b36607dc"		"525848580"
+		"2:7614dcd5b36607dc"		"42690456"
+		"3:7614dcd5b36607dc"		"42877524"
+		"4:7614dcd5b36607dc"		"254474422"
+		"6:7614dcd5b36607dc"		"13064717184"
+		"0:7614dcd5b36607dc"		"465443570"
+	}
+}

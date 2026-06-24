@@ -1,0 +1,35 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/gui"]
+default-members = ["crates/gui"]
+
+[workspace.package]
+version = "6.0.7"
+rust-version = "1.96"
+edition = "2024"
+authors = ["Manuel Quarneti <mq1@ik.me>"]
+license = "GPL-3.0-only"
+repository = "https://github.com/mq1/TinyWiiBackupManager"
+description = "A tiny game backup and homebrew app manager for the Wii"
+
+[workspace.dependencies]
+anyhow = "1.0"
+wii-disc-info = "0.9"
+zip = { version = "8.6", default-features = false, features = [
+  "deflate-flate2",
+] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# speed up slint compiler in dev builds
+[profile.dev.build-override]
+opt-level = 2
+
+# speed up conversions in dev builds
+[profile.dev.package."*"]
+opt-level = 2
