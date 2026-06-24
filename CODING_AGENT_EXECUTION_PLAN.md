@@ -278,12 +278,23 @@ cargo tree -p vapourfly-core
 ```
 
 <!-- PHASE_1_ACCEPTANCE_STAMP_START -->
-- [ ] Phase 1 accepted
-- Commit:
-- Date:
+- [x] Phase 1 accepted
+- Commit: (see git log)
+- Date: 2026-06-24
 - Commands run:
+  - `cargo fmt --all -- --check` -> pass
+  - `cargo clippy --workspace --all-targets -- -D warnings` -> pass
+  - `cargo test --workspace` -> pass (36 tests)
+  - `cargo run -p vapourfly-cli -- --version` -> pass (vapourfly 0.1.0)
+  - `cargo run -p vapourfly-cli -- help` -> pass (all subcommands listed)
+  - `cargo tree -p vapourfly-core` -> pass (no api/cli/gui deps)
 - Evidence files:
-- Notes:
+  - Cargo.toml (workspace)
+  - crates/core/src/lib.rs, error.rs, models.rs, config.rs
+  - crates/api/src/lib.rs
+  - crates/cli/src/main.rs, error.rs
+  - crates/gui/src/main.rs
+- Notes: core has no UI or network deps; later-phase commands exit code 2
 <!-- PHASE_1_ACCEPTANCE_STAMP_END -->
 
 ---

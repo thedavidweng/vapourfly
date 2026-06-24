@@ -1,5 +1,2 @@
-[build]
-jobs = 0
-
 [net]
 retry = 3
