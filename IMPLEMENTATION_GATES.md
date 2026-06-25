@@ -82,8 +82,8 @@
 
 - [x] `cargo fmt --all -- --check` passes.
 - [x] `cargo clippy --workspace --all-targets -- -D warnings` passes.
-- [x] `cargo test --workspace` passes (341 tests).
+- [x] `cargo test --workspace` passes (343 tests).
 - [x] Source archive builds cleanly.
 - [x] CHANGELOG has v0.1.0 release entry.
-- [x] Execution plan stamps match current HEAD (e762947).
+- [x] Execution plan stamps match current HEAD (91ef4bc).
 - [x] Known limitations documented honestly.

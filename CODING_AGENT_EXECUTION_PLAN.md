@@ -1306,12 +1306,12 @@ Manual release evidence required:
 
 <!-- PHASE_8_ACCEPTANCE_STAMP_START -->
 - [x] Phase 8 accepted
-- Commit: e762947
+- Commit: 91ef4bc
 - Date: 2026-06-25
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
   - `cargo clippy --workspace --all-targets -- -D warnings` -> pass
-  - `cargo test --workspace` -> pass (341 tests)
+  - `cargo test --workspace` -> pass (343 tests)
   - `cargo check -p vapourfly-api --features hltb_scrape` -> pass
   - `cargo run -p vapourfly-cli -- --version` -> pass (vapourfly 0.1.0)
   - `cargo run -p vapourfly-cli -- --version --verbose` -> pass
@@ -1370,12 +1370,12 @@ cargo run -p vapourfly-cli -- recommend --fixtures data/fixtures/steam_minimal -
 - [x] Release accepted
 - Version: 0.1.0
 - Tag: v0.1.0
-- Commit: e762947
+- Commit: 91ef4bc
 - Date: 2026-06-25
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
   - `cargo clippy --workspace --all-targets -- -D warnings` -> pass
-  - `cargo test --workspace` -> pass (341 tests)
+  - `cargo test --workspace` -> pass (343 tests)
   - `cargo check -p vapourfly-api --features hltb_scrape` -> pass
   - `cargo run -p vapourfly-cli -- doctor --fixtures data/fixtures/steam_minimal` -> pass
   - `cargo run -p vapourfly-cli -- scan --fixtures data/fixtures/steam_minimal --format json` -> pass
