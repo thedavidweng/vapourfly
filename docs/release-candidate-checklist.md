@@ -3,7 +3,7 @@
 **Version**: 0.1.0
 **Tag**: v0.1.0
 **Date**: 2026-06-25
-**Commit**: cc6b97a
+**Commit**: c977f94
 
 ## Release Type
 
