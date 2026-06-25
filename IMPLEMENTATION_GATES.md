@@ -86,5 +86,5 @@
 - [x] Source archive builds cleanly.
 - [x] Release candidate checklist complete (docs/release-candidate-checklist.md).
 - [x] CHANGELOG has v0.1.0 release entry.
-- [x] Execution plan stamps match current HEAD (d7cca76).
+- [x] Execution plan stamps match current HEAD (cc6b97a).
 - [x] Known limitations documented honestly.
