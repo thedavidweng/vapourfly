@@ -239,6 +239,40 @@ pub enum ControllerSupport {
     Unknown,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SteamStoreDetails {
+    pub app_id: u32,
+    pub name: String,
+    pub steam_store_type: String,
+    pub is_free: bool,
+    pub short_description: Option<String>,
+    pub header_image: Option<String>,
+    pub developers: Vec<String>,
+    pub publishers: Vec<String>,
+    pub genres: Vec<String>,
+    pub categories: Vec<String>,
+    pub release_date: Option<String>,
+    pub metacritic_score: Option<u32>,
+    pub platforms: SteamStorePlatforms,
+    pub coming_soon: bool,
+    pub price_overview: Option<PriceOverview>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SteamStorePlatforms {
+    pub windows: bool,
+    pub mac: bool,
+    pub linux: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PriceOverview {
+    pub currency: String,
+    pub initial_price_cents: u32,
+    pub final_price_cents: u32,
+    pub discount_percent: u32,
+}
+
 // ---------------------------------------------------------------------------
 // Local app state (from localconfig.vdf)
 // ---------------------------------------------------------------------------

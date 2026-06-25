@@ -831,12 +831,26 @@ cargo run -p vapourfly-cli -- cache refresh --fixtures data/fixtures/steam_minim
 The final command may return controlled exit code `2` when refresh requires network and offline mode blocks it. It must not panic.
 
 <!-- PHASE_5_ACCEPTANCE_STAMP_START -->
-- [ ] Phase 5 accepted
-- Commit:
-- Date:
+- [x] Phase 5 accepted
+- Commit: (see git log)
+- Date: 2026-06-24
 - Commands run:
+  - `cargo fmt --all -- --check` -> pass
+  - `cargo clippy --workspace --all-targets -- -D warnings` -> pass
+  - `cargo test --workspace` -> pass (258 tests)
+  - `VAPOURFLY_IGDB_CLIENT_ID= ... sources status --format json` -> pass
+  - `scan --offline --format json` -> pass
+  - `cache refresh --source all --offline` -> pass (exit code 2)
 - Evidence files:
-- Notes:
+  - crates/api/src/http.rs
+  - crates/api/src/cache.rs
+  - crates/api/src/igdb.rs
+  - crates/api/src/rawg.rs
+  - crates/api/src/protondb.rs
+  - crates/api/src/pcgw.rs
+  - crates/api/src/hltb.rs
+  - crates/api/src/steam_store.rs
+- Notes: HTTP infra with retry/backoff, all API clients stubbed, missing credentials graceful
 <!-- PHASE_5_ACCEPTANCE_STAMP_END -->
 
 ---

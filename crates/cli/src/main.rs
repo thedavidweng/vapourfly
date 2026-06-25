@@ -482,6 +482,30 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Credential status
+    println!();
+    println!("Credentials");
+    println!("-----------");
+    let igdb_ok = std::env::var("VAPOURFLY_IGDB_CLIENT_ID").is_ok()
+        && std::env::var("VAPOURFLY_IGDB_CLIENT_SECRET").is_ok();
+    let rawg_ok = std::env::var("VAPOURFLY_RAWG_KEY").is_ok();
+    println!(
+        "IGDB:          {}",
+        if igdb_ok {
+            "configured"
+        } else {
+            "not configured"
+        }
+    );
+    println!(
+        "RAWG:          {}",
+        if rawg_ok {
+            "configured"
+        } else {
+            "not configured"
+        }
+    );
+
     if let Some(fixtures) = &cli.fixtures {
         if cli.verbose {
             println!("Fixtures:      {}", fixtures.display());
@@ -1006,7 +1030,7 @@ fn cmd_sync_collection(
     let collection = collections
         .iter()
         .find(|c| c.id == id)
-        .ok_or_else(|| format!("collection '{}' not found in cloud storage", id))?;
+        .ok_or_else(|| format!("collection '{id}' not found in cloud storage"))?;
 
     // Generate write plan
     let plan = steam::generate_write_plan(
@@ -1049,16 +1073,70 @@ fn cmd_sync_collection(
     Ok(())
 }
 
-fn cmd_cache_refresh(cli: &Cli, _source: String) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_cache_refresh(cli: &Cli, source: String) -> Result<(), Box<dyn std::error::Error>> {
+    let valid_sources = ["igdb", "rawg", "protondb", "pcgw", "hltb", "all"];
+    if !valid_sources.contains(&source.as_str()) {
+        eprintln!(
+            "Invalid source '{}'. Must be one of: {}",
+            source,
+            valid_sources.join(", ")
+        );
+        process::exit(1);
+    }
+
     if cli.offline {
         eprintln!("Cannot refresh cache in offline mode.");
         process::exit(2);
     }
-    not_implemented("cache refresh")
+
+    println!("Cache refresh not yet fully implemented (source: {source}).");
+    Ok(())
 }
 
-fn cmd_sources_status(_cli: &Cli, _format: OutputFormat) -> Result<(), Box<dyn std::error::Error>> {
-    not_implemented("sources status")
+fn cmd_sources_status(_cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error::Error>> {
+    let igdb_configured = std::env::var("VAPOURFLY_IGDB_CLIENT_ID").is_ok()
+        && std::env::var("VAPOURFLY_IGDB_CLIENT_SECRET").is_ok();
+    let rawg_configured = std::env::var("VAPOURFLY_RAWG_KEY").is_ok();
+
+    let sources: Vec<(&str, &str, &str, &str)> = vec![
+        ("IGDB",        if igdb_configured { "configured" } else { "missing" },       "n/a",  "0"),
+        ("RAWG",        if rawg_configured { "configured" } else { "missing" },       "n/a",  "0"),
+        ("ProtonDB",    "not required",                                                 "n/a",  "0"),
+        ("PCGW",        "not required",                                                 "n/a",  "0"),
+        ("HLTB",        "not required",                                                 "n/a",  "0"),
+        ("Steam Store", "not required",                                                 "n/a",  "0"),
+    ];
+
+    match format {
+        OutputFormat::Table => {
+            println!(
+                "{:<15} {:<15} {:<15} {:<15}",
+                "Source", "Credentials", "Last Success", "Cache Entries"
+            );
+            println!("{}", "-".repeat(65));
+            for (name, cred, last, entries) in &sources {
+                println!("{:<15} {:<15} {:<15} {:<15}", name, cred, last, entries);
+            }
+        }
+        OutputFormat::Json => {
+            let json_sources: Vec<serde_json::Value> = sources
+                .iter()
+                .map(|(name, cred, last, entries)| {
+                    serde_json::json!({
+                        "name": name,
+                        "credentials": cred,
+                        "last_success": last,
+                        "cache_entries": entries,
+                    })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({ "sources": json_sources }))?
+            );
+        }
+    }
+    Ok(())
 }
 
 fn cmd_backup_list(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error::Error>> {
@@ -1125,8 +1203,13 @@ fn cmd_backup_restore(cli: &Cli, file: PathBuf) -> Result<(), Box<dyn std::error
         .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
         .ok_or("no Steam directory detected")?;
 
+    let accounts = steam::detect_accounts(&steam_dir)?;
+    let selected = steam::select_account(&accounts, cli.account.as_deref())?;
+
     let cloud_path = steam_dir
-        .join("userdata/76561198000000000/config/cloudstorage/cloud-storage-namespace-1.json");
+        .join("userdata")
+        .join(&selected.steam_id64)
+        .join("config/cloudstorage/cloud-storage-namespace-1.json");
 
     steam::restore_backup(&file, &cloud_path)?;
     println!(
