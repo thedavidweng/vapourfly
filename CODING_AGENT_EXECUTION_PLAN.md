@@ -1290,7 +1290,10 @@ cargo deny check
 just release-check
 cargo run -p vapourfly-cli -- --version --verbose
 cargo run -p vapourfly-cli -- diagnostics export --fixtures data/fixtures/steam_minimal --out target/diagnostics.json
-git grep -n "Client Secret\|access_token\|refresh_token\|Bearer \|/Users/\|C:\\\\Users\\\|/home/" target/diagnostics.json && exit 1 || true
+if grep -nE 'Client Secret|access_token|refresh_token|Bearer |/Users/|C:\\Users\\|/home/' target/diagnostics.json; then
+  echo "FAIL: secrets found in diagnostics"
+  exit 1
+fi
 ```
 
 Manual release evidence required:
@@ -1306,7 +1309,7 @@ Manual release evidence required:
 
 <!-- PHASE_8_ACCEPTANCE_STAMP_START -->
 - [x] Phase 8 accepted
-- Commit: c93c5d9
+- Commit: d7cca76
 - Date: 2026-06-25
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
@@ -1370,7 +1373,7 @@ cargo run -p vapourfly-cli -- recommend --fixtures data/fixtures/steam_minimal -
 - [x] Release accepted
 - Version: 0.1.0
 - Tag: v0.1.0
-- Commit: c93c5d9
+- Commit: d7cca76
 - Date: 2026-06-25
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
@@ -1381,9 +1384,11 @@ cargo run -p vapourfly-cli -- recommend --fixtures data/fixtures/steam_minimal -
   - `cargo run -p vapourfly-cli -- scan --fixtures data/fixtures/steam_minimal --format json` -> pass
   - `cargo run -p vapourfly-cli -- recommend --fixtures data/fixtures/steam_minimal --minutes 60 --count 5 --seed 42 --format json` -> pass
   - `bash scripts/build-release.sh` -> pass
-- Artifact paths: target/release/vapourfly (CLI), target/release/vapourfly-gui (GUI)
-- Checksums path: generated alongside release archive via `scripts/build-release.sh`
+- Release type: source-only (no pre-built binaries in v0.1.0)
+- Artifact paths: target/release-artifacts/vapourfly-0.1.0-source.tar.gz
+- Checksums path: target/release-artifacts/vapourfly-0.1.0-source.tar.gz.sha256
 - Release notes path: CHANGELOG.md
+- Release checklist: docs/release-candidate-checklist.md
 - Known limitations:
   - HLTB scraping behind feature gate (`--features hltb_scrape`)
   - GUI is read-only preview: Library/Junk/Recommend/Playlists/Collections views functional; write actions (apply/hide/sync/restore) disabled, use CLI

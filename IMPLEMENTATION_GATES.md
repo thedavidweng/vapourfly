@@ -69,7 +69,7 @@
 
 ## Phase 8 exit
 
-- [x] All tests pass in clean checkout (341 tests).
+- [x] All tests pass in clean checkout (347 tests).
 - [x] `cargo check -p vapourfly-api --features hltb_scrape` passes.
 - [x] `--allow-steam-running` flag on CLI write commands.
 - [x] API enrichment service implemented (`scan --enrich`, `cache refresh`).
@@ -84,6 +84,7 @@
 - [x] `cargo clippy --workspace --all-targets -- -D warnings` passes.
 - [x] `cargo test --workspace` passes (347 tests).
 - [x] Source archive builds cleanly.
+- [x] Release candidate checklist complete (docs/release-candidate-checklist.md).
 - [x] CHANGELOG has v0.1.0 release entry.
-- [x] Execution plan stamps match current HEAD (c93c5d9).
+- [x] Execution plan stamps match current HEAD (d7cca76).
 - [x] Known limitations documented honestly.

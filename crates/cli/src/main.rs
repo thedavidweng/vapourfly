@@ -1,8 +1,7 @@
 //! Vapourfly CLI — Steam library manager.
 //!
-//! Phases 1 and 6 commands are fully implemented.  Commands that belong to
-//! other phases print a clear "not yet implemented" message and exit with
-//! code 2.
+//! Implemented commands: doctor, scan, collections, junk, recommend,
+//! playlist, sync, cache, sources, backup, diagnostics.
 
 use std::path::PathBuf;
 use std::process;
