@@ -11,8 +11,12 @@ use std::process;
 use clap::{Parser, Subcommand};
 use vapourfly_core::junk::{JunkPreviewResult, ManualOverrides, evaluate_junk};
 use vapourfly_core::models::{
-    JunkMode, JunkRules, JunkSignal, VAPOURFLY_JUNK_PREVIEW_SCHEMA, VAPOURFLY_SCAN_SCHEMA, WriteOp,
+    JunkMode, JunkRules, JunkSignal, PlaylistContent, PlaylistFile, RecommendRequest,
+    VAPOURFLY_JUNK_PREVIEW_SCHEMA, VAPOURFLY_PLAYLIST_SCHEMA, VAPOURFLY_RECOMMENDATIONS_SCHEMA,
+    VAPOURFLY_SCAN_SCHEMA, WriteOp,
 };
+use vapourfly_core::playlist;
+use vapourfly_core::recommend;
 use vapourfly_core::steam;
 
 // ---------------------------------------------------------------------------
@@ -969,35 +973,188 @@ fn cmd_junk_hide(
 }
 
 fn cmd_recommend(
-    _cli: &Cli,
-    _minutes: u32,
-    _count: usize,
-    _deck: bool,
-    _installed_only: bool,
-    _seed: Option<u64>,
-    _format: OutputFormat,
+    cli: &Cli,
+    minutes: u32,
+    count: usize,
+    deck: bool,
+    installed_only: bool,
+    seed: Option<u64>,
+    format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    not_implemented("recommend")
+    let steam_dir = cli
+        .fixtures
+        .clone()
+        .or_else(|| cli.steam_dir.clone())
+        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
+        .ok_or("no Steam directory detected")?;
+
+    let scan_result = steam::scan_library(&steam::ScanOptions {
+        steam_dir,
+        account: cli.account.clone(),
+        fixtures: cli.fixtures.clone(),
+    })?;
+
+    let request = RecommendRequest {
+        available_minutes: minutes,
+        count,
+        deck_mode: deck,
+        include_installed_only: installed_only,
+        seed,
+        exclude_collections: vec![],
+    };
+
+    let recommendations = recommend::recommend(&scan_result.games, &request);
+
+    match format {
+        OutputFormat::Table => {
+            println!("{:<10} {:<40} {:>8}  Reasons", "App ID", "Name", "Score");
+            println!("{}", "-".repeat(86));
+            for rec in &recommendations {
+                let reasons: Vec<String> = rec.reasons.iter().map(|r| r.code.clone()).collect();
+                println!(
+                    "{:<10} {:<40} {:>8.2}  {}",
+                    rec.app_id,
+                    truncate(&rec.name, 38),
+                    rec.score,
+                    reasons.join(", ")
+                );
+            }
+            println!();
+            println!(
+                "{} recommendations ({} games scanned)",
+                recommendations.len(),
+                scan_result.games.len()
+            );
+        }
+        OutputFormat::Json => {
+            let result = serde_json::json!({
+                "schema": VAPOURFLY_RECOMMENDATIONS_SCHEMA,
+                "request": {
+                    "available_minutes": minutes,
+                    "count": count,
+                    "deck_mode": deck,
+                    "installed_only": installed_only,
+                    "seed": seed,
+                },
+                "recommendations": recommendations,
+            });
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+    }
+    Ok(())
 }
 
-fn cmd_playlist_import(_cli: &Cli, _path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    not_implemented("playlist import")
+fn cmd_playlist_import(cli: &Cli, path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let pf = playlist::import_playlist(&path)?;
+
+    // Store the imported playlist locally for later retrieval by ID.
+    let store_dir = playlist_store_dir();
+    std::fs::create_dir_all(&store_dir)?;
+    let stored_path = store_dir.join(format!("{}.json", pf.playlist.id));
+    playlist::export_playlist(&pf, &stored_path)?;
+
+    println!("Imported playlist: {}", pf.playlist.name);
+    println!("  ID: {}", pf.playlist.id);
+    if !pf.playlist.description.is_empty() {
+        println!("  Description: {}", pf.playlist.description);
+    }
+    match &pf.playlist.content {
+        PlaylistContent::Manual { app_ids } => {
+            println!("  Type: manual ({} apps)", app_ids.len());
+        }
+        PlaylistContent::Rules { rules } => {
+            println!("  Type: rules ({} rules)", rules.len());
+        }
+    }
+
+    // Match against library for a summary.
+    let steam_dir = cli
+        .fixtures
+        .clone()
+        .or_else(|| cli.steam_dir.clone())
+        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
+        .ok_or("no Steam directory detected")?;
+
+    let scan_result = steam::scan_library(&steam::ScanOptions {
+        steam_dir,
+        account: cli.account.clone(),
+        fixtures: cli.fixtures.clone(),
+    })?;
+    let report = playlist::match_playlist(&pf, &scan_result.games)?;
+
+    println!();
+    println!("Match summary:");
+    println!("  Owned:    {}", report.owned.len());
+    println!("  Missing:  {}", report.missing.len());
+    println!("  Played:   {}", report.played.len());
+    println!("  Unplayed: {}", report.unplayed.len());
+    println!("  Hidden:   {}", report.hidden.len());
+    println!("  Junk:     {}", report.junk.len());
+    println!();
+    println!("Stored to {}", stored_path.display());
+    Ok(())
 }
 
 fn cmd_playlist_export(
     _cli: &Cli,
-    _id: String,
-    _out: PathBuf,
+    id: String,
+    out: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    not_implemented("playlist export")
+    let pf = load_stored_playlist(&id)?;
+    playlist::export_playlist(&pf, &out)?;
+    println!(
+        "Exported playlist '{}' to {}",
+        pf.playlist.name,
+        out.display()
+    );
+    Ok(())
 }
 
 fn cmd_playlist_match(
-    _cli: &Cli,
-    _path: PathBuf,
-    _format: OutputFormat,
+    cli: &Cli,
+    path: PathBuf,
+    format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    not_implemented("playlist match")
+    let pf = playlist::import_playlist(&path)?;
+
+    let steam_dir = cli
+        .fixtures
+        .clone()
+        .or_else(|| cli.steam_dir.clone())
+        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
+        .ok_or("no Steam directory detected")?;
+
+    let scan_result = steam::scan_library(&steam::ScanOptions {
+        steam_dir,
+        account: cli.account.clone(),
+        fixtures: cli.fixtures.clone(),
+    })?;
+    let report = playlist::match_playlist(&pf, &scan_result.games)?;
+
+    match format {
+        OutputFormat::Table => {
+            println!("Playlist: {}", pf.playlist.name);
+            println!("  ID:       {}", pf.playlist.id);
+            println!();
+            println!("Match report:");
+            println!("  Owned:    {}", report.owned.len());
+            println!("  Missing:  {}", report.missing.len());
+            println!("  Played:   {}", report.played.len());
+            println!("  Unplayed: {}", report.unplayed.len());
+            println!("  Hidden:   {}", report.hidden.len());
+            println!("  Junk:     {}", report.junk.len());
+        }
+        OutputFormat::Json => {
+            let output = serde_json::json!({
+                "schema": VAPOURFLY_PLAYLIST_SCHEMA,
+                "playlist_id": pf.playlist.id,
+                "playlist_name": pf.playlist.name,
+                "report": report,
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+    }
+    Ok(())
 }
 
 fn cmd_sync_collection(
@@ -1099,12 +1256,30 @@ fn cmd_sources_status(_cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn st
     let rawg_configured = std::env::var("VAPOURFLY_RAWG_KEY").is_ok();
 
     let sources: Vec<(&str, &str, &str, &str)> = vec![
-        ("IGDB",        if igdb_configured { "configured" } else { "missing" },       "n/a",  "0"),
-        ("RAWG",        if rawg_configured { "configured" } else { "missing" },       "n/a",  "0"),
-        ("ProtonDB",    "not required",                                                 "n/a",  "0"),
-        ("PCGW",        "not required",                                                 "n/a",  "0"),
-        ("HLTB",        "not required",                                                 "n/a",  "0"),
-        ("Steam Store", "not required",                                                 "n/a",  "0"),
+        (
+            "IGDB",
+            if igdb_configured {
+                "configured"
+            } else {
+                "missing"
+            },
+            "n/a",
+            "0",
+        ),
+        (
+            "RAWG",
+            if rawg_configured {
+                "configured"
+            } else {
+                "missing"
+            },
+            "n/a",
+            "0",
+        ),
+        ("ProtonDB", "not required", "n/a", "0"),
+        ("PCGW", "not required", "n/a", "0"),
+        ("HLTB", "not required", "n/a", "0"),
+        ("Steam Store", "not required", "n/a", "0"),
     ];
 
     match format {
@@ -1115,7 +1290,7 @@ fn cmd_sources_status(_cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn st
             );
             println!("{}", "-".repeat(65));
             for (name, cred, last, entries) in &sources {
-                println!("{:<15} {:<15} {:<15} {:<15}", name, cred, last, entries);
+                println!("{name:<15} {cred:<15} {last:<15} {entries:<15}");
             }
         }
         OutputFormat::Json => {

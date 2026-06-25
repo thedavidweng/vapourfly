@@ -1000,12 +1000,21 @@ cargo run -p vapourfly-cli -- sync collection vapourfly-fixture --fixtures data/
 ```
 
 <!-- PHASE_6_ACCEPTANCE_STAMP_START -->
-- [ ] Phase 6 accepted
-- Commit:
-- Date:
+- [x] Phase 6 accepted
+- Commit: (see git log)
+- Date: 2026-06-24
 - Commands run:
+  - `cargo fmt --all -- --check` -> pass
+  - `cargo clippy --workspace --all-targets -- -D warnings` -> pass
+  - `cargo test --workspace` -> pass (322 tests)
+  - `recommend --minutes 60 --count 5 --seed 42 --format json` -> pass (deterministic)
+  - `playlist export vapourfly-fixture --out ...` -> pass
+  - `playlist import ...` -> pass
+  - `playlist match ... --format json` -> pass
 - Evidence files:
-- Notes:
+  - crates/core/src/recommend.rs
+  - crates/core/src/playlist.rs
+- Notes: Recommendation engine with scoring, taste vector, deterministic seed; playlist import/export/match
 <!-- PHASE_6_ACCEPTANCE_STAMP_END -->
 
 ---

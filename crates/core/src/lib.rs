@@ -8,6 +8,8 @@ pub mod config;
 pub mod error;
 pub mod junk;
 pub mod models;
+pub mod playlist;
+pub mod recommend;
 pub mod steam;
 
 pub use error::{Result, SafePath, VapourflyError};
