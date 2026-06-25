@@ -1306,7 +1306,7 @@ Manual release evidence required:
 
 <!-- PHASE_8_ACCEPTANCE_STAMP_START -->
 - [x] Phase 8 accepted
-- Commit: 41bc852
+- Commit: a8b9d0d
 - Date: 2026-06-25
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
@@ -1370,7 +1370,7 @@ cargo run -p vapourfly-cli -- recommend --fixtures data/fixtures/steam_minimal -
 - [x] Release accepted
 - Version: 0.1.0
 - Tag: v0.1.0
-- Commit: 41bc852
+- Commit: a8b9d0d
 - Date: 2026-06-25
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
