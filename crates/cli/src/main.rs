@@ -4,8 +4,6 @@
 //! other phases print a clear "not yet implemented" message and exit with
 //! code 2.
 
-mod error;
-
 use std::path::PathBuf;
 use std::process;
 
@@ -77,6 +75,36 @@ struct Cli {
 
     #[command(subcommand)]
     command: Commands,
+}
+
+impl Cli {
+    /// Resolve the Steam directory from fixtures, CLI flag, or platform detection.
+    fn resolve_steam_dir(&self) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        self.fixtures
+            .clone()
+            .or_else(|| self.steam_dir.clone())
+            .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
+            .ok_or_else(|| "no Steam directory detected".into())
+    }
+
+    /// Resolve the cloud storage path for the selected account.
+    fn cloud_storage_path(&self) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let steam_dir = self.resolve_steam_dir()?;
+        let accounts = steam::detect_accounts(&steam_dir)?;
+        let selected = steam::select_account(&accounts, self.account.as_deref())?;
+        Ok(steam_dir
+            .join("userdata")
+            .join(&selected.steam_id64)
+            .join("config/cloudstorage/cloud-storage-namespace-1.json"))
+    }
+}
+
+/// Check credential status for IGDB and RAWG.
+fn credential_status() -> (bool, bool) {
+    let igdb = std::env::var("VAPOURFLY_IGDB_CLIENT_ID").is_ok()
+        && std::env::var("VAPOURFLY_IGDB_CLIENT_SECRET").is_ok();
+    let rawg = std::env::var("VAPOURFLY_RAWG_KEY").is_ok();
+    (igdb, rawg)
 }
 
 #[derive(Subcommand)]
@@ -431,11 +459,7 @@ fn main() {
 // ---------------------------------------------------------------------------
 
 fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let steam_dir = cli
-        .fixtures
-        .clone()
-        .or_else(|| cli.steam_dir.clone())
-        .or_else(|| steam::detect_steam_dirs(None).into_iter().next());
+    let steam_dir = cli.resolve_steam_dir().ok();
 
     println!("Vapourfly Doctor");
     println!("================");
@@ -549,12 +573,7 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn cmd_accounts_list(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let steam_dir = cli
-        .fixtures
-        .clone()
-        .or_else(|| cli.steam_dir.clone())
-        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
-        .ok_or("no Steam directory detected")?;
+    let steam_dir = cli.resolve_steam_dir()?;
 
     let accounts = steam::detect_accounts(&steam_dir)?;
     let selected = steam::select_account(&accounts, cli.account.as_deref()).ok();
@@ -583,12 +602,7 @@ fn cmd_accounts_list(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn cmd_scan(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error::Error>> {
-    let steam_dir = cli
-        .fixtures
-        .clone()
-        .or_else(|| cli.steam_dir.clone())
-        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
-        .ok_or("no Steam directory detected")?;
+    let steam_dir = cli.resolve_steam_dir()?;
 
     let opts = steam::ScanOptions {
         steam_dir,
@@ -660,20 +674,7 @@ fn cmd_scan(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error::E
 }
 
 fn cmd_collections_list(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let steam_dir = cli
-        .fixtures
-        .clone()
-        .or_else(|| cli.steam_dir.clone())
-        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
-        .ok_or("no Steam directory detected")?;
-
-    let accounts = steam::detect_accounts(&steam_dir)?;
-    let selected = steam::select_account(&accounts, cli.account.as_deref())?;
-
-    let cloud_path = steam_dir
-        .join("userdata")
-        .join(&selected.steam_id64)
-        .join("config/cloudstorage/cloud-storage-namespace-1.json");
+    let cloud_path = cli.cloud_storage_path()?;
 
     if !cloud_path.exists() {
         println!("No cloud storage file found.");
@@ -703,21 +704,7 @@ fn cmd_collections_list(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn cmd_collections_export(cli: &Cli, out: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let steam_dir = cli
-        .fixtures
-        .clone()
-        .or_else(|| cli.steam_dir.clone())
-        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
-        .ok_or("no Steam directory detected")?;
-
-    let accounts = steam::detect_accounts(&steam_dir)?;
-    let selected = steam::select_account(&accounts, cli.account.as_deref())?;
-
-    let cloud_path = steam_dir
-        .join("userdata")
-        .join(&selected.steam_id64)
-        .join("config/cloudstorage/cloud-storage-namespace-1.json");
-
+    let cloud_path = cli.cloud_storage_path()?;
     let cloud = steam::read_cloud_storage(&cloud_path)?;
     let collections = steam::read_user_collections(&cloud)?;
 
@@ -749,12 +736,7 @@ fn cmd_junk_preview(
         JunkMode::Default
     };
 
-    let steam_dir = cli
-        .fixtures
-        .clone()
-        .or_else(|| cli.steam_dir.clone())
-        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
-        .ok_or("no Steam directory detected")?;
+    let steam_dir = cli.resolve_steam_dir()?;
 
     let scan_result = steam::scan_library(&steam::ScanOptions {
         steam_dir,
@@ -836,20 +818,8 @@ fn cmd_junk_apply(
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_write_flags(dry_run, confirm)?;
 
-    let steam_dir = cli
-        .fixtures
-        .clone()
-        .or_else(|| cli.steam_dir.clone())
-        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
-        .ok_or("no Steam directory detected")?;
-
-    let accounts = steam::detect_accounts(&steam_dir)?;
-    let selected = steam::select_account(&accounts, cli.account.as_deref())?;
-
-    let cloud_path = steam_dir
-        .join("userdata")
-        .join(&selected.steam_id64)
-        .join("config/cloudstorage/cloud-storage-namespace-1.json");
+    let cloud_path = cli.cloud_storage_path()?;
+    let steam_dir = cli.resolve_steam_dir()?;
 
     let scan_result = steam::scan_library(&steam::ScanOptions {
         steam_dir,
@@ -924,20 +894,8 @@ fn cmd_junk_hide(
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_write_flags(dry_run, confirm)?;
 
-    let steam_dir = cli
-        .fixtures
-        .clone()
-        .or_else(|| cli.steam_dir.clone())
-        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
-        .ok_or("no Steam directory detected")?;
-
-    let accounts = steam::detect_accounts(&steam_dir)?;
-    let selected = steam::select_account(&accounts, cli.account.as_deref())?;
-
-    let cloud_path = steam_dir
-        .join("userdata")
-        .join(&selected.steam_id64)
-        .join("config/cloudstorage/cloud-storage-namespace-1.json");
+    let cloud_path = cli.cloud_storage_path()?;
+    let steam_dir = cli.resolve_steam_dir()?;
 
     let scan_result = steam::scan_library(&steam::ScanOptions {
         steam_dir,
@@ -1008,12 +966,7 @@ fn cmd_recommend(
     seed: Option<u64>,
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let steam_dir = cli
-        .fixtures
-        .clone()
-        .or_else(|| cli.steam_dir.clone())
-        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
-        .ok_or("no Steam directory detected")?;
+    let steam_dir = cli.resolve_steam_dir()?;
 
     let scan_result = steam::scan_library(&steam::ScanOptions {
         steam_dir,
@@ -1095,12 +1048,7 @@ fn cmd_playlist_import(cli: &Cli, path: PathBuf) -> Result<(), Box<dyn std::erro
     }
 
     // Match against library for a summary.
-    let steam_dir = cli
-        .fixtures
-        .clone()
-        .or_else(|| cli.steam_dir.clone())
-        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
-        .ok_or("no Steam directory detected")?;
+    let steam_dir = cli.resolve_steam_dir()?;
 
     let scan_result = steam::scan_library(&steam::ScanOptions {
         steam_dir,
@@ -1144,12 +1092,7 @@ fn cmd_playlist_match(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pf = playlist::import_playlist(&path)?;
 
-    let steam_dir = cli
-        .fixtures
-        .clone()
-        .or_else(|| cli.steam_dir.clone())
-        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
-        .ok_or("no Steam directory detected")?;
+    let steam_dir = cli.resolve_steam_dir()?;
 
     let scan_result = steam::scan_library(&steam::ScanOptions {
         steam_dir,
@@ -1204,12 +1147,7 @@ fn cmd_sync_collection(
         }
         PlaylistContent::Rules { rules: _ } => {
             // Evaluate rules against the library to resolve matching app IDs.
-            let steam_dir = cli
-                .fixtures
-                .clone()
-                .or_else(|| cli.steam_dir.clone())
-                .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
-                .ok_or("no Steam directory detected")?;
+            let steam_dir = cli.resolve_steam_dir()?;
 
             let scan_result = steam::scan_library(&steam::ScanOptions {
                 steam_dir,
@@ -1227,12 +1165,7 @@ fn cmd_sync_collection(
         return Ok(());
     }
 
-    let steam_dir = cli
-        .fixtures
-        .clone()
-        .or_else(|| cli.steam_dir.clone())
-        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
-        .ok_or("no Steam directory detected")?;
+    let steam_dir = cli.resolve_steam_dir()?;
 
     let accounts = steam::detect_accounts(&steam_dir)?;
     let selected = steam::select_account(&accounts, cli.account.as_deref())?;
@@ -1310,9 +1243,7 @@ fn cmd_cache_refresh(cli: &Cli, source: String) -> Result<(), Box<dyn std::error
 }
 
 fn cmd_sources_status(_cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error::Error>> {
-    let igdb_configured = std::env::var("VAPOURFLY_IGDB_CLIENT_ID").is_ok()
-        && std::env::var("VAPOURFLY_IGDB_CLIENT_SECRET").is_ok();
-    let rawg_configured = std::env::var("VAPOURFLY_RAWG_KEY").is_ok();
+    let (igdb_configured, rawg_configured) = credential_status();
 
     let sources: Vec<(&str, &str, &str, &str)> = vec![
         (
@@ -1374,20 +1305,7 @@ fn cmd_sources_status(_cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn st
 }
 
 fn cmd_backup_list(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error::Error>> {
-    let steam_dir = cli
-        .fixtures
-        .clone()
-        .or_else(|| cli.steam_dir.clone())
-        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
-        .ok_or("no Steam directory detected")?;
-
-    let accounts = steam::detect_accounts(&steam_dir)?;
-    let selected = steam::select_account(&accounts, cli.account.as_deref())?;
-
-    let cloud_path = steam_dir
-        .join("userdata")
-        .join(&selected.steam_id64)
-        .join("config/cloudstorage/cloud-storage-namespace-1.json");
+    let cloud_path = cli.cloud_storage_path()?;
     let backups = steam::list_backups(&cloud_path)?;
 
     match format {
@@ -1430,20 +1348,7 @@ fn cmd_backup_list(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::e
 }
 
 fn cmd_backup_restore(cli: &Cli, file: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let steam_dir = cli
-        .fixtures
-        .clone()
-        .or_else(|| cli.steam_dir.clone())
-        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
-        .ok_or("no Steam directory detected")?;
-
-    let accounts = steam::detect_accounts(&steam_dir)?;
-    let selected = steam::select_account(&accounts, cli.account.as_deref())?;
-
-    let cloud_path = steam_dir
-        .join("userdata")
-        .join(&selected.steam_id64)
-        .join("config/cloudstorage/cloud-storage-namespace-1.json");
+    let cloud_path = cli.cloud_storage_path()?;
 
     steam::restore_backup(&file, &cloud_path)?;
     println!(
@@ -1455,9 +1360,7 @@ fn cmd_backup_restore(cli: &Cli, file: PathBuf) -> Result<(), Box<dyn std::error
 }
 
 fn cmd_diagnostics_export(_cli: &Cli, out: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let igdb_configured = std::env::var("VAPOURFLY_IGDB_CLIENT_ID").is_ok()
-        && std::env::var("VAPOURFLY_IGDB_CLIENT_SECRET").is_ok();
-    let rawg_configured = std::env::var("VAPOURFLY_RAWG_KEY").is_ok();
+    let (igdb_configured, rawg_configured) = credential_status();
 
     let diagnostics = serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
@@ -1508,13 +1411,6 @@ fn validate_write_flags(dry_run: bool, confirm: bool) -> Result<(), Box<dyn std:
         process::exit(1);
     }
     Ok(())
-}
-
-/// Print "not yet implemented" and exit with code 2.
-#[allow(dead_code)]
-fn not_implemented(command: &str) -> Result<(), Box<dyn std::error::Error>> {
-    eprintln!("Command '{command}' is not yet implemented.");
-    process::exit(2);
 }
 
 /// Mask a Steam ID, showing only the last 4 characters.

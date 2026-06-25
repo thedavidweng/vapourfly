@@ -197,52 +197,14 @@ pub fn default_playlists_dir() -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// Platform Steam detection
+// Platform Steam detection — delegate to steam::paths
 // ---------------------------------------------------------------------------
 
 /// Try well-known Steam paths for the current platform.
 fn detect_steam_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        dirs::home_dir().map(|h| h.join("Library/Application Support/Steam"))
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let home = dirs::home_dir()?;
-        // Flatpak Steam
-        let flatpak = home.join(".var/app/com.valvesoftware.Steam/data/Steam");
-        if flatpak.exists() {
-            return Some(flatpak);
-        }
-        // Standard symlink
-        let standard = home.join(".steam/steam");
-        if standard.exists() {
-            return Some(standard);
-        }
-        // Direct path
-        let direct = home.join(".local/share/Steam");
-        if direct.exists() {
-            return Some(direct);
-        }
-        Some(standard) // fallback
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(pf) = std::env::var_os("ProgramFiles(x86)") {
-            let p = PathBuf::from(pf).join("Steam");
-            if p.exists() {
-                return Some(p);
-            }
-        }
-        Some(PathBuf::from("C:\\Program Files (x86)\\Steam"))
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        None
-    }
+    crate::steam::paths::detect_steam_dirs(None)
+        .into_iter()
+        .next()
 }
 
 // ---------------------------------------------------------------------------

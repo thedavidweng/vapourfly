@@ -30,8 +30,6 @@ pub struct RecommendResult {
 // ---------------------------------------------------------------------------
 
 const LOW_PLAYTIME_THRESHOLD_MINUTES: u32 = 120;
-#[allow(dead_code)]
-const HIGH_PLAYTIME_FOR_TASTE_MINUTES: u32 = 300;
 const RECENTLY_PLAYED_DAYS: i64 = 14;
 const LIKELY_FINISHED_MULTIPLIER: f32 = 1.5;
 

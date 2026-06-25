@@ -64,11 +64,6 @@ pub fn load_manual_overrides(path: &Path) -> Result<ManualOverrides> {
 // Signal extraction helpers
 // ---------------------------------------------------------------------------
 
-/// Return the effective playtime in minutes for a game.
-fn effective_playtime(game: &Game) -> Option<u32> {
-    game.playtime_minutes
-}
-
 /// Return the effective completion time in seconds and its source.
 ///
 /// Manual overrides take precedence over scraped HLTB data.
@@ -126,7 +121,7 @@ fn evaluate_game(
     let mut available: usize = 0;
 
     // -- Playtime (required signal) ------------------------------------------
-    match effective_playtime(game) {
+    match game.playtime_minutes {
         Some(minutes) => {
             available += 1;
             if minutes < rules.max_playtime_minutes {
