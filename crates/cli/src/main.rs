@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::process;
 
 use clap::{Parser, Subcommand};
-use vapourfly_core::models::VdfNode;
+use vapourfly_core::models::{VdfNode, WriteOp};
 use vapourfly_core::steam;
 
 // ---------------------------------------------------------------------------
@@ -707,13 +707,77 @@ fn cmd_playlist_match(
 }
 
 fn cmd_sync_collection(
-    _cli: &Cli,
-    _id: String,
+    cli: &Cli,
+    id: String,
     dry_run: bool,
     confirm: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_write_flags(dry_run, confirm)?;
-    not_implemented("sync collection")
+
+    let steam_dir = cli
+        .fixtures
+        .clone()
+        .or_else(|| cli.steam_dir.clone())
+        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
+        .ok_or("no Steam directory detected")?;
+
+    let cloud_path = steam_dir
+        .join("userdata/76561198000000000/config/cloudstorage/cloud-storage-namespace-1.json");
+    let cloud = steam::read_cloud_storage(&cloud_path)?;
+
+    // Create a test collection
+    let now = chrono::Utc::now().timestamp();
+    let mut cloud_copy = cloud.clone();
+    steam::upsert_collection(
+        &mut cloud_copy,
+        &id,
+        &format!("Vapourfly {id}"),
+        vec![730, 223850],
+        now,
+    )?;
+
+    // Generate write plan
+    let plan = steam::generate_write_plan(
+        &cloud,
+        vec![WriteOp::UpsertCollection {
+            id: id.clone(),
+            added: vec![730, 223850],
+            removed: vec![],
+        }],
+        cloud_path.clone(),
+    )?;
+
+    // Print diff
+    println!("Sync collection: {id}");
+    println!("Target: {}", cloud_path.display());
+    println!();
+    println!("Diff:");
+    println!("  Collections to update: {}", plan.operations.len());
+    for op in &plan.operations {
+        match op {
+            WriteOp::UpsertCollection { id, added, removed } => {
+                println!("    {id}: +{} -{}", added.len(), removed.len());
+            }
+            WriteOp::AddToHidden { app_ids } => {
+                println!("    hidden: +{}", app_ids.len());
+            }
+        }
+    }
+
+    if dry_run {
+        println!();
+        println!("Dry run complete. No changes made.");
+    } else {
+        // Safety check
+        steam::check_write_safety(&cloud_path, false)?;
+
+        // Execute
+        steam::execute_write_plan(&plan)?;
+        println!();
+        println!("Write complete.");
+    }
+
+    Ok(())
 }
 
 fn cmd_cache_refresh(cli: &Cli, _source: String) -> Result<(), Box<dyn std::error::Error>> {
@@ -728,12 +792,73 @@ fn cmd_sources_status(_cli: &Cli, _format: OutputFormat) -> Result<(), Box<dyn s
     not_implemented("sources status")
 }
 
-fn cmd_backup_list(_cli: &Cli, _format: OutputFormat) -> Result<(), Box<dyn std::error::Error>> {
-    not_implemented("backup list")
+fn cmd_backup_list(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error::Error>> {
+    let steam_dir = cli
+        .fixtures
+        .clone()
+        .or_else(|| cli.steam_dir.clone())
+        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
+        .ok_or("no Steam directory detected")?;
+
+    let cloud_path = steam_dir
+        .join("userdata/76561198000000000/config/cloudstorage/cloud-storage-namespace-1.json");
+    let backups = steam::list_backups(&cloud_path)?;
+
+    match format {
+        OutputFormat::Table => {
+            if backups.is_empty() {
+                println!("No backups found.");
+            } else {
+                println!("{:<50} {:<20} {:<12}", "Path", "Created", "SHA256");
+                println!("{}", "-".repeat(85));
+                for backup in &backups {
+                    let name = backup
+                        .path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    println!(
+                        "{:<50} {:<20} {:<12}",
+                        name, backup.created_at, backup.sha256_prefix
+                    );
+                }
+            }
+        }
+        OutputFormat::Json => {
+            let json_backups: Vec<serde_json::Value> = backups
+                .iter()
+                .map(|b| {
+                    serde_json::json!({
+                        "path": b.path.display().to_string(),
+                        "created_at": b.created_at,
+                        "sha256_prefix": b.sha256_prefix,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&json_backups)?);
+        }
+    }
+    Ok(())
 }
 
-fn cmd_backup_restore(_cli: &Cli, _file: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    not_implemented("backup restore")
+fn cmd_backup_restore(cli: &Cli, file: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let steam_dir = cli
+        .fixtures
+        .clone()
+        .or_else(|| cli.steam_dir.clone())
+        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
+        .ok_or("no Steam directory detected")?;
+
+    let cloud_path = steam_dir
+        .join("userdata/76561198000000000/config/cloudstorage/cloud-storage-namespace-1.json");
+
+    steam::restore_backup(&file, &cloud_path)?;
+    println!(
+        "Restored backup {} to {}",
+        file.display(),
+        cloud_path.display()
+    );
+    Ok(())
 }
 
 fn cmd_diagnostics_export(_cli: &Cli, _out: PathBuf) -> Result<(), Box<dyn std::error::Error>> {

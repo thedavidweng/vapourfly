@@ -310,7 +310,32 @@ pub struct WritePlan {
     pub tmp_path: PathBuf,
     pub before_sha256: String,
     pub after_sha256: String,
+    pub after_content: Vec<u8>,
     pub operations: Vec<WriteOp>,
+    pub diff: WritePlanDiff,
+}
+
+/// Human-readable diff summary produced alongside a [`WritePlan`].
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct WritePlanDiff {
+    /// Collections that were created or updated (id -> "created" | "updated").
+    pub collections_changed: Vec<CollectionChange>,
+    /// AppIDs added across all collections (sorted ascending).
+    pub app_ids_added: Vec<u32>,
+    /// AppIDs removed across all collections (sorted ascending).
+    pub app_ids_removed: Vec<u32>,
+    /// AppIDs added to the hidden collection.
+    pub hidden_app_ids_added: Vec<u32>,
+    /// Number of entries in the file that were not touched.
+    pub unchanged_count: usize,
+    /// Number of deleted entries that were skipped.
+    pub skipped_deleted_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CollectionChange {
+    pub id: String,
+    pub action: String, // "created" or "updated"
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -684,6 +709,7 @@ mod tests {
             tmp_path: "/tmp/.cloud.json.vapourfly.tmp".into(),
             before_sha256: "aa".repeat(32),
             after_sha256: "bb".repeat(32),
+            after_content: b"[]".to_vec(),
             operations: vec![
                 WriteOp::UpsertCollection {
                     id: "test".into(),
@@ -694,6 +720,7 @@ mod tests {
                     app_ids: vec![223850],
                 },
             ],
+            diff: WritePlanDiff::default(),
         };
         let json = serde_json::to_string(&plan).unwrap();
         let back: WritePlan = serde_json::from_str(&json).unwrap();

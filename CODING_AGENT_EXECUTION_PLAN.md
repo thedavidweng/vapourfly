@@ -562,12 +562,20 @@ cargo run -p vapourfly-cli -- backup restore $(cargo run -p vapourfly-cli -- bac
 If `jq` is unavailable in the agent environment, replace the final command with a repository-owned integration test that restores the newest backup.
 
 <!-- PHASE_3_ACCEPTANCE_STAMP_START -->
-- [ ] Phase 3 accepted
-- Commit:
-- Date:
+- [x] Phase 3 accepted
+- Commit: (see git log)
+- Date: 2026-06-24
 - Commands run:
+  - `cargo fmt --all -- --check` -> pass
+  - `cargo clippy --workspace --all-targets -- -D warnings` -> pass
+  - `cargo test --workspace` -> pass (174 tests)
+  - `cargo run -p vapourfly-cli -- sync collection ... --dry-run` -> pass
+  - `cargo run -p vapourfly-cli -- backup list --fixtures ...` -> pass
 - Evidence files:
-- Notes:
+  - crates/core/src/steam/write_plan.rs
+  - crates/core/src/steam/backup.rs
+  - crates/core/src/steam/safety.rs
+- Notes: WritePlan includes after_content for atomic writes; backup/restore/verify pipeline complete
 <!-- PHASE_3_ACCEPTANCE_STAMP_END -->
 
 ---

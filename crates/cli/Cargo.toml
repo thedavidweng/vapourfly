@@ -12,6 +12,7 @@ license.workspace = true
 [dependencies]
 vapourfly-core = { path = "../core" }
 vapourfly-api = { path = "../api" }
+chrono = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
