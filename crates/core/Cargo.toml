@@ -18,5 +18,8 @@ tempfile = { workspace = true }
 toml = { workspace = true }
 strsim = "0.11"
 
+[target.'cfg(windows)'.dependencies]
+winreg = { workspace = true }
+
 [dev-dependencies]
 serial_test = { workspace = true }

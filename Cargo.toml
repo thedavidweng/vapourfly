@@ -23,6 +23,7 @@ tempfile = "3"
 clap = { version = "4", features = ["derive"] }
 toml = "0.8"
 ureq = "2"
+winreg = "0.55"
 serial_test = "3"
 eframe = "0.31"
 egui = "0.31"
