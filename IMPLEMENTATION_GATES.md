@@ -1,10 +1,8 @@
 # Vapourfly Implementation Gates
 
-**Version**: 2026-06-24
+**Version**: 2026-06-25
 
-> **Phase authority**: See CODING_AGENT_EXECUTION_PLAN.md for detailed phase order, acceptance stamps, and stop conditions.
-
-This file defines the minimum checks before moving between phases.
+> **Single source of truth**: See [CODING_AGENT_EXECUTION_PLAN.md](CODING_AGENT_EXECUTION_PLAN.md) for detailed phase order, acceptance stamps, commands, and stop conditions. This file provides a quick-reference checklist only.
 
 ## Phase 0 -> Phase 1
 
@@ -51,6 +49,41 @@ This file defines the minimum checks before moving between phases.
 ## Phase 5 exit
 
 - [x] GUI calls core write plans rather than writing files directly.
-- [x] GUI shows dry-run diff before every write.
-- [x] GUI exposes API source status and cache refresh.
-- [x] GUI can restore backups.
+- [x] GUI shows read-only preview (write actions deferred to CLI).
+- [x] GUI displays API source status and credential state.
+- [x] GUI backup list functional; restore via CLI only.
+
+## Phase 6 exit
+
+- [x] Recommendation engine with scoring, taste vector, deterministic seed.
+- [x] Playlist import/export/match.
+- [x] Sync collection through WritePlan.
+
+## Phase 7 exit
+
+- [x] GUI builds on Linux, macOS, and Windows.
+- [x] GUI can scan fixtures through core service.
+- [x] GUI displays dry-run diff information (write actions disabled in preview).
+- [x] GUI has no direct file write code for Steam files.
+- [x] GUI displays source status and credential state without secrets.
+
+## Phase 8 exit
+
+- [x] All tests pass in clean checkout (341 tests).
+- [x] `cargo check -p vapourfly-api --features hltb_scrape` passes.
+- [x] `--allow-steam-running` flag on CLI write commands.
+- [x] API enrichment service implemented (`scan --enrich`, `cache refresh`).
+- [x] `sources status` reads real cache data.
+- [x] `build-release.sh` generates source archive without arguments.
+- [x] `Cargo.lock` committed (not gitignored).
+- [x] Docs cover installation, safety, API setup, and release process.
+
+## Final Release Gate
+
+- [x] `cargo fmt --all -- --check` passes.
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` passes.
+- [x] `cargo test --workspace` passes (341 tests).
+- [x] Source archive builds cleanly.
+- [x] CHANGELOG has v0.1.0 release entry.
+- [x] Execution plan stamps match current HEAD (41bc852).
+- [x] Known limitations documented honestly.

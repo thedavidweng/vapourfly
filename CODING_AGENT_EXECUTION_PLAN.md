@@ -1306,22 +1306,24 @@ Manual release evidence required:
 
 <!-- PHASE_8_ACCEPTANCE_STAMP_START -->
 - [x] Phase 8 accepted
-- Commit: 74df4ac
+- Commit: 41bc852
 - Date: 2026-06-25
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
   - `cargo clippy --workspace --all-targets -- -D warnings` -> pass
-  - `cargo test --workspace` -> pass (332 tests)
+  - `cargo test --workspace` -> pass (341 tests)
+  - `cargo check -p vapourfly-api --features hltb_scrape` -> pass
   - `cargo run -p vapourfly-cli -- --version` -> pass (vapourfly 0.1.0)
   - `cargo run -p vapourfly-cli -- --version --verbose` -> pass
   - `cargo run -p vapourfly-cli -- diagnostics export --out ...` -> pass
+  - `bash scripts/build-release.sh` -> pass (generates source archive)
 - Evidence files:
   - docs/CLI.md
   - docs/STEAM_FILE_SAFETY.md
   - docs/API_SOURCES.md
   - docs/gui-smoke-test.md
   - README.md (updated)
-- Notes: Full documentation, version embedding with git commit, diagnostics export
+- Notes: Full documentation, version embedding with git commit, diagnostics export, enrichment service, GUI read-only preview, --allow-steam-running flag
 <!-- PHASE_8_ACCEPTANCE_STAMP_END -->
 
 ---
@@ -1368,22 +1370,26 @@ cargo run -p vapourfly-cli -- recommend --fixtures data/fixtures/steam_minimal -
 - [x] Release accepted
 - Version: 0.1.0
 - Tag: v0.1.0
-- Commit: 74df4ac
+- Commit: 41bc852
 - Date: 2026-06-25
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
   - `cargo clippy --workspace --all-targets -- -D warnings` -> pass
-  - `cargo test --workspace` -> pass (332 tests)
+  - `cargo test --workspace` -> pass (341 tests)
+  - `cargo check -p vapourfly-api --features hltb_scrape` -> pass
   - `cargo run -p vapourfly-cli -- doctor --fixtures data/fixtures/steam_minimal` -> pass
   - `cargo run -p vapourfly-cli -- scan --fixtures data/fixtures/steam_minimal --format json` -> pass
   - `cargo run -p vapourfly-cli -- recommend --fixtures data/fixtures/steam_minimal --minutes 60 --count 5 --seed 42 --format json` -> pass
+  - `bash scripts/build-release.sh` -> pass
 - Artifact paths: target/release/vapourfly (CLI), target/release/vapourfly-gui (GUI)
 - Checksums path: generated alongside release archive via `scripts/build-release.sh`
 - Release notes path: CHANGELOG.md
 - Known limitations:
-  - HLTB scraping behind feature gate, not implemented
-  - GUI is scaffold: only Library view functional; other views show placeholder
-  - No Windows registry detection for Steam path
+  - HLTB scraping behind feature gate (`--features hltb_scrape`)
+  - GUI is read-only preview: Library/Junk/Recommend/Playlists/Collections views functional; write actions (apply/hide/sync/restore) disabled, use CLI
+  - GUI Settings are display-only; use CLI flags or config.toml
+  - API enrichment via CLI (`scan --enrich`, `cache refresh`); GUI cache refresh deferred
+  - `--allow-steam-running` flag available on CLI write commands
 <!-- FINAL_RELEASE_STAMP_END -->
 
 ---

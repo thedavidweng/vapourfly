@@ -443,6 +443,10 @@ impl VapourflyApp {
 
     fn render_junk(&mut self, ui: &mut egui::Ui) {
         ui.heading("Junk Detection");
+        ui.colored_label(
+            egui::Color32::from_rgb(200, 150, 50),
+            "⚠ Preview mode — write actions (apply/hide) are disabled in v0.1.0. Use CLI for writes.",
+        );
         ui.separator();
 
         // Mode selector
@@ -796,6 +800,17 @@ impl VapourflyApp {
 
         ui.separator();
         ui.label("Set credentials via environment variables. See docs/API_SOURCES.md for details.");
+        ui.separator();
+
+        // Cache status
+        ui.strong("Cache Status");
+        ui.label("Use `vapourfly sources status` and `vapourfly cache refresh` CLI commands for full cache management.");
+        ui.label("GUI cache refresh will be implemented in a future release.");
+
+        // Offline mode indicator
+        ui.separator();
+        ui.strong("Offline Mode");
+        ui.label("Use `--offline` CLI flag to prohibit network calls and use cached data only.");
     }
 
     // -- Backups view -------------------------------------------------------
@@ -852,6 +867,12 @@ impl VapourflyApp {
         ui.label(format!("{} backups found", self.backups.len()));
         ui.separator();
 
+        ui.colored_label(
+            egui::Color32::from_rgb(200, 150, 50),
+            "⚠ Backup restore is disabled in GUI preview. Use `vapourfly backup restore <file>` CLI command.",
+        );
+        ui.separator();
+
         let text_height = egui::TextStyle::Body.resolve(ui.style()).size;
         egui_extras::TableBuilder::new(ui)
             .striped(true)
@@ -887,13 +908,19 @@ impl VapourflyApp {
         ui.heading("Settings");
         ui.separator();
 
+        ui.colored_label(
+            egui::Color32::from_rgb(200, 150, 50),
+            "⚠ Settings are display-only in v0.1.0 preview. Use CLI flags or config.toml for configuration.",
+        );
+        ui.separator();
+
         ui.group(|ui| {
             ui.strong("Steam Directory Override");
             ui.horizontal(|ui| {
                 ui.label("Path:");
                 ui.text_edit_singleline(&mut self.steam_dir_edit);
             });
-            ui.label("Leave empty for auto-detection.");
+            ui.label("Leave empty for auto-detection. CLI: --steam-dir");
         });
         ui.separator();
 
@@ -903,7 +930,7 @@ impl VapourflyApp {
                 ui.label("Account:");
                 ui.text_edit_singleline(&mut self.account_edit);
             });
-            ui.label("Leave empty for auto-selection (most recent).");
+            ui.label("Leave empty for auto-selection (most recent). CLI: --account");
         });
         ui.separator();
 
@@ -915,6 +942,7 @@ impl VapourflyApp {
                 ui.label("Language:");
                 ui.text_edit_singleline(&mut self.lang_edit);
             });
+            ui.label("Configure in ~/.config/vapourfly/config.toml");
         });
         ui.separator();
 

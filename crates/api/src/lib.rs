@@ -5,6 +5,7 @@
 //! ProtonDB, PCGamingWiki, and HLTB.
 
 pub mod cache;
+pub mod enrichment;
 pub mod hltb;
 pub mod http;
 pub mod igdb;

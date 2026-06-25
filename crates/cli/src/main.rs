@@ -73,6 +73,10 @@ struct Cli {
     #[arg(long, global = true)]
     offline: bool,
 
+    /// Allow writing to Steam files even when Steam is detected as running.
+    #[arg(long, global = true)]
+    allow_steam_running: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -123,6 +127,10 @@ enum Commands {
         /// Output format.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
+
+        /// Enrich scan results with external API data (uses cache, fetches if stale).
+        #[arg(long)]
+        enrich: bool,
     },
 
     /// Manage Steam collections.
@@ -383,7 +391,7 @@ fn main() {
         Commands::Accounts { action } => match action {
             AccountsAction::List => cmd_accounts_list(&cli),
         },
-        Commands::Scan { format } => cmd_scan(&cli, *format),
+        Commands::Scan { format, enrich } => cmd_scan(&cli, *format, *enrich),
         Commands::Collections { action } => match action {
             CollectionsAction::List => cmd_collections_list(&cli),
             CollectionsAction::Export { out } => cmd_collections_export(&cli, out.clone()),
@@ -601,7 +609,11 @@ fn cmd_accounts_list(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn cmd_scan(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_scan(
+    cli: &Cli,
+    format: OutputFormat,
+    enrich: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let steam_dir = cli.resolve_steam_dir()?;
 
     let opts = steam::ScanOptions {
@@ -610,7 +622,29 @@ fn cmd_scan(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error::E
         fixtures: cli.fixtures.clone(),
     };
 
-    let result = steam::scan_library(&opts)?;
+    let mut result = steam::scan_library(&opts)?;
+
+    // Enrich with external API data if requested.
+    if enrich {
+        let cache =
+            vapourfly_api::cache::DiskCache::new(vapourfly_core::config::default_cache_dir());
+        let options = vapourfly_api::enrichment::EnrichmentOptions {
+            sources: vapourfly_api::enrichment::ALL_SOURCES
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            offline: cli.offline,
+            force: false,
+        };
+        let summary = vapourfly_api::enrichment::enrich_games(&mut result.games, &cache, &options);
+        tracing::info!(
+            processed = summary.games_processed,
+            cache_hits = summary.cache_hits,
+            network = summary.network_fetches,
+            errors = summary.errors.len(),
+            "enrichment complete"
+        );
+    }
 
     match format {
         OutputFormat::Table => {
@@ -648,7 +682,7 @@ fn cmd_scan(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error::E
             let games_json: Vec<serde_json::Value> = sorted
                 .iter()
                 .map(|g| {
-                    serde_json::json!({
+                    let mut entry = serde_json::json!({
                         "app_id": g.app_id,
                         "name": g.name,
                         "installed": g.installed,
@@ -656,7 +690,24 @@ fn cmd_scan(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error::E
                         "playtime_2wks_minutes": g.playtime_2wks_minutes,
                         "collections": g.steam_collections,
                         "is_hidden": g.is_hidden,
-                    })
+                    });
+                    // Include enriched data when present
+                    if let Some(protondb) = &g.protondb {
+                        entry["protondb"] = serde_json::to_value(protondb).unwrap_or_default();
+                    }
+                    if let Some(pcgw) = &g.pcgw {
+                        entry["pcgw"] = serde_json::to_value(pcgw).unwrap_or_default();
+                    }
+                    if let Some(hltb) = &g.hltb {
+                        entry["hltb"] = serde_json::to_value(hltb).unwrap_or_default();
+                    }
+                    if let Some(rawg) = &g.rawg {
+                        entry["rawg"] = serde_json::to_value(rawg).unwrap_or_default();
+                    }
+                    if let Some(igdb) = &g.igdb {
+                        entry["igdb"] = serde_json::to_value(igdb).unwrap_or_default();
+                    }
+                    entry
                 })
                 .collect();
 
@@ -877,7 +928,7 @@ fn cmd_junk_apply(
         println!();
         println!("Dry run complete. No changes made.");
     } else {
-        steam::check_write_safety(&cloud_path, false)?;
+        steam::check_write_safety(&cloud_path, cli.allow_steam_running)?;
         steam::execute_write_plan(&plan, 5)?;
         println!();
         println!("Write complete.");
@@ -947,7 +998,7 @@ fn cmd_junk_hide(
         println!();
         println!("Dry run complete. No changes made.");
     } else {
-        steam::check_write_safety(&cloud_path, false)?;
+        steam::check_write_safety(&cloud_path, cli.allow_steam_running)?;
         steam::execute_write_plan(&plan, 5)?;
         println!();
         println!("Write complete.");
@@ -1212,7 +1263,7 @@ fn cmd_sync_collection(
         println!();
         println!("Dry run complete. No changes made.");
     } else {
-        steam::check_write_safety(&cloud_path, false)?;
+        steam::check_write_safety(&cloud_path, cli.allow_steam_running)?;
         steam::execute_write_plan(&plan, 5)?;
         println!();
         println!("Write complete.");
@@ -1238,60 +1289,126 @@ fn cmd_cache_refresh(cli: &Cli, source: String) -> Result<(), Box<dyn std::error
         process::exit(2);
     }
 
-    println!("Cache refresh not yet fully implemented (source: {source}).");
+    let steam_dir = cli.resolve_steam_dir()?;
+    let scan_result = steam::scan_library(&steam::ScanOptions {
+        steam_dir,
+        account: cli.account.clone(),
+        fixtures: cli.fixtures.clone(),
+    })?;
+
+    let cache = vapourfly_api::cache::DiskCache::new(vapourfly_core::config::default_cache_dir());
+
+    let sources = if source == "all" {
+        vapourfly_api::enrichment::ALL_SOURCES
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        vec![source.clone()]
+    };
+
+    let options = vapourfly_api::enrichment::EnrichmentOptions {
+        sources,
+        offline: false,
+        force: true,
+    };
+
+    let mut games = scan_result.games;
+    let summary = vapourfly_api::enrichment::enrich_games(&mut games, &cache, &options);
+
+    println!("Cache refresh complete (source: {source})");
+    println!("  Games processed: {}", summary.games_processed);
+    println!("  Network fetches: {}", summary.network_fetches);
+    println!("  Cache hits:      {}", summary.cache_hits);
+    println!("  Errors:          {}", summary.errors.len());
+
+    for stat in &summary.source_stats {
+        println!(
+            "  {}: {} refreshed, {} skipped, {} errors",
+            stat.source, stat.entries_refreshed, stat.entries_skipped, stat.errors
+        );
+    }
+
+    if !summary.errors.is_empty() {
+        println!();
+        println!("Errors (first 10):");
+        for err in summary.errors.iter().take(10) {
+            println!("  [{}:{}] {}", err.source, err.app_id, err.message);
+        }
+    }
+
     Ok(())
 }
 
 fn cmd_sources_status(_cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error::Error>> {
     let (igdb_configured, rawg_configured) = credential_status();
-
-    let sources: Vec<(&str, &str, &str, &str)> = vec![
-        (
-            "IGDB",
-            if igdb_configured {
-                "configured"
-            } else {
-                "missing"
-            },
-            "n/a",
-            "0",
-        ),
-        (
-            "RAWG",
-            if rawg_configured {
-                "configured"
-            } else {
-                "missing"
-            },
-            "n/a",
-            "0",
-        ),
-        ("ProtonDB", "not required", "n/a", "0"),
-        ("PCGW", "not required", "n/a", "0"),
-        ("HLTB", "not required", "n/a", "0"),
-        ("Steam Store", "not required", "n/a", "0"),
-    ];
+    let cache_root = vapourfly_core::config::default_cache_dir();
+    let statuses = vapourfly_api::enrichment::source_status(&cache_root);
 
     match format {
         OutputFormat::Table => {
             println!(
-                "{:<15} {:<15} {:<15} {:<15}",
-                "Source", "Credentials", "Last Success", "Cache Entries"
+                "{:<15} {:<15} {:<15} {:<8} {:<8} {:<10}",
+                "Source", "Credentials", "Last Success", "Entries", "Stale", "Cached"
             );
-            println!("{}", "-".repeat(65));
-            for (name, cred, last, entries) in &sources {
-                println!("{name:<15} {cred:<15} {last:<15} {entries:<15}");
+            println!("{}", "-".repeat(75));
+            for s in &statuses {
+                let cred = match s.name.as_str() {
+                    "igdb" => {
+                        if igdb_configured {
+                            "configured"
+                        } else {
+                            "missing"
+                        }
+                    }
+                    "rawg" => {
+                        if rawg_configured {
+                            "configured"
+                        } else {
+                            "missing"
+                        }
+                    }
+                    _ => "not required",
+                };
+                let last = s
+                    .last_success
+                    .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+                    .unwrap_or_else(|| "n/a".into());
+                let cached = if s.cache_dir_exists { "yes" } else { "no" };
+                println!(
+                    "{:<15} {:<15} {:<15} {:<8} {:<8} {:<10}",
+                    s.name, cred, last, s.cache_entries, s.stale_entries, cached
+                );
             }
         }
         OutputFormat::Json => {
-            let json_sources: Vec<serde_json::Value> = sources
+            let json_sources: Vec<serde_json::Value> = statuses
                 .iter()
-                .map(|(name, cred, last, entries)| {
+                .map(|s| {
+                    let cred = match s.name.as_str() {
+                        "igdb" => {
+                            if igdb_configured {
+                                "configured"
+                            } else {
+                                "missing"
+                            }
+                        }
+                        "rawg" => {
+                            if rawg_configured {
+                                "configured"
+                            } else {
+                                "missing"
+                            }
+                        }
+                        _ => "not required",
+                    };
                     serde_json::json!({
-                        "name": name,
+                        "name": s.name,
                         "credentials": cred,
-                        "last_success": last,
-                        "cache_entries": entries,
+                        "last_success": s.last_success,
+                        "cache_entries": s.cache_entries,
+                        "stale_entries": s.stale_entries,
+                        "cache_dir_exists": s.cache_dir_exists,
                     })
                 })
                 .collect();
@@ -1350,6 +1467,7 @@ fn cmd_backup_list(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::e
 fn cmd_backup_restore(cli: &Cli, file: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let cloud_path = cli.cloud_storage_path()?;
 
+    steam::check_write_safety(&cloud_path, cli.allow_steam_running)?;
     steam::restore_backup(&file, &cloud_path)?;
     println!(
         "Restored backup {} to {}",

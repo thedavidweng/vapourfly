@@ -40,7 +40,6 @@ backups/
 
 # Build artifacts from cargo
 **/*.rs.bk
-Cargo.lock
 
 # Benchmarks and profiling
 perf.data

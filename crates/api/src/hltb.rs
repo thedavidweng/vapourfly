@@ -53,8 +53,6 @@ impl HltbClient {
     /// feature is not enabled.
     #[cfg(feature = "hltb_scrape")]
     pub fn fetch(&self, name: &str) -> Result<Option<HltbData>> {
-        use vapourfly_core::models::HltbSource;
-
         let search_body = HltbSearchRequest::new(name);
         let body_json = serde_json::to_vec(&search_body).map_err(|e| {
             vapourfly_core::error::VapourflyError::Internal(format!(

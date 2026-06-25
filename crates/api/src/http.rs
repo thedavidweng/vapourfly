@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::io::Read as _;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 

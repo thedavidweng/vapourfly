@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-VERSION="${1:-$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')}"
+VERSION="${1:-$(grep '^version' crates/cli/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')}"
 OUTDIR="target/release-artifacts"
 ARCHIVE_NAME="vapourfly-${VERSION}-source"
 

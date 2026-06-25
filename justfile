@@ -9,7 +9,7 @@ test:
 
 check-all: fmt-check clippy test
 
-fixture-sain:
+fixture-scan:
     cargo run -p vapourfly-cli -- doctor --fixtures data/fixtures/steam_minimal
 
 release-check: check-all
