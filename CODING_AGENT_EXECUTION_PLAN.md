@@ -683,12 +683,20 @@ cargo run -p vapourfly-cli -- junk hide --fixtures target/junk-fixture --confirm
 ```
 
 <!-- PHASE_4_ACCEPTANCE_STAMP_START -->
-- [ ] Phase 4 accepted
-- Commit:
-- Date:
+- [x] Phase 4 accepted
+- Commit: (see git log)
+- Date: 2026-06-24
 - Commands run:
+  - `cargo fmt --all -- --check` -> pass
+  - `cargo clippy --workspace --all-targets -- -D warnings` -> pass
+  - `cargo test --workspace` -> pass (210 tests)
+  - `cargo run -p vapourfly-cli -- junk preview --fixtures ... --format json` -> pass
+  - `cargo run -p vapourfly-cli -- junk preview --fixtures ... --strict --format table` -> pass
+  - `cargo run -p vapourfly-cli -- junk apply --fixtures ... --collection ... --dry-run` -> pass
+  - `cargo run -p vapourfly-cli -- junk hide --fixtures ... --dry-run` -> pass
 - Evidence files:
-- Notes:
+  - crates/core/src/junk.rs
+- Notes: Junk engine with Default/Strict/Aggressive modes; explainable decisions with matched/missing signals
 <!-- PHASE_4_ACCEPTANCE_STAMP_END -->
 
 ---

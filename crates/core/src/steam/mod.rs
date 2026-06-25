@@ -23,7 +23,7 @@ pub mod write_plan;
 
 pub use account::select_account;
 pub use backup::{
-    create_backup, execute_write_plan, list_backups, prune_old_backups, restore_backup,
+    BackupInfo, create_backup, execute_write_plan, list_backups, prune_old_backups, restore_backup,
 };
 pub use collections::{read_cloud_storage, read_user_collections};
 pub use librarycache::parse_librarycache;
@@ -32,7 +32,7 @@ pub use paths::{
     AppManifest, SteamAccount, detect_accounts, detect_library_folders, detect_steam_dirs,
     parse_appmanifests, redact_path,
 };
-pub use safety::{check_write_safety, is_steam_running};
+pub use safety::{check_write_safety, is_steam_running, set_steam_running_override};
 pub use scan::{ScanOptions, scan_library};
 pub use vdf_text::{parse_text_vdf, write_text_vdf};
 pub use write_plan::{compute_sha256, generate_write_plan, merge_hidden, upsert_collection};

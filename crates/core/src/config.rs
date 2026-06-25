@@ -174,6 +174,17 @@ impl VapourflyConfig {
     }
 }
 
+/// Return the platform-specific Vapourfly cache directory path.
+///
+/// This is `{platform_cache_dir}/vapourfly/cache/`. Returns a fallback
+/// if the platform cache directory cannot be determined.
+pub fn default_cache_dir() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("vapourfly")
+        .join("cache")
+}
+
 // ---------------------------------------------------------------------------
 // Platform Steam detection
 // ---------------------------------------------------------------------------

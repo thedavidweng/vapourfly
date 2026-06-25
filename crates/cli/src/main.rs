@@ -9,7 +9,10 @@ use std::path::PathBuf;
 use std::process;
 
 use clap::{Parser, Subcommand};
-use vapourfly_core::models::{VdfNode, WriteOp};
+use vapourfly_core::junk::{JunkPreviewResult, ManualOverrides, evaluate_junk};
+use vapourfly_core::models::{
+    JunkMode, JunkRules, JunkSignal, VAPOURFLY_JUNK_PREVIEW_SCHEMA, VAPOURFLY_SCAN_SCHEMA, WriteOp,
+};
 use vapourfly_core::steam;
 
 // ---------------------------------------------------------------------------
@@ -404,120 +407,89 @@ fn main() {
 // ---------------------------------------------------------------------------
 
 fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    // When --fixtures is provided, use it as the Steam dir for detection.
     let steam_dir = cli
         .fixtures
         .clone()
         .or_else(|| cli.steam_dir.clone())
-        .or_else(vapourfly_core::config::VapourflyConfig::detect_steam_dir);
+        .or_else(|| steam::detect_steam_dirs(None).into_iter().next());
 
     println!("Vapourfly Doctor");
     println!("================");
 
     match &steam_dir {
         Some(dir) => {
-            println!("Steam dir: {}", dir.display());
-
-            // Detect accounts from loginusers.vdf
-            let loginusers_path = dir.join("config").join("loginusers.vdf");
-            if loginusers_path.exists() {
-                match std::fs::read_to_string(&loginusers_path) {
-                    Ok(contents) => match vapourfly_core::steam::parse_text_vdf(&contents) {
-                        Ok(root) => {
-                            if let Some(users) = root.child_object(&["users"]) {
-                                if let VdfNode::Object(entries) = users {
-                                    let count = entries.len();
-                                    println!("Accounts:  {count} detected");
-                                    for (steam_id, node) in entries {
-                                        let persona =
-                                            node.first_string("PersonaName").unwrap_or("?");
-                                        let account =
-                                            node.first_string("AccountName").unwrap_or("?");
-                                        let most_recent =
-                                            node.first_string("MostRecent").unwrap_or("0");
-                                        let marker =
-                                            if most_recent == "1" { " (active)" } else { "" };
-                                        println!("  - {persona} ({account}) [{steam_id}]{marker}");
-                                    }
-                                }
-                            } else {
-                                println!("Accounts:  none found");
-                            }
-                        }
-                        Err(e) => {
-                            println!("Accounts:  parse error ({e})");
-                        }
-                    },
-                    Err(e) => {
-                        println!("Accounts:  cannot read loginusers.vdf ({e})");
-                    }
-                }
+            // Steam dir
+            if cli.verbose {
+                println!("Steam dir:     {}", dir.display());
             } else {
-                println!("Accounts:  loginusers.vdf not found");
+                println!("Steam dir:     {}", steam::redact_path(dir));
             }
 
-            // Detect library folders from libraryfolders.vdf
-            let libraryfolders_path = dir.join("config").join("libraryfolders.vdf");
-            if libraryfolders_path.exists() {
-                match std::fs::read_to_string(&libraryfolders_path) {
-                    Ok(contents) => match vapourfly_core::steam::parse_text_vdf(&contents) {
-                        Ok(root) => {
-                            if let Some(folders) = root.child_object(&["LibraryFolders"]) {
-                                if let VdfNode::Object(entries) = folders {
-                                    let folder_count = entries
-                                        .iter()
-                                        .filter(|(k, v)| {
-                                            k.chars().all(|c| c.is_ascii_digit())
-                                                && matches!(v, VdfNode::Object(_))
-                                        })
-                                        .count();
-                                    println!("Library folders: {folder_count}");
-                                    for (key, node) in entries {
-                                        if !key.chars().all(|c| c.is_ascii_digit()) {
-                                            continue;
-                                        }
-                                        if let Some(path) = node.first_string("path") {
-                                            let app_count = node
-                                                .child_object(&["apps"])
-                                                .and_then(|apps| {
-                                                    if let VdfNode::Object(app_entries) = apps {
-                                                        Some(app_entries.len())
-                                                    } else {
-                                                        None
-                                                    }
-                                                })
-                                                .unwrap_or(0);
-                                            println!("  - {path} ({app_count} apps)");
-                                        }
-                                    }
-                                }
-                            } else {
-                                println!("Library folders: none found");
-                            }
-                        }
-                        Err(e) => {
-                            println!("Library folders: parse error ({e})");
-                        }
-                    },
-                    Err(e) => {
-                        println!("Library folders: cannot read libraryfolders.vdf ({e})");
-                    }
+            // Accounts
+            let accounts = steam::detect_accounts(dir).unwrap_or_default();
+            let selected = steam::select_account(&accounts, cli.account.as_deref()).ok();
+            println!("Accounts:      {} detected", accounts.len());
+            if let Some(acc) = selected {
+                if cli.verbose {
+                    println!(
+                        "Selected:      {} ({}) [{}]",
+                        acc.persona_name, acc.account_name, acc.steam_id64
+                    );
+                } else {
+                    println!(
+                        "Selected:      {} (***) [{}]",
+                        acc.persona_name,
+                        mask_id(&acc.steam_id64)
+                    );
+                }
+            }
+
+            // Libraries
+            let folders = steam::detect_library_folders(dir).unwrap_or_default();
+            println!("Libraries:     {}", folders.len());
+            if cli.verbose {
+                for f in &folders {
+                    println!("  - {}", f.display());
+                }
+            }
+
+            // Cloud storage
+            if let Some(acc) = selected {
+                let cloud_path = dir
+                    .join("userdata")
+                    .join(&acc.steam_id64)
+                    .join("config/cloudstorage/cloud-storage-namespace-1.json");
+                if cloud_path.exists() {
+                    println!("Cloud storage: available");
+                } else {
+                    println!("Cloud storage: not found");
                 }
             } else {
-                println!("Library folders: libraryfolders.vdf not found");
+                println!("Cloud storage: (no account selected)");
+            }
+
+            // Cache root
+            let cache_dir = vapourfly_core::config::default_cache_dir();
+            if cli.verbose {
+                println!("Cache root:    {}", cache_dir.display());
+            } else {
+                println!("Cache root:    {}", steam::redact_path(&cache_dir));
             }
         }
         None => {
-            println!("Steam dir: (not detected)");
+            println!("Steam dir:     (not detected)");
             println!("Hint: pass --steam-dir or set VAPOURFLY_STEAM_DIR");
         }
     }
 
     if let Some(fixtures) = &cli.fixtures {
-        println!("Fixtures:  {}", fixtures.display());
+        if cli.verbose {
+            println!("Fixtures:      {}", fixtures.display());
+        } else {
+            println!("Fixtures:      enabled");
+        }
     }
-    println!("Verbose:   {}", cli.verbose);
-    println!("Offline:   {}", cli.offline);
+
     Ok(())
 }
 
@@ -538,10 +510,19 @@ fn cmd_accounts_list(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         } else {
             ""
         };
-        println!(
-            "{} ({}) [{}]{}",
-            acc.persona_name, acc.account_name, acc.steam_id64, marker
-        );
+        if cli.verbose {
+            println!(
+                "{} ({}) [{}]{}",
+                acc.persona_name, acc.account_name, acc.steam_id64, marker
+            );
+        } else {
+            println!(
+                "{} (***) [{}]{}",
+                acc.persona_name,
+                mask_id(&acc.steam_id64),
+                marker
+            );
+        }
     }
     Ok(())
 }
@@ -551,34 +532,71 @@ fn cmd_scan(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error::E
         .fixtures
         .clone()
         .or_else(|| cli.steam_dir.clone())
-        .or_else(vapourfly_core::config::VapourflyConfig::detect_steam_dir);
+        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
+        .ok_or("no Steam directory detected")?;
 
-    let steam_dir_display = steam_dir
-        .as_ref()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "(not detected)".into());
+    let opts = steam::ScanOptions {
+        steam_dir,
+        account: cli.account.clone(),
+        fixtures: cli.fixtures.clone(),
+    };
+
+    let result = steam::scan_library(&opts)?;
 
     match format {
         OutputFormat::Table => {
-            println!("Vapourfly Scan");
-            println!("==============");
-            println!("Steam dir: {steam_dir_display}");
-            println!("Status:    stub -- full scan not yet wired up");
+            println!(
+                "{:<10} {:<40} {:<10} {:<12} {:<12}",
+                "AppID", "Name", "Installed", "Playtime", "Collections"
+            );
+            println!("{}", "-".repeat(86));
+            for game in &result.games {
+                let installed = if game.installed { "yes" } else { "no" };
+                let playtime = game.playtime_minutes.unwrap_or(0);
+                let coll_count = game.steam_collections.len();
+                println!(
+                    "{:<10} {:<40} {:<10} {:<12} {:<12}",
+                    game.app_id,
+                    truncate(&game.name, 38),
+                    installed,
+                    playtime,
+                    coll_count
+                );
+            }
             println!();
-            println!("  When implemented, this command will:");
-            println!("  - Parse app manifests in steamapps/");
-            println!("  - Merge playtime from localconfig.vdf");
-            println!("  - Resolve collection membership from cloud storage");
-            println!("  - Display a table of all detected games");
+            println!("{} games found", result.games.len());
+            if !result.warnings.is_empty() {
+                println!("Warnings:");
+                for w in &result.warnings {
+                    println!("  [{}] {}", w.code, w.message);
+                }
+            }
         }
         OutputFormat::Json => {
+            let mut sorted: Vec<&_> = result.games.iter().collect();
+            sorted.sort_by_key(|g| g.app_id);
+
+            let games_json: Vec<serde_json::Value> = sorted
+                .iter()
+                .map(|g| {
+                    serde_json::json!({
+                        "app_id": g.app_id,
+                        "name": g.name,
+                        "installed": g.installed,
+                        "playtime_minutes": g.playtime_minutes,
+                        "playtime_2wks_minutes": g.playtime_2wks_minutes,
+                        "collections": g.steam_collections,
+                        "is_hidden": g.is_hidden,
+                    })
+                })
+                .collect();
+
             let output = serde_json::json!({
-                "schema": "vapourfly.scan.v1",
-                "steam_dir": steam_dir_display,
-                "games": [],
-                "warnings": [],
-                "stub": true,
-                "message": "full scan not yet wired up"
+                "schema": VAPOURFLY_SCAN_SCHEMA,
+                "steam_dir": result.steam_dir,
+                "account": result.account,
+                "games": games_json,
+                "warnings": result.warnings,
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         }
@@ -594,8 +612,14 @@ fn cmd_collections_list(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
         .ok_or("no Steam directory detected")?;
 
+    let accounts = steam::detect_accounts(&steam_dir)?;
+    let selected = steam::select_account(&accounts, cli.account.as_deref())?;
+
     let cloud_path = steam_dir
-        .join("userdata/76561198000000000/config/cloudstorage/cloud-storage-namespace-1.json");
+        .join("userdata")
+        .join(&selected.steam_id64)
+        .join("config/cloudstorage/cloud-storage-namespace-1.json");
+
     if !cloud_path.exists() {
         println!("No cloud storage file found.");
         return Ok(());
@@ -631,8 +655,14 @@ fn cmd_collections_export(cli: &Cli, out: PathBuf) -> Result<(), Box<dyn std::er
         .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
         .ok_or("no Steam directory detected")?;
 
+    let accounts = steam::detect_accounts(&steam_dir)?;
+    let selected = steam::select_account(&accounts, cli.account.as_deref())?;
+
     let cloud_path = steam_dir
-        .join("userdata/76561198000000000/config/cloudstorage/cloud-storage-namespace-1.json");
+        .join("userdata")
+        .join(&selected.steam_id64)
+        .join("config/cloudstorage/cloud-storage-namespace-1.json");
+
     let cloud = steam::read_cloud_storage(&cloud_path)?;
     let collections = steam::read_user_collections(&cloud)?;
 
@@ -647,31 +677,271 @@ fn cmd_collections_export(cli: &Cli, out: PathBuf) -> Result<(), Box<dyn std::er
 }
 
 fn cmd_junk_preview(
-    _cli: &Cli,
-    _format: OutputFormat,
-    _strict: bool,
-    _aggressive: bool,
+    cli: &Cli,
+    format: OutputFormat,
+    strict: bool,
+    aggressive: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    not_implemented("junk preview")
+    if strict && aggressive {
+        return Err("cannot specify both --strict and --aggressive".into());
+    }
+
+    let mode = if strict {
+        JunkMode::Strict
+    } else if aggressive {
+        JunkMode::Aggressive
+    } else {
+        JunkMode::Default
+    };
+
+    let steam_dir = cli
+        .fixtures
+        .clone()
+        .or_else(|| cli.steam_dir.clone())
+        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
+        .ok_or("no Steam directory detected")?;
+
+    let scan_result = steam::scan_library(&steam::ScanOptions {
+        steam_dir,
+        account: cli.account.clone(),
+        fixtures: cli.fixtures.clone(),
+    })?;
+
+    // Print scan warnings to stderr
+    for w in &scan_result.warnings {
+        eprintln!("warning: [{}] {}", w.code, w.message);
+    }
+
+    let rules = JunkRules::default();
+    let overrides = ManualOverrides::default();
+    let decisions = evaluate_junk(&scan_result.games, &rules, &mode, &overrides);
+
+    match format {
+        OutputFormat::Table => {
+            println!(
+                "{:<10} {:<32} {:>10} {:>10}  Classification",
+                "App ID", "Name", "Playtime", "Confidence"
+            );
+            println!("{}", "-".repeat(86));
+
+            for (game, decision) in scan_result.games.iter().zip(decisions.iter()) {
+                let playtime = game
+                    .playtime_minutes
+                    .map(|m| format!("{m} min"))
+                    .unwrap_or_else(|| "N/A".into());
+
+                let confidence = format!("{}%", (decision.confidence * 100.0) as u32);
+
+                let classification = if decision.is_junk {
+                    let reasons: Vec<String> =
+                        decision.matched.iter().map(format_junk_signal).collect();
+                    format!("junk \u{2014} {}", reasons.join(", "))
+                } else {
+                    "ok".into()
+                };
+
+                println!(
+                    "{:<10} {:<32} {:>10} {:>10}  {}",
+                    game.app_id,
+                    truncate(&game.name, 30),
+                    playtime,
+                    confidence,
+                    classification
+                );
+            }
+
+            let junk_count = decisions.iter().filter(|d| d.is_junk).count();
+            println!();
+            println!(
+                "{} games scanned, {} junk candidates (mode: {})",
+                decisions.len(),
+                junk_count,
+                format_junk_mode(&mode)
+            );
+        }
+        OutputFormat::Json => {
+            let result = JunkPreviewResult {
+                schema: VAPOURFLY_JUNK_PREVIEW_SCHEMA.to_string(),
+                decisions,
+                rules,
+                mode,
+            };
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+    }
+
+    Ok(())
 }
 
 fn cmd_junk_apply(
-    _cli: &Cli,
-    _collection: String,
+    cli: &Cli,
+    collection: String,
     dry_run: bool,
     confirm: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_write_flags(dry_run, confirm)?;
-    not_implemented("junk apply")
+
+    let steam_dir = cli
+        .fixtures
+        .clone()
+        .or_else(|| cli.steam_dir.clone())
+        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
+        .ok_or("no Steam directory detected")?;
+
+    let accounts = steam::detect_accounts(&steam_dir)?;
+    let selected = steam::select_account(&accounts, cli.account.as_deref())?;
+
+    let cloud_path = steam_dir
+        .join("userdata")
+        .join(&selected.steam_id64)
+        .join("config/cloudstorage/cloud-storage-namespace-1.json");
+
+    let scan_result = steam::scan_library(&steam::ScanOptions {
+        steam_dir,
+        account: cli.account.clone(),
+        fixtures: cli.fixtures.clone(),
+    })?;
+
+    let rules = JunkRules::default();
+    let overrides = ManualOverrides::default();
+    let decisions = evaluate_junk(&scan_result.games, &rules, &JunkMode::Default, &overrides);
+
+    let mut junk_app_ids: Vec<u32> = decisions
+        .iter()
+        .filter(|d| d.is_junk)
+        .map(|d| d.app_id)
+        .collect();
+    junk_app_ids.sort();
+    junk_app_ids.dedup();
+
+    if junk_app_ids.is_empty() {
+        println!("No junk candidates found.");
+        return Ok(());
+    }
+
+    let cloud = steam::read_cloud_storage(&cloud_path)?;
+    let plan = steam::generate_write_plan(
+        &cloud,
+        vec![WriteOp::UpsertCollection {
+            id: collection.clone(),
+            added: junk_app_ids.clone(),
+            removed: vec![],
+        }],
+        cloud_path.clone(),
+    )?;
+
+    println!("Junk Apply");
+    println!("==========");
+    println!("Collection: {collection}");
+    println!("Junk games: {}", junk_app_ids.len());
+    println!();
+
+    println!("Diff:");
+    for change in &plan.diff.collections_changed {
+        println!("  Collection '{}': {}", change.id, change.action);
+    }
+    if !plan.diff.app_ids_added.is_empty() {
+        println!("  App IDs to add: {}", plan.diff.app_ids_added.len());
+    }
+    if !plan.diff.app_ids_removed.is_empty() {
+        println!("  App IDs to remove: {}", plan.diff.app_ids_removed.len());
+    }
+    println!("  Unchanged entries: {}", plan.diff.unchanged_count);
+
+    if dry_run {
+        println!();
+        println!("Dry run complete. No changes made.");
+    } else {
+        steam::check_write_safety(&cloud_path, false)?;
+        steam::execute_write_plan(&plan, 5)?;
+        println!();
+        println!("Write complete.");
+        println!("  Backup: {}", plan.backup_path.display());
+    }
+
+    Ok(())
 }
 
 fn cmd_junk_hide(
-    _cli: &Cli,
+    cli: &Cli,
     dry_run: bool,
     confirm: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_write_flags(dry_run, confirm)?;
-    not_implemented("junk hide")
+
+    let steam_dir = cli
+        .fixtures
+        .clone()
+        .or_else(|| cli.steam_dir.clone())
+        .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
+        .ok_or("no Steam directory detected")?;
+
+    let accounts = steam::detect_accounts(&steam_dir)?;
+    let selected = steam::select_account(&accounts, cli.account.as_deref())?;
+
+    let cloud_path = steam_dir
+        .join("userdata")
+        .join(&selected.steam_id64)
+        .join("config/cloudstorage/cloud-storage-namespace-1.json");
+
+    let scan_result = steam::scan_library(&steam::ScanOptions {
+        steam_dir,
+        account: cli.account.clone(),
+        fixtures: cli.fixtures.clone(),
+    })?;
+
+    let rules = JunkRules::default();
+    let overrides = ManualOverrides::default();
+    let decisions = evaluate_junk(&scan_result.games, &rules, &JunkMode::Default, &overrides);
+
+    let mut junk_app_ids: Vec<u32> = decisions
+        .iter()
+        .filter(|d| d.is_junk)
+        .map(|d| d.app_id)
+        .collect();
+    junk_app_ids.sort();
+    junk_app_ids.dedup();
+
+    if junk_app_ids.is_empty() {
+        println!("No junk candidates found.");
+        return Ok(());
+    }
+
+    let cloud = steam::read_cloud_storage(&cloud_path)?;
+    let plan = steam::generate_write_plan(
+        &cloud,
+        vec![WriteOp::AddToHidden {
+            app_ids: junk_app_ids.clone(),
+        }],
+        cloud_path.clone(),
+    )?;
+
+    println!("Junk Hide");
+    println!("=========");
+    println!("Junk games: {}", junk_app_ids.len());
+    println!();
+
+    println!("Diff:");
+    if !plan.diff.hidden_app_ids_added.is_empty() {
+        println!(
+            "  Hidden app IDs to add: {}",
+            plan.diff.hidden_app_ids_added.len()
+        );
+    }
+    println!("  Unchanged entries: {}", plan.diff.unchanged_count);
+
+    if dry_run {
+        println!();
+        println!("Dry run complete. No changes made.");
+    } else {
+        steam::check_write_safety(&cloud_path, false)?;
+        steam::execute_write_plan(&plan, 5)?;
+        println!();
+        println!("Write complete.");
+        println!("  Backup: {}", plan.backup_path.display());
+    }
+
+    Ok(())
 }
 
 fn cmd_recommend(
@@ -721,27 +991,29 @@ fn cmd_sync_collection(
         .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
         .ok_or("no Steam directory detected")?;
 
-    let cloud_path = steam_dir
-        .join("userdata/76561198000000000/config/cloudstorage/cloud-storage-namespace-1.json");
-    let cloud = steam::read_cloud_storage(&cloud_path)?;
+    let accounts = steam::detect_accounts(&steam_dir)?;
+    let selected = steam::select_account(&accounts, cli.account.as_deref())?;
 
-    // Create a test collection
-    let now = chrono::Utc::now().timestamp();
-    let mut cloud_copy = cloud.clone();
-    steam::upsert_collection(
-        &mut cloud_copy,
-        &id,
-        &format!("Vapourfly {id}"),
-        vec![730, 223850],
-        now,
-    )?;
+    let cloud_path = steam_dir
+        .join("userdata")
+        .join(&selected.steam_id64)
+        .join("config/cloudstorage/cloud-storage-namespace-1.json");
+
+    let cloud = steam::read_cloud_storage(&cloud_path)?;
+    let collections = steam::read_user_collections(&cloud)?;
+
+    // Look up the collection by ID
+    let collection = collections
+        .iter()
+        .find(|c| c.id == id)
+        .ok_or_else(|| format!("collection '{}' not found in cloud storage", id))?;
 
     // Generate write plan
     let plan = steam::generate_write_plan(
         &cloud,
         vec![WriteOp::UpsertCollection {
             id: id.clone(),
-            added: vec![730, 223850],
+            added: collection.app_ids.clone(),
             removed: vec![],
         }],
         cloud_path.clone(),
@@ -752,29 +1024,26 @@ fn cmd_sync_collection(
     println!("Target: {}", cloud_path.display());
     println!();
     println!("Diff:");
-    println!("  Collections to update: {}", plan.operations.len());
-    for op in &plan.operations {
-        match op {
-            WriteOp::UpsertCollection { id, added, removed } => {
-                println!("    {id}: +{} -{}", added.len(), removed.len());
-            }
-            WriteOp::AddToHidden { app_ids } => {
-                println!("    hidden: +{}", app_ids.len());
-            }
-        }
+    for change in &plan.diff.collections_changed {
+        println!("  Collection '{}': {}", change.id, change.action);
     }
+    if !plan.diff.app_ids_added.is_empty() {
+        println!("  App IDs to add: {}", plan.diff.app_ids_added.len());
+    }
+    if !plan.diff.app_ids_removed.is_empty() {
+        println!("  App IDs to remove: {}", plan.diff.app_ids_removed.len());
+    }
+    println!("  Unchanged entries: {}", plan.diff.unchanged_count);
 
     if dry_run {
         println!();
         println!("Dry run complete. No changes made.");
     } else {
-        // Safety check
         steam::check_write_safety(&cloud_path, false)?;
-
-        // Execute
-        steam::execute_write_plan(&plan)?;
+        steam::execute_write_plan(&plan, 5)?;
         println!();
         println!("Write complete.");
+        println!("  Backup: {}", plan.backup_path.display());
     }
 
     Ok(())
@@ -800,8 +1069,13 @@ fn cmd_backup_list(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::e
         .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
         .ok_or("no Steam directory detected")?;
 
+    let accounts = steam::detect_accounts(&steam_dir)?;
+    let selected = steam::select_account(&accounts, cli.account.as_deref())?;
+
     let cloud_path = steam_dir
-        .join("userdata/76561198000000000/config/cloudstorage/cloud-storage-namespace-1.json");
+        .join("userdata")
+        .join(&selected.steam_id64)
+        .join("config/cloudstorage/cloud-storage-namespace-1.json");
     let backups = steam::list_backups(&cloud_path)?;
 
     match format {
@@ -819,7 +1093,9 @@ fn cmd_backup_list(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::e
                         .unwrap_or_default();
                     println!(
                         "{:<50} {:<20} {:<12}",
-                        name, backup.created_at, backup.sha256_prefix
+                        name,
+                        backup.created_at.format("%Y%m%dT%H%M%SZ"),
+                        &backup.sha256[..8]
                     );
                 }
             }
@@ -831,7 +1107,7 @@ fn cmd_backup_list(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::e
                     serde_json::json!({
                         "path": b.path.display().to_string(),
                         "created_at": b.created_at,
-                        "sha256_prefix": b.sha256_prefix,
+                        "sha256": b.sha256,
                     })
                 })
                 .collect();
@@ -886,4 +1162,46 @@ fn validate_write_flags(dry_run: bool, confirm: bool) -> Result<(), Box<dyn std:
 fn not_implemented(command: &str) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Command '{command}' is not yet implemented.");
     process::exit(2);
+}
+
+/// Mask a Steam ID, showing only the last 4 characters.
+fn mask_id(id: &str) -> String {
+    if id.len() <= 4 {
+        "***".to_string()
+    } else {
+        format!("***{}", &id[id.len() - 4..])
+    }
+}
+
+/// Truncate a string to `max_len` display characters, adding an ellipsis if truncated.
+fn truncate(s: &str, max_len: usize) -> String {
+    if s.chars().count() <= max_len {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max_len - 1).collect();
+        format!("{truncated}\u{2026}")
+    }
+}
+
+/// Format a [`JunkSignal`] into a human-readable reason string.
+fn format_junk_signal(signal: &JunkSignal) -> String {
+    match signal {
+        JunkSignal::LowPlaytime { minutes } => format!("low playtime ({minutes}m)"),
+        JunkSignal::ShortCompletion { seconds, .. } => {
+            let h = *seconds as f32 / 3600.0;
+            format!("short story ({h:.1}h)")
+        }
+        JunkSignal::LowRating { rating_0_5, .. } => {
+            format!("low rating ({rating_0_5:.1})")
+        }
+    }
+}
+
+/// Format a [`JunkMode`] into a display string.
+fn format_junk_mode(mode: &JunkMode) -> &'static str {
+    match mode {
+        JunkMode::Default => "default",
+        JunkMode::Strict => "strict",
+        JunkMode::Aggressive => "aggressive",
+    }
 }

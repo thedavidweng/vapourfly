@@ -6,6 +6,7 @@
 
 pub mod config;
 pub mod error;
+pub mod junk;
 pub mod models;
 pub mod steam;
 
