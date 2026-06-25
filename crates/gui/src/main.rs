@@ -2,11 +2,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use eframe::egui;
+use vapourfly_core::config::VapourflyConfig;
 use vapourfly_core::junk::evaluate_junk;
 use vapourfly_core::models::*;
 use vapourfly_core::recommend::recommend;
 use vapourfly_core::steam::backup::list_backups;
 use vapourfly_core::steam::scan::{ScanOptions, scan_library};
+use vapourfly_core::steam::BackupInfo;
 
 // ---------------------------------------------------------------------------
 // View enum
@@ -64,6 +66,17 @@ impl View {
 }
 
 // ---------------------------------------------------------------------------
+// Pending action for confirmation dialog
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+enum PendingAction {
+    JunkApply,
+    JunkHide,
+    BackupRestore(PathBuf),
+}
+
+// ---------------------------------------------------------------------------
 // Junk mode
 // ---------------------------------------------------------------------------
 
@@ -85,10 +98,31 @@ impl JunkModeChoice {
 }
 
 // ---------------------------------------------------------------------------
-// Background scan result channel
+// Background result channels
 // ---------------------------------------------------------------------------
 
 static SCAN_RESULT: Mutex<Option<vapourfly_core::Result<ScanResult>>> = Mutex::new(None);
+static WRITE_RESULT: Mutex<Option<Result<String, String>>> = Mutex::new(None);
+static ENRICH_RESULT: Mutex<Option<Result<vapourfly_api::enrichment::EnrichmentSummary, String>>> =
+    Mutex::new(None);
+
+// ---------------------------------------------------------------------------
+// Config write struct (for serializing settings to TOML)
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Serialize)]
+struct ConfigWrite {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    steam_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lang: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    backup_retention_count: Option<u32>,
+}
 
 // ---------------------------------------------------------------------------
 // App state
@@ -100,7 +134,11 @@ struct VapourflyApp {
     current_view: View,
     loading: bool,
     error: Option<String>,
+    success_msg: Option<String>,
     fixtures_path: Option<PathBuf>,
+
+    // Config
+    config: Option<VapourflyConfig>,
 
     // Library view
     search_query: String,
@@ -113,6 +151,7 @@ struct VapourflyApp {
     junk_mode: JunkModeChoice,
     junk_results: Vec<JunkDecision>,
     junk_selected: std::collections::HashSet<u32>,
+    junk_collection_name: String,
 
     // Recommend view
     recommend_minutes: String,
@@ -132,34 +171,88 @@ struct VapourflyApp {
     // Data Sources view
     has_igdb: bool,
     has_rawg: bool,
+    source_statuses: Vec<vapourfly_api::enrichment::SourceStatus>,
 
     // Backups view
-    backups: Vec<BackupEntry>,
+    backups: Vec<BackupInfo>,
 
     // Settings view
     steam_dir_edit: String,
     account_edit: String,
     cc_edit: String,
     lang_edit: String,
-}
+    backup_retention_edit: String,
+    allow_steam_running: bool,
+    settings_save_msg: Option<String>,
 
-/// A backup entry for display.
-#[derive(Clone, Debug)]
-struct BackupEntry {
-    #[allow(dead_code)]
-    path: PathBuf,
-    filename: String,
-    size_bytes: u64,
+    // Write operations
+    write_loading: bool,
+    write_result: Option<Result<String, String>>,
+    show_confirm_dialog: bool,
+    pending_action: Option<PendingAction>,
+
+    // Cache refresh
+    cache_refresh_loading: bool,
+    cache_refresh_msg: Option<String>,
 }
 
 impl VapourflyApp {
     fn new(fixtures_path: Option<PathBuf>) -> Self {
+        // Load configuration
+        let config = VapourflyConfig::from_cli_and_env(vapourfly_core::config::CliOverrides {
+            steam_dir: fixtures_path.clone(),
+            account: None,
+        })
+        .ok();
+
+        let steam_dir_edit = config
+            .as_ref()
+            .map(|c| c.steam_dir.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        let account_edit = config
+            .as_ref()
+            .and_then(|c| c.account.clone())
+            .unwrap_or_default();
+
+        let cc_edit = config
+            .as_ref()
+            .map(|c| c.cc.clone())
+            .unwrap_or_else(|| "US".into());
+
+        let lang_edit = config
+            .as_ref()
+            .map(|c| c.lang.clone())
+            .unwrap_or_else(|| "english".into());
+
+        let backup_retention_edit = config
+            .as_ref()
+            .map(|c| c.backup_retention_count.to_string())
+            .unwrap_or_else(|| "5".into());
+
+        let has_igdb = config
+            .as_ref()
+            .map(|c| c.has_igdb_credentials)
+            .unwrap_or(false);
+
+        let has_rawg = config
+            .as_ref()
+            .map(|c| c.has_rawg_credentials)
+            .unwrap_or(false);
+
+        // Load source cache statuses
+        let cache_root = vapourfly_core::config::default_cache_dir();
+        let source_statuses = vapourfly_api::enrichment::source_status(&cache_root);
+
         Self {
             scan_result: None,
             current_view: View::Library,
             loading: false,
             error: None,
+            success_msg: None,
             fixtures_path,
+
+            config,
 
             search_query: String::new(),
             filter_installed: false,
@@ -170,6 +263,7 @@ impl VapourflyApp {
             junk_mode: JunkModeChoice::Default,
             junk_results: Vec::new(),
             junk_selected: std::collections::HashSet::new(),
+            junk_collection_name: "junk".into(),
 
             recommend_minutes: "120".into(),
             recommend_count: "5".into(),
@@ -183,17 +277,51 @@ impl VapourflyApp {
 
             collections: Vec::new(),
 
-            has_igdb: std::env::var("VAPOURFLY_IGDB_CLIENT_ID").is_ok()
-                && std::env::var("VAPOURFLY_IGDB_CLIENT_SECRET").is_ok(),
-            has_rawg: std::env::var("VAPOURFLY_RAWG_KEY").is_ok(),
+            has_igdb,
+            has_rawg,
+            source_statuses,
 
             backups: Vec::new(),
 
-            steam_dir_edit: String::new(),
-            account_edit: String::new(),
-            cc_edit: "us".into(),
-            lang_edit: "english".into(),
+            steam_dir_edit,
+            account_edit,
+            cc_edit,
+            lang_edit,
+            backup_retention_edit,
+            allow_steam_running: false,
+            settings_save_msg: None,
+
+            write_loading: false,
+            write_result: None,
+            show_confirm_dialog: false,
+            pending_action: None,
+
+            cache_refresh_loading: false,
+            cache_refresh_msg: None,
         }
+    }
+
+    /// Resolve the cloud storage path for the current config.
+    fn cloud_storage_path(&self) -> Result<PathBuf, String> {
+        let config = self
+            .config
+            .as_ref()
+            .ok_or("Configuration not loaded. Set Steam directory in Settings.")?;
+
+        let accounts =
+            vapourfly_core::steam::detect_accounts(&config.steam_dir).map_err(|e| {
+                format!("Failed to detect Steam accounts: {e}")
+            })?;
+
+        let selected =
+            vapourfly_core::steam::select_account(&accounts, config.account.as_deref())
+                .map_err(|e| format!("Failed to select account: {e}"))?;
+
+        Ok(config
+            .steam_dir
+            .join("userdata")
+            .join(&selected.steam_id64)
+            .join("config/cloudstorage/cloud-storage-namespace-1.json"))
     }
 
     fn start_scan(&mut self, ctx: &egui::Context) {
@@ -202,23 +330,127 @@ impl VapourflyApp {
         }
         self.loading = true;
         self.error = None;
+        self.success_msg = None;
 
         let ctx = ctx.clone();
         let fixtures = self.fixtures_path.clone();
 
-        std::thread::spawn(move || {
-            let opts = ScanOptions {
-                steam_dir: dirs::home_dir()
+        // Use config steam_dir if available, otherwise auto-detect
+        let steam_dir = self
+            .config
+            .as_ref()
+            .map(|c| c.steam_dir.clone())
+            .or_else(|| vapourfly_core::config::VapourflyConfig::detect_steam_dir())
+            .unwrap_or_else(|| {
+                dirs::home_dir()
                     .unwrap_or_default()
                     .join(".steam")
-                    .join("steam"),
-                account: None,
+                    .join("steam")
+            });
+
+        let account = self.config.as_ref().and_then(|c| c.account.clone());
+
+        std::thread::spawn(move || {
+            let opts = ScanOptions {
+                steam_dir,
+                account,
                 fixtures,
             };
 
             let result = scan_library(&opts);
             ctx.request_repaint();
             SCAN_RESULT.lock().unwrap().replace(result);
+        });
+    }
+
+    /// Execute a pending write action in a background thread.
+    fn execute_pending_action(&mut self) {
+        let action = match self.pending_action.take() {
+            Some(a) => a,
+            None => return,
+        };
+
+        let cloud_path = match self.cloud_storage_path() {
+            Ok(p) => p,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
+
+        self.write_loading = true;
+        self.write_result = None;
+        self.success_msg = None;
+
+        let junk_results = self.junk_results.clone();
+        let collection_name = self.junk_collection_name.clone();
+        let allow_steam_running = self.allow_steam_running;
+
+        std::thread::spawn(move || {
+            let result = match action {
+                PendingAction::JunkApply => {
+                    execute_junk_apply(
+                        cloud_path,
+                        junk_results,
+                        collection_name,
+                        allow_steam_running,
+                    )
+                }
+                PendingAction::JunkHide => {
+                    execute_junk_hide(cloud_path, junk_results, allow_steam_running)
+                }
+                PendingAction::BackupRestore(backup_path) => {
+                    execute_backup_restore(backup_path, cloud_path, allow_steam_running)
+                }
+            };
+
+            WRITE_RESULT.lock().unwrap().replace(result);
+        });
+    }
+
+    /// Start a cache refresh for the given source (or all sources).
+    fn start_cache_refresh(&mut self, source: Option<String>, ctx: &egui::Context) {
+        if self.cache_refresh_loading {
+            return;
+        }
+
+        let games = match &self.scan_result {
+            Some(scan) => scan.games.clone(),
+            None => {
+                self.cache_refresh_msg = Some("Scan your library first to enable cache refresh.".into());
+                return;
+            }
+        };
+
+        self.cache_refresh_loading = true;
+        self.cache_refresh_msg = None;
+        self.success_msg = None;
+
+        let cache_root = vapourfly_core::config::default_cache_dir();
+        let ctx = ctx.clone();
+
+        std::thread::spawn(move || {
+            let cache = vapourfly_api::cache::DiskCache::new(cache_root);
+
+            let sources = match source {
+                Some(s) => vec![s],
+                None => vapourfly_api::enrichment::ALL_SOURCES
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            };
+
+            let options = vapourfly_api::enrichment::EnrichmentOptions {
+                sources,
+                offline: false,
+                force: true,
+            };
+
+            let mut games = games;
+            let summary = vapourfly_api::enrichment::enrich_games(&mut games, &cache, &options);
+
+            ctx.request_repaint();
+            ENRICH_RESULT.lock().unwrap().replace(Ok(summary));
         });
     }
 
@@ -245,7 +477,8 @@ impl VapourflyApp {
                 }
                 if !self.search_query.is_empty() {
                     let q = self.search_query.to_lowercase();
-                    if !g.name.to_lowercase().contains(&q) && !g.app_id.to_string().contains(&q) {
+                    if !g.name.to_lowercase().contains(&q) && !g.app_id.to_string().contains(&q)
+                    {
                         return false;
                     }
                 }
@@ -253,6 +486,123 @@ impl VapourflyApp {
             })
             .collect()
     }
+
+    /// Reload source cache statuses from disk.
+    fn reload_source_statuses(&mut self) {
+        let cache_root = vapourfly_core::config::default_cache_dir();
+        self.source_statuses = vapourfly_api::enrichment::source_status(&cache_root);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Write operation helpers (run in background threads)
+// ---------------------------------------------------------------------------
+
+fn execute_junk_apply(
+    cloud_path: PathBuf,
+    junk_results: Vec<JunkDecision>,
+    collection_name: String,
+    allow_steam_running: bool,
+) -> Result<String, String> {
+    let mut junk_app_ids: Vec<u32> = junk_results
+        .iter()
+        .filter(|d| d.is_junk)
+        .map(|d| d.app_id)
+        .collect();
+    junk_app_ids.sort();
+    junk_app_ids.dedup();
+
+    if junk_app_ids.is_empty() {
+        return Err("No junk candidates found.".into());
+    }
+
+    let cloud = vapourfly_core::steam::read_cloud_storage(&cloud_path)
+        .map_err(|e| format!("Failed to read cloud storage: {e}"))?;
+
+    let plan = vapourfly_core::steam::generate_write_plan(
+        &cloud,
+        vec![WriteOp::UpsertCollection {
+            id: collection_name.clone(),
+            added: junk_app_ids.clone(),
+            removed: vec![],
+        }],
+        cloud_path.clone(),
+    )
+    .map_err(|e| format!("Failed to generate write plan: {e}"))?;
+
+    vapourfly_core::steam::check_write_safety(&cloud_path, allow_steam_running)
+        .map_err(|e| format!("Safety check failed: {e}"))?;
+
+    vapourfly_core::steam::execute_write_plan(&plan, 5)
+        .map_err(|e| format!("Write failed: {e}"))?;
+
+    Ok(format!(
+        "Applied {} junk games to collection '{}'. Backup: {}",
+        junk_app_ids.len(),
+        collection_name,
+        plan.backup_path.display()
+    ))
+}
+
+fn execute_junk_hide(
+    cloud_path: PathBuf,
+    junk_results: Vec<JunkDecision>,
+    allow_steam_running: bool,
+) -> Result<String, String> {
+    let mut junk_app_ids: Vec<u32> = junk_results
+        .iter()
+        .filter(|d| d.is_junk)
+        .map(|d| d.app_id)
+        .collect();
+    junk_app_ids.sort();
+    junk_app_ids.dedup();
+
+    if junk_app_ids.is_empty() {
+        return Err("No junk candidates found.".into());
+    }
+
+    let cloud = vapourfly_core::steam::read_cloud_storage(&cloud_path)
+        .map_err(|e| format!("Failed to read cloud storage: {e}"))?;
+
+    let plan = vapourfly_core::steam::generate_write_plan(
+        &cloud,
+        vec![WriteOp::AddToHidden {
+            app_ids: junk_app_ids.clone(),
+        }],
+        cloud_path.clone(),
+    )
+    .map_err(|e| format!("Failed to generate write plan: {e}"))?;
+
+    vapourfly_core::steam::check_write_safety(&cloud_path, allow_steam_running)
+        .map_err(|e| format!("Safety check failed: {e}"))?;
+
+    vapourfly_core::steam::execute_write_plan(&plan, 5)
+        .map_err(|e| format!("Write failed: {e}"))?;
+
+    Ok(format!(
+        "Added {} junk games to Hidden collection. Backup: {}",
+        junk_app_ids.len(),
+        plan.backup_path.display()
+    ))
+}
+
+fn execute_backup_restore(
+    backup_path: PathBuf,
+    cloud_path: PathBuf,
+    allow_steam_running: bool,
+) -> Result<String, String> {
+    vapourfly_core::steam::check_write_safety(&cloud_path, allow_steam_running)
+        .map_err(|e| format!("Safety check failed: {e}"))?;
+
+    vapourfly_core::steam::restore_backup(&backup_path, &cloud_path)
+        .map_err(|e| format!("Restore failed: {e}"))?;
+
+    let filename = backup_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    Ok(format!("Restored backup '{}'", filename))
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +640,46 @@ impl eframe::App for VapourflyApp {
             }
         }
 
+        // Poll background write result.
+        if self.write_loading {
+            let mut guard = WRITE_RESULT.lock().unwrap();
+            if let Some(result) = guard.take() {
+                self.write_loading = false;
+                match result {
+                    Ok(msg) => {
+                        self.success_msg = Some(msg);
+                        // Auto-re-scan to pick up changes
+                        self.start_scan(ctx);
+                    }
+                    Err(e) => self.error = Some(e),
+                }
+            }
+        }
+
+        // Poll background cache refresh result.
+        if self.cache_refresh_loading {
+            let mut guard = ENRICH_RESULT.lock().unwrap();
+            if let Some(result) = guard.take() {
+                self.cache_refresh_loading = false;
+                match result {
+                    Ok(summary) => {
+                        self.cache_refresh_msg = Some(format!(
+                            "Refresh complete: {} games processed, {} network fetches, {} cache hits, {} errors",
+                            summary.games_processed,
+                            summary.network_fetches,
+                            summary.cache_hits,
+                            summary.errors.len()
+                        ));
+                        self.reload_source_statuses();
+                    }
+                    Err(e) => self.cache_refresh_msg = Some(format!("Error: {e}")),
+                }
+            }
+        }
+
+        // -- Confirmation dialog -----------------------------------------------
+        self.render_confirm_dialog(ctx);
+
         // -- Left panel: navigation -----------------------------------------
         egui::SidePanel::left("nav_panel")
             .resizable(false)
@@ -325,9 +715,33 @@ impl eframe::App for VapourflyApp {
 
         // -- Central panel: current view ------------------------------------
         egui::CentralPanel::default().show(ctx, |ui| {
-            if let Some(err) = &self.error {
-                ui.colored_label(egui::Color32::RED, format!("Error: {err}"));
+            // Error and success banners (clone to avoid borrow issues)
+            let mut dismiss_error = false;
+            let mut dismiss_success = false;
+            if let Some(err) = self.error.clone() {
+                let resp = ui.horizontal(|ui| {
+                    ui.colored_label(egui::Color32::RED, format!("Error: {err}"));
+                    ui.button("✕").clicked()
+                });
+                dismiss_error = resp.inner;
                 ui.separator();
+            }
+            if let Some(msg) = self.success_msg.clone() {
+                let resp = ui.horizontal(|ui| {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(50, 180, 50),
+                        format!("✓ {msg}"),
+                    );
+                    ui.button("✕").clicked()
+                });
+                dismiss_success = resp.inner;
+                ui.separator();
+            }
+            if dismiss_error {
+                self.error = None;
+            }
+            if dismiss_success {
+                self.success_msg = None;
             }
 
             match self.current_view {
@@ -336,7 +750,7 @@ impl eframe::App for VapourflyApp {
                 View::Recommend => self.render_recommend(ui),
                 View::Playlists => self.render_playlists(ui),
                 View::Collections => self.render_collections(ui),
-                View::DataSources => self.render_data_sources(ui),
+                View::DataSources => self.render_data_sources(ui, ctx),
                 View::Backups => self.render_backups(ui),
                 View::Settings => self.render_settings(ui),
             }
@@ -346,6 +760,78 @@ impl eframe::App for VapourflyApp {
         if self.scan_result.is_none() && !self.loading && self.error.is_none() {
             self.start_scan(ctx);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Confirmation dialog
+// ---------------------------------------------------------------------------
+
+impl VapourflyApp {
+    fn render_confirm_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_confirm_dialog {
+            return;
+        }
+
+        let mut open = self.show_confirm_dialog;
+        egui::Window::new("Confirm Action")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                match &self.pending_action {
+                    Some(PendingAction::JunkApply) => {
+                        let count = self.junk_results.iter().filter(|d| d.is_junk).count();
+                        ui.label(format!(
+                            "Apply junk classification to collection '{}'?",
+                            self.junk_collection_name
+                        ));
+                        ui.label(format!("{} games will be added to the collection.", count));
+                    }
+                    Some(PendingAction::JunkHide) => {
+                        let count = self.junk_results.iter().filter(|d| d.is_junk).count();
+                        ui.label(format!(
+                            "Add {} junk games to the Hidden collection?",
+                            count
+                        ));
+                        ui.label("This will hide them from your Steam library view.");
+                    }
+                    Some(PendingAction::BackupRestore(path)) => {
+                        let filename = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        ui.label(format!("Restore backup '{}'?", filename));
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 150, 50),
+                            "This will overwrite your current cloud storage. A safety backup will be created first.",
+                        );
+                    }
+                    None => {}
+                }
+
+                if self.write_loading {
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Writing...");
+                    });
+                } else {
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("✓ Confirm").clicked() {
+                            self.execute_pending_action();
+                        }
+                        if ui.button("✕ Cancel").clicked() {
+                            self.show_confirm_dialog = false;
+                            self.pending_action = None;
+                        }
+                    });
+                }
+            });
+
+        self.show_confirm_dialog = open;
     }
 }
 
@@ -443,10 +929,6 @@ impl VapourflyApp {
 
     fn render_junk(&mut self, ui: &mut egui::Ui) {
         ui.heading("Junk Detection");
-        ui.colored_label(
-            egui::Color32::from_rgb(200, 150, 50),
-            "⚠ Preview mode — write actions (apply/hide) are disabled in v0.1.0. Use CLI for writes.",
-        );
         ui.separator();
 
         // Mode selector
@@ -550,6 +1032,44 @@ impl VapourflyApp {
                     });
                 }
             });
+
+        // Write actions
+        if junk_count > 0 {
+            ui.separator();
+            ui.strong("Actions");
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.label("Collection name:");
+                ui.text_edit_singleline(&mut self.junk_collection_name);
+            });
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                let apply_enabled = !self.write_loading && !self.junk_collection_name.is_empty();
+                if ui
+                    .add_enabled(apply_enabled, egui::Button::new("📁 Apply to Collection"))
+                    .clicked()
+                {
+                    self.pending_action = Some(PendingAction::JunkApply);
+                    self.show_confirm_dialog = true;
+                }
+
+                let hide_enabled = !self.write_loading;
+                if ui
+                    .add_enabled(hide_enabled, egui::Button::new("👁 Add to Hidden"))
+                    .clicked()
+                {
+                    self.pending_action = Some(PendingAction::JunkHide);
+                    self.show_confirm_dialog = true;
+                }
+
+                if self.write_loading {
+                    ui.spinner();
+                    ui.label("Writing...");
+                }
+            });
+        }
     }
 
     // -- Recommend view -----------------------------------------------------
@@ -607,9 +1127,12 @@ impl VapourflyApp {
                     ui.horizontal(|ui| {
                         ui.strong(&rec.name);
                         ui.label(format!("(AppID: {})", rec.app_id));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(format!("Score: {:.2}", rec.score));
-                        });
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                ui.label(format!("Score: {:.2}", rec.score));
+                            },
+                        );
                     });
                     if !rec.reasons.is_empty() {
                         ui.indent("rec_reasons", |ui| {
@@ -766,12 +1289,13 @@ impl VapourflyApp {
 
     // -- Data Sources view --------------------------------------------------
 
-    fn render_data_sources(&mut self, ui: &mut egui::Ui) {
+    fn render_data_sources(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.heading("Data Sources");
         ui.separator();
 
-        ui.label("External API credential status:");
-        ui.separator();
+        // Source credentials
+        ui.strong("API Credentials");
+        ui.add_space(4.0);
 
         let sources = [
             (
@@ -799,15 +1323,139 @@ impl VapourflyApp {
         }
 
         ui.separator();
-        ui.label("Set credentials via environment variables. See docs/API_SOURCES.md for details.");
+        ui.label("Set credentials via environment variables or ~/.config/vapourfly/config.toml.");
         ui.separator();
 
-        // Cache status
-        ui.strong("Cache Status");
-        ui.label("Use `vapourfly sources status` and `vapourfly cache refresh` CLI commands for full cache management.");
-        ui.label("GUI cache refresh will be implemented in a future release.");
+        // Cache refresh section
+        ui.strong("Cache Refresh");
+        ui.add_space(4.0);
 
-        // Offline mode indicator
+        let refresh_enabled = !self.cache_refresh_loading;
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(refresh_enabled, egui::Button::new("🔄 Refresh All"))
+                .clicked()
+            {
+                self.start_cache_refresh(None, ctx);
+            }
+            if ui
+                .add_enabled(refresh_enabled, egui::Button::new("ProtonDB"))
+                .clicked()
+            {
+                self.start_cache_refresh(Some("protondb".into()), ctx);
+            }
+            if ui
+                .add_enabled(refresh_enabled, egui::Button::new("PCGW"))
+                .clicked()
+            {
+                self.start_cache_refresh(Some("pcgw".into()), ctx);
+            }
+            if ui
+                .add_enabled(refresh_enabled, egui::Button::new("HLTB"))
+                .clicked()
+            {
+                self.start_cache_refresh(Some("hltb".into()), ctx);
+            }
+            if ui
+                .add_enabled(refresh_enabled, egui::Button::new("Steam Store"))
+                .clicked()
+            {
+                self.start_cache_refresh(Some("steam-store".into()), ctx);
+            }
+            if self.has_igdb
+                && ui
+                    .add_enabled(refresh_enabled, egui::Button::new("IGDB"))
+                    .clicked()
+            {
+                self.start_cache_refresh(Some("igdb".into()), ctx);
+            }
+            if self.has_rawg
+                && ui
+                    .add_enabled(refresh_enabled, egui::Button::new("RAWG"))
+                    .clicked()
+            {
+                self.start_cache_refresh(Some("rawg".into()), ctx);
+            }
+        });
+
+        if self.cache_refresh_loading {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Refreshing cache...");
+            });
+        }
+        if let Some(msg) = &self.cache_refresh_msg {
+            ui.label(msg);
+        }
+
+        ui.separator();
+
+        // Source cache status
+        ui.strong("Source Cache Status");
+        ui.add_space(4.0);
+
+        if self.source_statuses.is_empty() {
+            ui.label("No cache data found. Run a scan and refresh to populate cache.");
+        } else {
+            let text_height = egui::TextStyle::Body.resolve(ui.style()).size;
+            egui_extras::TableBuilder::new(ui)
+                .striped(true)
+                .resizable(true)
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .column(egui_extras::Column::auto().at_least(100.0))
+                .column(egui_extras::Column::auto().at_least(100.0))
+                .column(egui_extras::Column::auto().at_least(80.0))
+                .column(egui_extras::Column::auto().at_least(60.0))
+                .column(egui_extras::Column::auto().at_least(60.0))
+                .header(text_height * 1.4, |mut header| {
+                    header.col(|ui| {
+                        ui.strong("Source");
+                    });
+                    header.col(|ui| {
+                        ui.strong("Last Success");
+                    });
+                    header.col(|ui| {
+                        ui.strong("Entries");
+                    });
+                    header.col(|ui| {
+                        ui.strong("Stale");
+                    });
+                    header.col(|ui| {
+                        ui.strong("Cached");
+                    });
+                })
+                .body(|mut body| {
+                    for status in &self.source_statuses {
+                        body.row(text_height * 1.2, |mut row| {
+                            row.col(|ui| {
+                                ui.label(&status.name);
+                            });
+                            row.col(|ui| {
+                                let last = status
+                                    .last_success
+                                    .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+                                    .unwrap_or_else(|| "n/a".into());
+                                ui.label(last);
+                            });
+                            row.col(|ui| {
+                                ui.label(status.cache_entries.to_string());
+                            });
+                            row.col(|ui| {
+                                ui.label(status.stale_entries.to_string());
+                            });
+                            row.col(|ui| {
+                                ui.label(if status.cache_dir_exists {
+                                    "✓"
+                                } else {
+                                    "—"
+                                });
+                            });
+                        });
+                    }
+                });
+        }
+
+        // Offline mode
         ui.separator();
         ui.strong("Offline Mode");
         ui.label("Use `--offline` CLI flag to prohibit network calls and use cached data only.");
@@ -822,41 +1470,21 @@ impl VapourflyApp {
         // Refresh backups list
         if ui.button("🔄 Refresh Backups").clicked() {
             self.backups.clear();
-            if let Some(scan) = &self.scan_result {
-                // list_backups() expects the target file path (not directory),
-                // and derives the backup prefix from the file name.
-                let cloud_path = PathBuf::from(&scan.steam_dir)
-                    .join("userdata")
-                    .join(&scan.account)
-                    .join("config")
-                    .join("cloudstorage")
-                    .join("cloud-storage-namespace-1.json");
-
-                if cloud_path.exists() {
-                    match list_backups(&cloud_path) {
-                        Ok(backup_infos) => {
-                            self.backups = backup_infos
-                                .into_iter()
-                                .map(|info| {
-                                    let size =
-                                        std::fs::metadata(&info.path).map(|m| m.len()).unwrap_or(0);
-                                    BackupEntry {
-                                        filename: info
-                                            .path
-                                            .file_name()
-                                            .unwrap_or_default()
-                                            .to_string_lossy()
-                                            .to_string(),
-                                        path: info.path,
-                                        size_bytes: size,
-                                    }
-                                })
-                                .collect();
-                        }
-                        Err(e) => {
-                            self.error = Some(format!("Failed to list backups: {e}"));
+            match self.cloud_storage_path() {
+                Ok(cloud_path) => {
+                    if cloud_path.exists() {
+                        match list_backups(&cloud_path) {
+                            Ok(backups) => {
+                                self.backups = backups;
+                            }
+                            Err(e) => {
+                                self.error = Some(format!("Failed to list backups: {e}"));
+                            }
                         }
                     }
+                }
+                Err(e) => {
+                    self.error = Some(e);
                 }
             }
         }
@@ -869,39 +1497,68 @@ impl VapourflyApp {
         ui.label(format!("{} backups found", self.backups.len()));
         ui.separator();
 
-        ui.colored_label(
-            egui::Color32::from_rgb(200, 150, 50),
-            "⚠ Backup restore is disabled in GUI preview. Use `vapourfly backup restore <file>` CLI command.",
-        );
-        ui.separator();
-
         let text_height = egui::TextStyle::Body.resolve(ui.style()).size;
         egui_extras::TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(egui_extras::Column::remainder().at_least(300.0))
+            .column(egui_extras::Column::remainder().at_least(250.0))
+            .column(egui_extras::Column::auto().at_least(140.0))
             .column(egui_extras::Column::auto().at_least(100.0))
+            .column(egui_extras::Column::auto().at_least(80.0))
             .header(text_height * 1.4, |mut header| {
                 header.col(|ui| {
                     ui.strong("Filename");
                 });
                 header.col(|ui| {
-                    ui.strong("Size");
+                    ui.strong("Created");
+                });
+                header.col(|ui| {
+                    ui.strong("SHA256");
+                });
+                header.col(|ui| {
+                    ui.strong("Action");
                 });
             })
             .body(|mut body| {
                 for backup in &self.backups {
+                    let filename = backup
+                        .path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
                     body.row(text_height * 1.2, |mut row| {
                         row.col(|ui| {
-                            ui.label(&backup.filename);
+                            ui.label(&filename);
                         });
                         row.col(|ui| {
-                            ui.label(format_bytes(backup.size_bytes));
+                            ui.label(backup.created_at.format("%Y-%m-%d %H:%M:%S").to_string());
+                        });
+                        row.col(|ui| {
+                            ui.label(&backup.sha256[..8]);
+                        });
+                        row.col(|ui| {
+                            let enabled = !self.write_loading;
+                            if ui
+                                .add_enabled(enabled, egui::Button::new("↩ Restore"))
+                                .clicked()
+                            {
+                                self.pending_action =
+                                    Some(PendingAction::BackupRestore(backup.path.clone()));
+                                self.show_confirm_dialog = true;
+                            }
                         });
                     });
                 }
             });
+
+        if self.write_loading {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Restoring...");
+            });
+        }
     }
 
     // -- Settings view ------------------------------------------------------
@@ -910,19 +1567,13 @@ impl VapourflyApp {
         ui.heading("Settings");
         ui.separator();
 
-        ui.colored_label(
-            egui::Color32::from_rgb(200, 150, 50),
-            "⚠ Settings are display-only in v0.1.0 preview. Use CLI flags or config.toml for configuration.",
-        );
-        ui.separator();
-
         ui.group(|ui| {
-            ui.strong("Steam Directory Override");
+            ui.strong("Steam Directory");
             ui.horizontal(|ui| {
                 ui.label("Path:");
                 ui.text_edit_singleline(&mut self.steam_dir_edit);
             });
-            ui.label("Leave empty for auto-detection. CLI: --steam-dir");
+            ui.label("Leave empty for auto-detection.");
         });
         ui.separator();
 
@@ -932,7 +1583,7 @@ impl VapourflyApp {
                 ui.label("Account:");
                 ui.text_edit_singleline(&mut self.account_edit);
             });
-            ui.label("Leave empty for auto-selection (most recent). CLI: --account");
+            ui.label("Leave empty for auto-selection (most recent).");
         });
         ui.separator();
 
@@ -944,7 +1595,37 @@ impl VapourflyApp {
                 ui.label("Language:");
                 ui.text_edit_singleline(&mut self.lang_edit);
             });
-            ui.label("Configure in ~/.config/vapourfly/config.toml");
+        });
+        ui.separator();
+
+        ui.group(|ui| {
+            ui.strong("Backup Retention");
+            ui.horizontal(|ui| {
+                ui.label("Keep backups:");
+                ui.text_edit_singleline(&mut self.backup_retention_edit);
+            });
+            ui.label("Number of rolling backups to keep for modified files.");
+        });
+        ui.separator();
+
+        ui.group(|ui| {
+            ui.strong("Write Safety");
+            ui.checkbox(
+                &mut self.allow_steam_running,
+                "Allow writes while Steam is running",
+            );
+            ui.label("Enable with caution. Steam may overwrite changes.");
+        });
+        ui.separator();
+
+        // Save button
+        ui.horizontal(|ui| {
+            if ui.button("💾 Save Settings").clicked() {
+                self.save_settings();
+            }
+            if let Some(msg) = &self.settings_save_msg {
+                ui.label(msg);
+            }
         });
         ui.separator();
 
@@ -954,6 +1635,69 @@ impl VapourflyApp {
             ui.label("A local-first CLI/GUI tool for managing Steam game libraries.");
             ui.label("Licensed under MIT OR Apache-2.0.");
         });
+    }
+
+    /// Save settings to config.toml.
+    fn save_settings(&mut self) {
+        let config_path = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("vapourfly")
+            .join("config.toml");
+
+        // Create directory if needed
+        if let Some(parent) = config_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                self.settings_save_msg =
+                    Some(format!("Failed to create config directory: {e}"));
+                return;
+            }
+        }
+
+        let backup_retention = self.backup_retention_edit.parse::<u32>().ok();
+
+        let config = ConfigWrite {
+            steam_dir: if self.steam_dir_edit.is_empty() {
+                None
+            } else {
+                Some(self.steam_dir_edit.clone())
+            },
+            account: if self.account_edit.is_empty() {
+                None
+            } else {
+                Some(self.account_edit.clone())
+            },
+            cc: if self.cc_edit.is_empty() {
+                None
+            } else {
+                Some(self.cc_edit.clone())
+            },
+            lang: if self.lang_edit.is_empty() {
+                None
+            } else {
+                Some(self.lang_edit.clone())
+            },
+            backup_retention_count: backup_retention,
+        };
+
+        match toml::to_string_pretty(&config) {
+            Ok(toml_str) => match std::fs::write(&config_path, toml_str) {
+                Ok(()) => {
+                    self.settings_save_msg =
+                        Some(format!("Saved to {}", config_path.display()));
+                    // Reload config
+                    self.config = VapourflyConfig::from_cli_and_env(
+                        vapourfly_core::config::CliOverrides::default(),
+                    )
+                    .ok();
+                }
+                Err(e) => {
+                    self.settings_save_msg = Some(format!("Failed to write config: {e}"));
+                }
+            },
+            Err(e) => {
+                self.settings_save_msg = Some(format!("Failed to serialize config: {e}"));
+            }
+        }
     }
 }
 
@@ -971,16 +1715,6 @@ fn format_playtime(minutes: u32) -> String {
         format!("{mins}m")
     } else {
         format!("{hours}h {mins}m")
-    }
-}
-
-fn format_bytes(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
     }
 }
 
@@ -1103,13 +1837,6 @@ mod tests {
     }
 
     #[test]
-    fn format_bytes_variants() {
-        assert_eq!(format_bytes(500), "500 B");
-        assert_eq!(format_bytes(1536), "1.5 KB");
-        assert_eq!(format_bytes(1048576), "1.0 MB");
-    }
-
-    #[test]
     fn junk_mode_labels() {
         assert_eq!(JunkModeChoice::Default.label(), "Default");
         assert_eq!(JunkModeChoice::Strict.label(), "Strict");
@@ -1121,5 +1848,24 @@ mod tests {
         for view in View::ALL {
             assert!(!view.icon().is_empty());
         }
+    }
+
+    #[test]
+    fn pending_action_is_clone() {
+        let a = PendingAction::JunkApply;
+        let _b = a.clone();
+        let c = PendingAction::BackupRestore(PathBuf::from("/tmp/test"));
+        let _d = c.clone();
+    }
+
+    #[test]
+    fn app_settings_fields_initialized() {
+        let app = VapourflyApp::new(None);
+        // cc and lang should have defaults
+        assert!(!app.cc_edit.is_empty());
+        assert!(!app.lang_edit.is_empty());
+        assert!(!app.backup_retention_edit.is_empty());
+        assert!(!app.allow_steam_running);
+        assert!(app.settings_save_msg.is_none());
     }
 }

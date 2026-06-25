@@ -3746,11 +3746,14 @@ dependencies = [
 name = "vapourfly-gui"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "dirs",
  "eframe",
  "egui",
  "egui_extras",
+ "serde",
  "serde_json",
+ "toml",
  "tracing",
  "vapourfly-api",
  "vapourfly-core",

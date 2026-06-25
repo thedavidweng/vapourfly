@@ -12,5 +12,8 @@ egui_extras = { workspace = true }
 vapourfly-core = { path = "../core" }
 vapourfly-api = { path = "../api" }
 dirs = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }
+chrono = { workspace = true }
 tracing = { workspace = true }
