@@ -151,6 +151,7 @@ pub struct Game {
     pub rawg: Option<RawgData>,
     pub protondb: Option<ProtonDbData>,
     pub pcgw: Option<PcgwData>,
+    pub steam_store: Option<SteamStoreDetails>,
 }
 
 // ---------------------------------------------------------------------------
@@ -594,6 +595,7 @@ mod tests {
             rawg: None,
             protondb: None,
             pcgw: None,
+            steam_store: None,
         };
         let json = serde_json::to_string(&game).unwrap();
         let _: Game = serde_json::from_str(&json).unwrap();

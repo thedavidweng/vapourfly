@@ -213,6 +213,7 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
                 rawg: None,
                 protondb: None,
                 pcgw: None,
+                steam_store: None,
             },
         );
     }
@@ -260,6 +261,7 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
                 rawg: None,
                 protondb: None,
                 pcgw: None,
+                steam_store: None,
             },
         );
     }

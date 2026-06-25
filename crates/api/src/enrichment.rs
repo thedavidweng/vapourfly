@@ -8,7 +8,9 @@
 use std::path::Path;
 use std::time::Duration;
 
-use vapourfly_core::models::{Game, HltbData, IgdbData, PcgwData, ProtonDbData, RawgData};
+use vapourfly_core::models::{
+    Game, HltbData, IgdbData, PcgwData, ProtonDbData, RawgData, SteamStoreDetails,
+};
 
 use crate::cache::DiskCache;
 use crate::http::{CacheRecord, HttpClient};
@@ -22,7 +24,6 @@ const RAWG_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 const PROTONDB_TTL: Duration = Duration::from_secs(24 * 3600); // 1 day
 const PCGW_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 const HLTB_TTL: Duration = Duration::from_secs(30 * 24 * 3600); // 30 days
-#[allow(dead_code)]
 const STEAM_STORE_TTL: Duration = Duration::from_secs(24 * 3600);
 
 // ---------------------------------------------------------------------------
@@ -387,10 +388,7 @@ fn enrich_source(
             );
         }
         SOURCE_STEAM_STORE => {
-            // Steam Store data is already available from the local scan.
-            // This source exists for price/genre enrichment which is a
-            // future feature. Mark as skipped.
-            stats.entries_skipped = games.len();
+            enrich_steam_store(games, cache, HttpClient::new(), options, &mut stats, errors);
         }
         _ => {}
     }
@@ -467,6 +465,72 @@ fn enrich_igdb(
                 stats.errors += 1;
                 if let Ok(Some(record)) = cache.get::<IgdbData>(source, &key) {
                     game.igdb = Some(record.data);
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Steam Store enrichment helper (testable with injected HttpClient)
+// ---------------------------------------------------------------------------
+
+/// Enrich games with Steam Store data (price, genres, platforms, etc.).
+///
+/// Extracted from `enrich_source` so tests can inject a mock HTTP backend.
+/// Uses the public `appdetails` endpoint — no credentials required.
+fn enrich_steam_store(
+    games: &mut [Game],
+    cache: &DiskCache,
+    http: HttpClient,
+    options: &EnrichmentOptions,
+    stats: &mut SourceRefreshStats,
+    errors: &mut Vec<EnrichmentError>,
+) {
+    let source = SOURCE_STEAM_STORE;
+    let client = crate::steam_store::SteamStoreClient::with_http(http);
+    // Default locale; could be made configurable via EnrichmentOptions.
+    let cc = "us";
+    let lang = "english";
+    for game in games.iter_mut() {
+        let key = format!("app/{}", game.app_id);
+        if !options.force {
+            if let Ok(Some(record)) = cache.get::<SteamStoreDetails>(source, &key) {
+                if !record.stale {
+                    game.steam_store = Some(record.data);
+                    stats.entries_skipped += 1;
+                    continue;
+                }
+            }
+        }
+        if options.offline {
+            continue;
+        }
+        match client.fetch_appdetails(game.app_id, cc, lang) {
+            Ok(data) => {
+                let record = CacheRecord {
+                    source: source.to_string(),
+                    key: key.clone(),
+                    fetched_at: chrono::Utc::now(),
+                    ttl: STEAM_STORE_TTL,
+                    data: data.clone(),
+                    stale: false,
+                    etag: None,
+                };
+                let _ = cache.put(&record);
+                game.steam_store = Some(data);
+                stats.entries_refreshed += 1;
+                stats.last_success = Some(chrono::Utc::now());
+            }
+            Err(e) => {
+                errors.push(EnrichmentError {
+                    app_id: game.app_id,
+                    source: source.to_string(),
+                    message: e.to_string(),
+                });
+                stats.errors += 1;
+                if let Ok(Some(record)) = cache.get::<SteamStoreDetails>(source, &key) {
+                    game.steam_store = Some(record.data);
                 }
             }
         }
@@ -564,6 +628,7 @@ mod tests {
             rawg: None,
             protondb: None,
             pcgw: None,
+            steam_store: None,
         }
     }
 
@@ -662,6 +727,83 @@ mod tests {
             .unwrap()
             .expect("cache entry should exist");
         assert_eq!(cached.data.igdb_id, 1942);
+    }
+
+    #[test]
+    fn steam_store_enrichment_populates_game_and_cache() {
+        let body = r#"{
+            "292030": {
+                "success": true,
+                "data": {
+                    "type": "game",
+                    "name": "The Witcher 3: Wild Hunt",
+                    "is_free": false,
+                    "developers": ["CD PROJEKT RED"],
+                    "publishers": ["CD PROJEKT RED"],
+                    "genres": [{"id": 3, "description": "RPG"}],
+                    "categories": [{"id": 2, "description": "Single-player"}],
+                    "release_date": {"coming_soon": false, "date": "May 18, 2015"},
+                    "platforms": {"windows": true, "mac": true, "linux": true},
+                    "price_overview": {
+                        "currency": "USD",
+                        "initial": 3999,
+                        "final": 799,
+                        "discount_percent": 80
+                    }
+                }
+            }
+        }"#;
+
+        let mut mock = MockBackend::new();
+        mock.register(
+            "https://store.steampowered.com/",
+            HttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: body.as_bytes().to_vec(),
+            },
+        );
+        let http = HttpClient::with_backend(Box::new(mock));
+        let tmp = TempDir::new().unwrap();
+        let cache = DiskCache::new(tmp.path());
+        let options = EnrichmentOptions {
+            sources: vec![SOURCE_STEAM_STORE.to_string()],
+            offline: false,
+            force: true,
+        };
+
+        let mut games = vec![make_test_game(292030, "The Witcher 3")];
+        let mut stats = SourceRefreshStats {
+            source: SOURCE_STEAM_STORE.to_string(),
+            entries_refreshed: 0,
+            entries_skipped: 0,
+            errors: 0,
+            last_success: None,
+        };
+        let mut errors = Vec::new();
+
+        enrich_steam_store(&mut games, &cache, http, &options, &mut stats, &mut errors);
+
+        assert_eq!(stats.entries_refreshed, 1);
+        assert_eq!(stats.errors, 0);
+        assert!(errors.is_empty());
+
+        let store = games[0]
+            .steam_store
+            .as_ref()
+            .expect("steam_store should be set");
+        assert_eq!(store.name, "The Witcher 3: Wild Hunt");
+        assert!(!store.is_free);
+        let price = store.price_overview.as_ref().unwrap();
+        assert_eq!(price.currency, "USD");
+        assert_eq!(price.final_price_cents, 799);
+
+        // Verify cache was populated.
+        let cached = cache
+            .get::<SteamStoreDetails>(SOURCE_STEAM_STORE, "app/292030")
+            .unwrap()
+            .expect("cache entry should exist");
+        assert_eq!(cached.data.app_id, 292030);
     }
 
     #[test]

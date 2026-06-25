@@ -1311,7 +1311,7 @@ Manual release evidence required:
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
   - `cargo clippy --workspace --all-targets -- -D warnings` -> pass
-  - `cargo test --workspace` -> pass (343 tests)
+  - `cargo test --workspace` -> pass (347 tests)
   - `cargo check -p vapourfly-api --features hltb_scrape` -> pass
   - `cargo run -p vapourfly-cli -- --version` -> pass (vapourfly 0.1.0)
   - `cargo run -p vapourfly-cli -- --version --verbose` -> pass
@@ -1375,7 +1375,7 @@ cargo run -p vapourfly-cli -- recommend --fixtures data/fixtures/steam_minimal -
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
   - `cargo clippy --workspace --all-targets -- -D warnings` -> pass
-  - `cargo test --workspace` -> pass (343 tests)
+  - `cargo test --workspace` -> pass (347 tests)
   - `cargo check -p vapourfly-api --features hltb_scrape` -> pass
   - `cargo run -p vapourfly-cli -- doctor --fixtures data/fixtures/steam_minimal` -> pass
   - `cargo run -p vapourfly-cli -- scan --fixtures data/fixtures/steam_minimal --format json` -> pass
@@ -1387,7 +1387,6 @@ cargo run -p vapourfly-cli -- recommend --fixtures data/fixtures/steam_minimal -
 - Known limitations:
   - HLTB scraping behind feature gate (`--features hltb_scrape`)
   - GUI is read-only preview: Library/Junk/Recommend/Playlists/Collections views functional; write actions (apply/hide/sync/restore) disabled, use CLI
-  - Steam Store price enrichment deferred: `Game.steam_store` field not wired; `completion_price` in playlist match always `None`
   - GUI Settings are display-only; use CLI flags or config.toml
   - API enrichment via CLI (`scan --enrich`, `cache refresh`); GUI cache refresh deferred
   - `--allow-steam-running` flag available on CLI write commands

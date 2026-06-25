@@ -44,7 +44,7 @@
 - [x] `recommend --minutes` returns scored recommendations with reasons.
 - [x] Playlist import/export schema is stable.
 - [x] Playlist matching reports owned/missing/played/unplayed.
-- [ ] Steam Store price cache estimates missing-game completion cost. (Deferred: Game.steam_store field not yet wired; completion_price always None.)
+- [x] Steam Store price cache estimates missing-game completion cost.
 
 ## Phase 5 exit
 
@@ -82,7 +82,7 @@
 
 - [x] `cargo fmt --all -- --check` passes.
 - [x] `cargo clippy --workspace --all-targets -- -D warnings` passes.
-- [x] `cargo test --workspace` passes (343 tests).
+- [x] `cargo test --workspace` passes (347 tests).
 - [x] Source archive builds cleanly.
 - [x] CHANGELOG has v0.1.0 release entry.
 - [x] Execution plan stamps match current HEAD (91ef4bc).

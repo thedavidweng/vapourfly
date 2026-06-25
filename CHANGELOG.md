@@ -65,7 +65,8 @@ Initial release of Vapourfly — a local-first CLI/GUI tool for managing Steam g
 - HLTB client behind `hltb_scrape` feature gate.
 - Steam Store client for app details and pricing.
 - Disk cache with TTL-based freshness and stale-while-revalidate semantics.
-- Enrichment service bridging scan results with external API data.
+- Enrichment service bridging scan results with external API data (IGDB, RAWG, ProtonDB, PCGW, HLTB, Steam Store).
+- Steam Store price enrichment wired into playlist completion cost estimation.
 
 #### Safety
 
@@ -84,5 +85,4 @@ Initial release of Vapourfly — a local-first CLI/GUI tool for managing Steam g
 - GUI does not yet read Steam directory from Settings input (uses auto-detection).
 - API enrichment is available via CLI (`scan --enrich`, `cache refresh`); GUI cache refresh is deferred.
 - IGDB enrichment requires credentials; games without credentials fall back to cache.
-- Steam Store price enrichment is deferred: `Game.steam_store` field not wired; playlist `completion_price` is always `None`.
 - `cargo deny check` requires `cargo-deny` installed separately.

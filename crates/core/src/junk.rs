@@ -284,6 +284,7 @@ mod tests {
             }),
             protondb: None,
             pcgw: None,
+            steam_store: None,
         }
     }
 

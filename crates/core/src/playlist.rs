@@ -404,8 +404,9 @@ pub fn evaluate_rules(rules: &[PlaylistRule], game: &Game) -> bool {
 /// - `hidden`: Owned games that are hidden.
 /// - `junk`: Owned games that are junk.
 /// - `completion_price`: Sum of Steam Store prices for owned, unplayed, non-free
-///   games (requires SteamStoreDetails to be attached to games -- not yet wired,
-///   so this is always `None` for now).
+///   games. Requires `Game.steam_store` to be populated via enrichment
+///   (`scan --enrich` or `cache refresh --source steam-store`). Returns `None`
+///   when no price data is available.
 pub fn match_playlist(playlist: &PlaylistFile, games: &[Game]) -> Result<PlaylistMatchReport> {
     let by_id: std::collections::HashMap<u32, &Game> =
         games.iter().map(|g| (g.app_id, g)).collect();
@@ -470,9 +471,36 @@ pub fn match_playlist(playlist: &PlaylistFile, games: &[Game]) -> Result<Playlis
     hidden.sort_unstable();
     junk.sort_unstable();
 
-    // completion_price: we don't have SteamStoreDetails on Game yet, so this
-    // is always None. The plumbing is here for when the field is added.
-    let completion_price: Option<Money> = None;
+    // completion_price: sum of Steam Store prices for owned, unplayed,
+    // non-free games that have price data available.
+    let completion_price = {
+        let mut total_cents: u64 = 0;
+        let mut currency: Option<String> = None;
+        let mut has_price = false;
+        for &id in &unplayed {
+            if let Some(game) = by_id.get(&id) {
+                if let Some(store) = &game.steam_store {
+                    if !store.is_free {
+                        if let Some(price) = &store.price_overview {
+                            total_cents += price.final_price_cents as u64;
+                            if currency.is_none() {
+                                currency = Some(price.currency.clone());
+                            }
+                            has_price = true;
+                        }
+                    }
+                }
+            }
+        }
+        if has_price {
+            Some(Money {
+                amount_cents: total_cents,
+                currency: currency.unwrap_or_else(|| "USD".into()),
+            })
+        } else {
+            None
+        }
+    };
 
     Ok(PlaylistMatchReport {
         owned,
@@ -519,6 +547,7 @@ mod tests {
             rawg: None,
             protondb: None,
             pcgw: None,
+            steam_store: None,
         }
     }
 
@@ -1237,5 +1266,99 @@ mod tests {
         let pf = make_manual_playlist("test", "Test", vec![3, 1, 2]);
         let report = match_playlist(&pf, &games).unwrap();
         assert_eq!(report.owned, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn match_report_completion_price_sums_unplayed() {
+        use crate::models::{PriceOverview, SteamStoreDetails, SteamStorePlatforms};
+
+        fn make_game_with_price(app_id: u32, name: &str, price_cents: u32, played: bool) -> Game {
+            let mut game = make_game(app_id, name);
+            if played {
+                game.playtime_minutes = Some(100);
+            }
+            game.steam_store = Some(SteamStoreDetails {
+                app_id,
+                name: name.into(),
+                steam_store_type: "game".into(),
+                is_free: false,
+                short_description: None,
+                header_image: None,
+                developers: vec![],
+                publishers: vec![],
+                genres: vec![],
+                categories: vec![],
+                release_date: None,
+                metacritic_score: None,
+                platforms: SteamStorePlatforms {
+                    windows: true,
+                    mac: false,
+                    linux: false,
+                },
+                coming_soon: false,
+                price_overview: Some(PriceOverview {
+                    currency: "USD".into(),
+                    initial_price_cents: price_cents,
+                    final_price_cents: price_cents,
+                    discount_percent: 0,
+                }),
+            });
+            game
+        }
+
+        let games = vec![
+            make_game_with_price(1, "Unplayed A", 2999, false),
+            make_game_with_price(2, "Unplayed B", 1999, false),
+            make_game_with_price(3, "Played", 5999, true), // should not count
+        ];
+        let pf = make_manual_playlist("test", "Test", vec![1, 2, 3]);
+        let report = match_playlist(&pf, &games).unwrap();
+
+        let price = report
+            .completion_price
+            .expect("should have completion price");
+        assert_eq!(price.currency, "USD");
+        // 2999 + 1999 = 4998 cents
+        assert_eq!(price.amount_cents, 4998);
+    }
+
+    #[test]
+    fn match_report_completion_price_none_when_no_steam_store() {
+        let games = vec![make_game(1, "No Store Data")];
+        let pf = make_manual_playlist("test", "Test", vec![1]);
+        let report = match_playlist(&pf, &games).unwrap();
+        assert!(report.completion_price.is_none());
+    }
+
+    #[test]
+    fn match_report_completion_price_skips_free_games() {
+        use crate::models::{SteamStoreDetails, SteamStorePlatforms};
+
+        let mut game = make_game(1, "Free Game");
+        game.steam_store = Some(SteamStoreDetails {
+            app_id: 1,
+            name: "Free Game".into(),
+            steam_store_type: "game".into(),
+            is_free: true,
+            short_description: None,
+            header_image: None,
+            developers: vec![],
+            publishers: vec![],
+            genres: vec![],
+            categories: vec![],
+            release_date: None,
+            metacritic_score: None,
+            platforms: SteamStorePlatforms {
+                windows: true,
+                mac: false,
+                linux: false,
+            },
+            coming_soon: false,
+            price_overview: None,
+        });
+        let games = vec![game];
+        let pf = make_manual_playlist("test", "Test", vec![1]);
+        let report = match_playlist(&pf, &games).unwrap();
+        assert!(report.completion_price.is_none());
     }
 }

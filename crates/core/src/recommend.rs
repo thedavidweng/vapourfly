@@ -425,6 +425,7 @@ mod tests {
             rawg: None,
             protondb: None,
             pcgw: None,
+            steam_store: None,
         }
     }
 
