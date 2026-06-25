@@ -22,27 +22,21 @@ echo "Building release archive for version: ${VERSION}"
 rm -rf "${OUTDIR}"
 mkdir -p "${OUTDIR}"
 
-# Create a clean export using git archive if in a git repo, otherwise use tar
-if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    # Use git archive for a clean export
-    git archive \
-        --format=tar.gz \
-        --prefix="${ARCHIVE_NAME}/" \
-        --output="${OUTDIR}/${ARCHIVE_NAME}.tar.gz" \
-        HEAD
-else
-    # Fallback: create tar excluding unwanted files
-    tar czf "${OUTDIR}/${ARCHIVE_NAME}.tar.gz" \
-        --exclude='.git' \
-        --exclude='__MACOSX' \
-        --exclude='.DS_Store' \
-        --exclude='.claude' \
-        --exclude='reference' \
-        --exclude='target' \
-        --exclude='*.DS_Store' \
-        --transform="s,^.,${ARCHIVE_NAME}," \
-        .
-fi
+# Create a clean archive excluding development-only files.
+# We use rsync to a temp dir (to handle macOS tar limitations) then tar it.
+TMPPARENT=$(mktemp -d)
+TMPDIR="${TMPPARENT}/${ARCHIVE_NAME}"
+rsync -a \
+    --exclude='.git' \
+    --exclude='__MACOSX' \
+    --exclude='.DS_Store' \
+    --exclude='.claude' \
+    --exclude='reference' \
+    --exclude='target' \
+    ./ "${TMPDIR}/"
+
+COPYFILE_DISABLE=1 tar czf "${OUTDIR}/${ARCHIVE_NAME}.tar.gz" -C "${TMPPARENT}" "${ARCHIVE_NAME}"
+rm -rf "${TMPPARENT}"
 
 # Generate checksums
 cd "${OUTDIR}"
