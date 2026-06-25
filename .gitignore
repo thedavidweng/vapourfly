@@ -5,6 +5,7 @@ target/
 .DS_Store
 Thumbs.db
 desktop.ini
+__MACOSX/
 
 # Editor and IDE files
 .vscode/
@@ -46,3 +47,9 @@ perf.data
 perf.data.old
 cachegrind.out.*
 callgrind.out.*
+
+# Agent
+.claude/
+
+# macOS archive metadata
+__MACOSX

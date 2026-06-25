@@ -117,20 +117,30 @@ When offline, commands that depend on uncached external data degrade gracefully:
 ## Usage
 
 ```bash
-# List all games in your library
-vapourfly list
+# Diagnose Steam installation and credentials
+vapourfly doctor
 
-# Show games matching a filter
-vapourfly list --genre "RPG" --played
+# Scan your library
+vapourfly scan --format table
 
-# Create a collection from a query
-vapourfly collection create "Backlog RPGs" --genre "RPG" --unplayed
+# List collections
+vapourfly collections list
 
-# Preview what a command would change
-vapourfly collection add "Backlog RPGs" --game "Skyrim" --dry-run
+# Export collections to JSON
+vapourfly collections export --out collections.json
 
-# Apply the change
-vapourfly collection add "Backlog RPGs" --game "Skyrim" --confirm
+# Preview junk candidates
+vapourfly junk preview
+
+# Get recommendations for 2 hours of play
+vapourfly recommend --minutes 120 --count 5
+
+# Import a playlist
+vapourfly playlist import my-playlist.json
+
+# Sync a playlist to a Steam collection (dry-run first)
+vapourfly sync collection my-playlist-id --dry-run
+vapourfly sync collection my-playlist-id --confirm
 ```
 
 ## Junk Detection
@@ -291,6 +301,17 @@ at your option.
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## Acknowledgments
+
+Vapourfly's design was informed by studying the following open-source projects. We gratefully acknowledge their authors:
+
+- [Depressurizer](https://github.com/rallion/depressurizer) -- Steam library categorization tool. Inspired Vapourfly's understanding of VDF formats, Steam collections, and SteamID handling. (GPLv3)
+- [Gameloop.Vdf](https://github.com/BeyondDimension/Gameloop.Vdf) -- C# Text VDF library. Served as reference for VDF token-level parsing behavior. (MIT)
+- [SteamTools / BD.SteamClient](https://github.com/BeyondDimension/SteamClient) -- Watt Toolkit core library. Reference for cross-platform Steam path detection, appinfo.vdf format, and librarycache layout.
+- [TinyWiiBackupManager](https://github.com/mq1/TinyWiiBackupManager) -- Rust game backup manager. Inspired the workspace architecture, egui state patterns, and HTTP client design. (GPL-3.0)
+
+No code from these projects is incorporated into Vapourfly. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
 
 ## Security
 

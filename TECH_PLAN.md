@@ -1002,15 +1002,15 @@ governor = "0.8"
 urlencoding = "2"
 strsim = "0.11"
 keyring = { version = "3", optional = true }
-eframe = "0.34.3"
-egui = "0.34.3"
-egui_extras = "0.34.3"
+eframe = "0.31"
+egui = "0.31"
+egui_extras = "0.31"
 ```
 
 说明：
 
-- `eframe/egui` 使用 0.34.3，跟随 2026-05-27 changelog。
-- Rust MSRV 设为 1.88，匹配新 egui/eframe 生态要求。
+- `eframe/egui` 使用 0.31，匹配当前实际依赖版本。
+- Rust MSRV 设为 1.88，匹配 egui/eframe 生态要求。
 - `keyring` 后续用于保存 API secret，MVP 可先使用环境变量。
 
 ---

@@ -349,10 +349,10 @@ impl std::fmt::Debug for HttpClient {
 }
 
 impl HttpClient {
-    /// Create a new client with the default backend (no real network yet).
+    /// Create a new client with the default ureq-based backend.
     pub fn new() -> Self {
         Self {
-            backend: Box::new(NoopBackend),
+            backend: Box::new(UreqBackend::new()),
             config: HttpClientConfig::default(),
             rate_limiter: RateLimiter::new(),
         }
@@ -496,23 +496,78 @@ impl Default for HttpClient {
 }
 
 // ---------------------------------------------------------------------------
-// Noop backend (placeholder until reqwest is wired in)
+// ureq-backed HTTP transport
 // ---------------------------------------------------------------------------
 
-/// A backend that always returns an error. Used as the default when no real
-/// HTTP library is configured yet. Replace with a `reqwest`-backed backend
-/// when implementing actual API clients.
-struct NoopBackend;
+/// Real HTTP backend using `ureq`. Provides actual network access with
+/// timeout support, TLS, and HTTP/1.1.
+struct UreqBackend {
+    agent: ureq::Agent,
+}
 
-impl HttpBackend for NoopBackend {
-    fn execute(&self, _request: &HttpRequest) -> Result<HttpResponse> {
-        Err(VapourflyError::NetworkUnavailable {
-            source: Box::new(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "no HTTP backend configured; install a real backend for network access",
-            )),
-        })
+impl UreqBackend {
+    fn new() -> Self {
+        let agent = ureq::AgentBuilder::new()
+            .timeout(DEFAULT_TIMEOUT)
+            .user_agent(&format!("Vapourfly/{}", env!("CARGO_PKG_VERSION")))
+            .build();
+        Self { agent }
     }
+}
+
+impl HttpBackend for UreqBackend {
+    fn execute(&self, request: &HttpRequest) -> Result<HttpResponse> {
+        let mut req = match request.method {
+            HttpMethod::Get => self.agent.get(&request.url),
+            HttpMethod::Head => self.agent.head(&request.url),
+            HttpMethod::Post => self.agent.post(&request.url),
+        };
+
+        for (key, value) in &request.headers {
+            req = req.set(key.as_str(), value.as_str());
+        }
+
+        let body_bytes = request.body.as_deref().unwrap_or(b"");
+
+        match req.send_bytes(body_bytes) {
+            Ok(response) => {
+                let status = response.status();
+                let mut resp_headers = HashMap::new();
+                for name in response.headers_names() {
+                    if let Some(value) = response.header(&name) {
+                        resp_headers.insert(name.to_lowercase(), value.to_string());
+                    }
+                }
+                let body = read_body(response);
+                Ok(HttpResponse {
+                    status,
+                    headers: resp_headers,
+                    body,
+                })
+            }
+            Err(ureq::Error::Status(status, response)) => {
+                // ureq treats non-2xx as errors by default. Extract the
+                // response body and return a normal HttpResponse so the
+                // caller can inspect status + body.
+                let body = read_body(response);
+                Ok(HttpResponse {
+                    status,
+                    headers: HashMap::new(),
+                    body,
+                })
+            }
+            Err(e) => Err(VapourflyError::NetworkUnavailable {
+                source: Box::new(std::io::Error::other(e.to_string())),
+            }),
+        }
+    }
+}
+
+/// Read the full body from a ureq response.
+fn read_body(response: ureq::Response) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let _ = response.into_reader().read_to_end(&mut buf);
+    buf
 }
 
 // ---------------------------------------------------------------------------

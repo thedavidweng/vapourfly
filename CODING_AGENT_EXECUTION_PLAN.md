@@ -157,7 +157,7 @@ cargo deny check
 
 <!-- PHASE_0_ACCEPTANCE_STAMP_START -->
 - [x] Phase 0 accepted
-- Commit: (leave as placeholder, will fill after git commit)
+- Commit: 2719d0d
 - Date: 2026-06-24
 - Commands run:
   - `git grep -n sensitive data/fixtures` -> pass (no real sensitive data)
@@ -279,7 +279,7 @@ cargo tree -p vapourfly-core
 
 <!-- PHASE_1_ACCEPTANCE_STAMP_START -->
 - [x] Phase 1 accepted
-- Commit: (see git log)
+- Commit: eedc081
 - Date: 2026-06-24
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
@@ -422,7 +422,7 @@ cargo run -p vapourfly-cli -- collections export --fixtures data/fixtures/steam_
 
 <!-- PHASE_2_ACCEPTANCE_STAMP_START -->
 - [x] Phase 2 accepted
-- Commit: (see git log)
+- Commit: be060ad
 - Date: 2026-06-24
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
@@ -563,7 +563,7 @@ If `jq` is unavailable in the agent environment, replace the final command with 
 
 <!-- PHASE_3_ACCEPTANCE_STAMP_START -->
 - [x] Phase 3 accepted
-- Commit: (see git log)
+- Commit: 42b28ae
 - Date: 2026-06-24
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
@@ -684,7 +684,7 @@ cargo run -p vapourfly-cli -- junk hide --fixtures target/junk-fixture --confirm
 
 <!-- PHASE_4_ACCEPTANCE_STAMP_START -->
 - [x] Phase 4 accepted
-- Commit: (see git log)
+- Commit: 8ee6c3d
 - Date: 2026-06-24
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
@@ -832,7 +832,7 @@ The final command may return controlled exit code `2` when refresh requires netw
 
 <!-- PHASE_5_ACCEPTANCE_STAMP_START -->
 - [x] Phase 5 accepted
-- Commit: (see git log)
+- Commit: 8dd01eb
 - Date: 2026-06-24
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
@@ -1001,7 +1001,7 @@ cargo run -p vapourfly-cli -- sync collection vapourfly-fixture --fixtures data/
 
 <!-- PHASE_6_ACCEPTANCE_STAMP_START -->
 - [x] Phase 6 accepted
-- Commit: (see git log)
+- Commit: 1264dda
 - Date: 2026-06-24
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
@@ -1141,7 +1141,7 @@ Manual smoke evidence required:
 
 <!-- PHASE_7_ACCEPTANCE_STAMP_START -->
 - [x] Phase 7 accepted
-- Commit: (see git log)
+- Commit: 19d0c30
 - Date: 2026-06-24
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
@@ -1306,7 +1306,7 @@ Manual release evidence required:
 
 <!-- PHASE_8_ACCEPTANCE_STAMP_START -->
 - [x] Phase 8 accepted
-- Commit: (see git log)
+- Commit: 74df4ac
 - Date: 2026-06-25
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
@@ -1378,12 +1378,11 @@ cargo run -p vapourfly-cli -- recommend --fixtures data/fixtures/steam_minimal -
   - `cargo run -p vapourfly-cli -- scan --fixtures data/fixtures/steam_minimal --format json` -> pass
   - `cargo run -p vapourfly-cli -- recommend --fixtures data/fixtures/steam_minimal --minutes 60 --count 5 --seed 42 --format json` -> pass
 - Artifact paths: target/release/vapourfly (CLI), target/release/vapourfly-gui (GUI)
-- Checksums path: (pending CI build)
+- Checksums path: generated alongside release archive via `scripts/build-release.sh`
 - Release notes path: CHANGELOG.md
 - Known limitations:
-  - IGDB/RAWG API clients are stubs (require credentials for full functionality)
-  - HLTB scraping behind feature gate
-  - GUI is scaffold only (all views stubbed)
+  - HLTB scraping behind feature gate, not implemented
+  - GUI is scaffold: only Library view functional; other views show placeholder
   - No Windows registry detection for Steam path
 <!-- FINAL_RELEASE_STAMP_END -->
 
