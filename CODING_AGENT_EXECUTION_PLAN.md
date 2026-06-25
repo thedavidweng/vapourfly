@@ -1365,16 +1365,26 @@ cargo run -p vapourfly-cli -- recommend --fixtures data/fixtures/steam_minimal -
 ### Final release stamp
 
 <!-- FINAL_RELEASE_STAMP_START -->
-- [ ] Release accepted
-- Version:
-- Tag:
-- Commit:
-- Date:
+- [x] Release accepted
+- Version: 0.1.0
+- Tag: v0.1.0
+- Commit: 74df4ac
+- Date: 2026-06-25
 - Commands run:
-- Artifact paths:
-- Checksums path:
-- Release notes path:
+  - `cargo fmt --all -- --check` -> pass
+  - `cargo clippy --workspace --all-targets -- -D warnings` -> pass
+  - `cargo test --workspace` -> pass (332 tests)
+  - `cargo run -p vapourfly-cli -- doctor --fixtures data/fixtures/steam_minimal` -> pass
+  - `cargo run -p vapourfly-cli -- scan --fixtures data/fixtures/steam_minimal --format json` -> pass
+  - `cargo run -p vapourfly-cli -- recommend --fixtures data/fixtures/steam_minimal --minutes 60 --count 5 --seed 42 --format json` -> pass
+- Artifact paths: target/release/vapourfly (CLI), target/release/vapourfly-gui (GUI)
+- Checksums path: (pending CI build)
+- Release notes path: CHANGELOG.md
 - Known limitations:
+  - IGDB/RAWG API clients are stubs (require credentials for full functionality)
+  - HLTB scraping behind feature gate
+  - GUI is scaffold only (all views stubbed)
+  - No Windows registry detection for Steam path
 <!-- FINAL_RELEASE_STAMP_END -->
 
 ---
