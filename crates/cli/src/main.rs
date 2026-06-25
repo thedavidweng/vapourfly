@@ -1,7 +1,8 @@
 //! Vapourfly CLI — Steam library manager.
 //!
-//! All subcommands exist from Phase 1.  Commands that belong to later phases
-//! print a clear "not yet implemented" message and exit with code 2.
+//! Phases 1 and 6 commands are fully implemented.  Commands that belong to
+//! other phases print a clear "not yet implemented" message and exit with
+//! code 2.
 
 mod error;
 
@@ -406,8 +407,7 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// Command implementations (Phase 1: doctor and scan have stub output,
-// all others print "not yet implemented" and exit with code 2)
+// Command implementations
 // ---------------------------------------------------------------------------
 
 fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
@@ -1165,6 +1165,41 @@ fn cmd_sync_collection(
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_write_flags(dry_run, confirm)?;
 
+    // Load the stored playlist to get app IDs to sync.
+    let pf = load_stored_playlist(&id)?;
+
+    let app_ids = match &pf.playlist.content {
+        PlaylistContent::Manual { app_ids } => {
+            let mut ids = app_ids.clone();
+            ids.sort_unstable();
+            ids.dedup();
+            ids
+        }
+        PlaylistContent::Rules { rules: _ } => {
+            // Evaluate rules against the library to resolve matching app IDs.
+            let steam_dir = cli
+                .fixtures
+                .clone()
+                .or_else(|| cli.steam_dir.clone())
+                .or_else(|| steam::detect_steam_dirs(None).into_iter().next())
+                .ok_or("no Steam directory detected")?;
+
+            let scan_result = steam::scan_library(&steam::ScanOptions {
+                steam_dir,
+                account: cli.account.clone(),
+                fixtures: cli.fixtures.clone(),
+            })?;
+
+            let report = playlist::match_playlist(&pf, &scan_result.games)?;
+            report.owned
+        }
+    };
+
+    if app_ids.is_empty() {
+        println!("No app IDs to sync.");
+        return Ok(());
+    }
+
     let steam_dir = cli
         .fixtures
         .clone()
@@ -1181,28 +1216,25 @@ fn cmd_sync_collection(
         .join("config/cloudstorage/cloud-storage-namespace-1.json");
 
     let cloud = steam::read_cloud_storage(&cloud_path)?;
-    let collections = steam::read_user_collections(&cloud)?;
 
-    // Look up the collection by ID
-    let collection = collections
-        .iter()
-        .find(|c| c.id == id)
-        .ok_or_else(|| format!("collection '{id}' not found in cloud storage"))?;
+    // Use the playlist ID as the Steam collection ID (slugified).
+    let collection_id = playlist::slugify(&pf.playlist.id);
 
-    // Generate write plan
     let plan = steam::generate_write_plan(
         &cloud,
         vec![WriteOp::UpsertCollection {
-            id: id.clone(),
-            added: collection.app_ids.clone(),
+            id: collection_id.clone(),
+            added: app_ids.clone(),
             removed: vec![],
         }],
         cloud_path.clone(),
     )?;
 
-    // Print diff
-    println!("Sync collection: {id}");
-    println!("Target: {}", cloud_path.display());
+    println!("Sync playlist '{}' to Steam collection", pf.playlist.name);
+    println!("  Playlist ID:   {}", pf.playlist.id);
+    println!("  Collection ID: {collection_id}");
+    println!("  App IDs:       {}", app_ids.len());
+    println!("  Target:        {}", cloud_path.display());
     println!();
     println!("Diff:");
     for change in &plan.diff.collections_changed {
@@ -1402,6 +1434,23 @@ fn cmd_diagnostics_export(_cli: &Cli, _out: PathBuf) -> Result<(), Box<dyn std::
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Return the directory where imported playlists are stored.
+fn playlist_store_dir() -> PathBuf {
+    vapourfly_core::config::default_playlists_dir()
+}
+
+/// Load a stored playlist by ID from the local playlist store.
+fn load_stored_playlist(id: &str) -> Result<PlaylistFile, Box<dyn std::error::Error>> {
+    let path = playlist_store_dir().join(format!("{id}.json"));
+    if !path.exists() {
+        return Err(format!(
+            "playlist '{id}' not found. Import it first with: vapourfly playlist import <file>"
+        )
+        .into());
+    }
+    playlist::import_playlist(&path).map_err(|e| e.into())
+}
 
 /// Validate that exactly one of `--dry-run` / `--confirm` is set.
 fn validate_write_flags(dry_run: bool, confirm: bool) -> Result<(), Box<dyn std::error::Error>> {

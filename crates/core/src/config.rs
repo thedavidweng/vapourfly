@@ -185,6 +185,17 @@ pub fn default_cache_dir() -> PathBuf {
         .join("cache")
 }
 
+/// Return the platform-specific Vapourfly playlists directory path.
+///
+/// This is `{platform_data_dir}/vapourfly/playlists/`. Returns a fallback
+/// if the platform data directory cannot be determined.
+pub fn default_playlists_dir() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("vapourfly")
+        .join("playlists")
+}
+
 // ---------------------------------------------------------------------------
 // Platform Steam detection
 // ---------------------------------------------------------------------------

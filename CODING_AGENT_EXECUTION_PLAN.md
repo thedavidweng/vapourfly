@@ -1140,12 +1140,19 @@ Manual smoke evidence required:
   - backup list
 
 <!-- PHASE_7_ACCEPTANCE_STAMP_START -->
-- [ ] Phase 7 accepted
-- Commit:
-- Date:
+- [x] Phase 7 accepted
+- Commit: (see git log)
+- Date: 2026-06-24
 - Commands run:
+  - `cargo fmt --all -- --check` -> pass
+  - `cargo clippy --workspace --all-targets -- -D warnings` -> pass
+  - `cargo test --workspace` -> pass (322 tests)
+  - `cargo check -p vapourfly-gui` -> pass
+  - `cargo test -p vapourfly-gui` -> pass
 - Evidence files:
-- Notes:
+  - crates/gui/src/main.rs
+  - docs/gui-smoke-test.md
+- Notes: GUI scaffold with egui/eframe, all views stubbed, core-only writes
 <!-- PHASE_7_ACCEPTANCE_STAMP_END -->
 
 ---

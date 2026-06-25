@@ -6,5 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+eframe = { workspace = true }
+egui = { workspace = true }
+egui_extras = { workspace = true }
 vapourfly-core = { path = "../core" }
 vapourfly-api = { path = "../api" }
+dirs = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
