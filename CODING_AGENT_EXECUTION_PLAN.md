@@ -1305,12 +1305,23 @@ Manual release evidence required:
   - known limitations
 
 <!-- PHASE_8_ACCEPTANCE_STAMP_START -->
-- [ ] Phase 8 accepted
-- Commit:
-- Date:
+- [x] Phase 8 accepted
+- Commit: (see git log)
+- Date: 2026-06-25
 - Commands run:
+  - `cargo fmt --all -- --check` -> pass
+  - `cargo clippy --workspace --all-targets -- -D warnings` -> pass
+  - `cargo test --workspace` -> pass (332 tests)
+  - `cargo run -p vapourfly-cli -- --version` -> pass (vapourfly 0.1.0)
+  - `cargo run -p vapourfly-cli -- --version --verbose` -> pass
+  - `cargo run -p vapourfly-cli -- diagnostics export --out ...` -> pass
 - Evidence files:
-- Notes:
+  - docs/CLI.md
+  - docs/STEAM_FILE_SAFETY.md
+  - docs/API_SOURCES.md
+  - docs/gui-smoke-test.md
+  - README.md (updated)
+- Notes: Full documentation, version embedding with git commit, diagnostics export
 <!-- PHASE_8_ACCEPTANCE_STAMP_END -->
 
 ---

@@ -10,6 +10,25 @@ use std::path::PathBuf;
 use std::process;
 
 use clap::{Parser, Subcommand};
+
+/// Semver from Cargo.toml.
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Short git commit hash, set by build.rs.
+const GIT_HASH: &str = env!("VF_GIT_HASH");
+
+/// Build date (UTC), set by build.rs.
+const BUILD_DATE: &str = env!("VF_BUILD_DATE");
+
+/// Full version string with git and build metadata.
+fn long_version() -> &'static str {
+    // Leak a String so we can return &'static from a computed value.
+    // This runs at most once.
+    static INIT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    INIT.get_or_init(|| format!("{VERSION} ({GIT_HASH}, {BUILD_DATE})"))
+        .as_str()
+}
+
 use vapourfly_core::junk::{JunkPreviewResult, ManualOverrides, evaluate_junk};
 use vapourfly_core::models::{
     JunkMode, JunkRules, JunkSignal, PlaylistContent, PlaylistFile, RecommendRequest,
@@ -28,6 +47,7 @@ use vapourfly_core::steam;
 #[command(
     name = "vapourfly",
     version,
+    long_version = long_version(),
     about = "Manage your Steam library like Spotify playlists"
 )]
 struct Cli {
@@ -419,6 +439,13 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Vapourfly Doctor");
     println!("================");
+
+    if cli.verbose {
+        println!("Version:       {VERSION}");
+        println!("Git commit:    {GIT_HASH}");
+        println!("Build date:    {BUILD_DATE}");
+        println!();
+    }
 
     match &steam_dir {
         Some(dir) => {
@@ -1427,8 +1454,26 @@ fn cmd_backup_restore(cli: &Cli, file: PathBuf) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-fn cmd_diagnostics_export(_cli: &Cli, _out: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    not_implemented("diagnostics export")
+fn cmd_diagnostics_export(_cli: &Cli, out: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let igdb_configured = std::env::var("VAPOURFLY_IGDB_CLIENT_ID").is_ok()
+        && std::env::var("VAPOURFLY_IGDB_CLIENT_SECRET").is_ok();
+    let rawg_configured = std::env::var("VAPOURFLY_RAWG_KEY").is_ok();
+
+    let diagnostics = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "platform": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "sources": {
+            "IGDB": if igdb_configured { "configured" } else { "not configured" },
+            "RAWG": if rawg_configured { "configured" } else { "not configured" },
+        },
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    });
+
+    let json = serde_json::to_string_pretty(&diagnostics)?;
+    std::fs::write(&out, json)?;
+    println!("Diagnostics exported to {}", out.display());
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1466,6 +1511,7 @@ fn validate_write_flags(dry_run: bool, confirm: bool) -> Result<(), Box<dyn std:
 }
 
 /// Print "not yet implemented" and exit with code 2.
+#[allow(dead_code)]
 fn not_implemented(command: &str) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Command '{command}' is not yet implemented.");
     process::exit(2);

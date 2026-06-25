@@ -297,3 +297,115 @@ fn main() -> eframe::Result<()> {
         Box::new(|_cc| Ok(Box::new(app))),
     )
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- VapourflyApp creation ------------------------------------------------
+
+    #[test]
+    fn app_created_without_fixtures() {
+        let app = VapourflyApp::new(None);
+        assert!(app.scan_result.is_none());
+        assert_eq!(app.current_view, View::Library);
+        assert!(!app.loading);
+        assert!(app.error.is_none());
+        assert!(app.fixtures_path.is_none());
+    }
+
+    #[test]
+    fn app_created_with_fixtures_path() {
+        let path = PathBuf::from("/tmp/fix");
+        let app = VapourflyApp::new(Some(path.clone()));
+        assert_eq!(app.fixtures_path, Some(path));
+        assert_eq!(app.current_view, View::Library);
+        assert!(!app.loading);
+    }
+
+    // -- Scan with fixtures --------------------------------------------------
+
+    #[test]
+    fn scan_with_fixtures_produces_results() {
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
+        let opts = ScanOptions {
+            steam_dir: fixtures.clone(),
+            account: None,
+            fixtures: Some(fixtures),
+        };
+        let result = scan_library(&opts).unwrap();
+
+        assert!(!result.games.is_empty(), "should find games in fixture");
+        assert_eq!(result.account, "vapourfly_fixture_user");
+
+        // Verify CS2 is present with expected metadata.
+        let cs2 = result.games.iter().find(|g| g.app_id == 730).unwrap();
+        assert_eq!(cs2.name, "Counter-Strike 2");
+        assert!(cs2.installed);
+        assert_eq!(cs2.playtime_minutes, Some(418));
+    }
+
+    // -- View switching -------------------------------------------------------
+
+    #[test]
+    fn view_switch_changes_current_view() {
+        let mut app = VapourflyApp::new(None);
+        assert_eq!(app.current_view, View::Library);
+
+        app.current_view = View::Junk;
+        assert_eq!(app.current_view, View::Junk);
+
+        app.current_view = View::Recommend;
+        assert_eq!(app.current_view, View::Recommend);
+
+        app.current_view = View::Backups;
+        assert_eq!(app.current_view, View::Backups);
+    }
+
+    #[test]
+    fn view_all_contains_every_variant() {
+        assert!(View::ALL.contains(&View::Library));
+        assert!(View::ALL.contains(&View::Junk));
+        assert!(View::ALL.contains(&View::Recommend));
+        assert!(View::ALL.contains(&View::Playlists));
+        assert!(View::ALL.contains(&View::Collections));
+        assert!(View::ALL.contains(&View::DataSources));
+        assert!(View::ALL.contains(&View::Backups));
+        assert!(View::ALL.contains(&View::Settings));
+        assert_eq!(View::ALL.len(), 8);
+    }
+
+    #[test]
+    fn view_labels_are_distinct() {
+        let labels: Vec<&str> = View::ALL.iter().map(|v| v.label()).collect();
+        let unique: std::collections::HashSet<&str> = labels.iter().copied().collect();
+        assert_eq!(labels.len(), unique.len(), "view labels must be unique");
+    }
+
+    // -- format_playtime ------------------------------------------------------
+
+    #[test]
+    fn format_playtime_zero() {
+        assert_eq!(format_playtime(0), "\u{2014}");
+    }
+
+    #[test]
+    fn format_playtime_minutes_only() {
+        assert_eq!(format_playtime(45), "45m");
+    }
+
+    #[test]
+    fn format_playtime_hours_and_minutes() {
+        assert_eq!(format_playtime(125), "2h 5m");
+    }
+
+    #[test]
+    fn format_playtime_exact_hours() {
+        assert_eq!(format_playtime(120), "2h 0m");
+    }
+}
