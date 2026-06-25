@@ -85,5 +85,5 @@
 - [x] `cargo test --workspace` passes (347 tests).
 - [x] Source archive builds cleanly.
 - [x] CHANGELOG has v0.1.0 release entry.
-- [x] Execution plan stamps match current HEAD (91ef4bc).
+- [x] Execution plan stamps match current HEAD (d9e4443).
 - [x] Known limitations documented honestly.
