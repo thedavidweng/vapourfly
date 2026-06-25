@@ -547,4 +547,77 @@ mod tests {
         // This is expected behavior with a single-endpoint mock.
         assert!(result.is_err() || result.unwrap().is_some());
     }
+
+    #[test]
+    fn resolve_full_chain_external_games_to_details_to_ttb() {
+        // Covers the complete enrichment path:
+        //   external_games (Steam AppID -> IGDB ID)
+        //   -> games (IGDB ID -> full details)
+        //   -> game_time_to_beats (IGDB ID -> time-to-beat)
+        //
+        // MockBackend matches by first prefix. Register most-specific
+        // URL prefixes first so they aren't shadowed by the general one.
+        let mut mock = MockBackend::new();
+
+        // Token endpoint
+        mock.register(
+            "https://id.twitch.tv/",
+            HttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: br#"{"access_token":"test_token","token_type":"bearer","expires_in":36000}"#
+                    .to_vec(),
+            },
+        );
+        // 1. external_games: Steam AppID 292030 -> IGDB game 1942
+        mock.register(
+            "https://api.igdb.com/v4/external_games",
+            HttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: br#"[{"game":1942,"uid":"292030","external_game_source":1}]"#.to_vec(),
+            },
+        );
+        // 2. games: IGDB ID 1942 -> full game details
+        mock.register(
+            "https://api.igdb.com/v4/games",
+            HttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: br#"[{"id":1942,"name":"The Witcher 3: Wild Hunt","slug":"the-witcher-3-wild-hunt","rating":93.0,"total_rating":92.0,"genres":[{"name":"Role-playing (RPG)"}],"themes":[{"name":"Fantasy"}],"keywords":[{"name":"open world"}],"similar_games":[1234,5678]}]"#.to_vec(),
+            },
+        );
+        // 3. game_time_to_beats: IGDB ID 1942 -> time-to-beat data
+        mock.register(
+            "https://api.igdb.com/v4/game_time_to_beats",
+            HttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: br#"[{"game_id":1942,"hastily":12000,"normally":36000,"completely":108000,"comp_count":500}]"#.to_vec(),
+            },
+        );
+
+        let http = HttpClient::with_backend(Box::new(mock));
+        let client = IgdbClient::new("id".into(), "secret".into(), http);
+
+        // Steam AppID 292030 enters external_games, IGDB ID 1942 enters games.
+        let result = client.resolve_by_steam_appid(292030).unwrap().unwrap();
+
+        // Verify external_games mapping produced correct IGDB ID.
+        assert_eq!(result.igdb_id, 1942);
+        assert_eq!(result.name, "The Witcher 3: Wild Hunt");
+        assert_eq!(result.rating_0_100, Some(93.0));
+        assert_eq!(result.genres, vec!["Role-playing (RPG)"]);
+        assert_eq!(result.themes, vec!["Fantasy"]);
+        assert_eq!(result.keywords, vec!["open world"]);
+        assert_eq!(result.similar_game_ids, vec![1234, 5678]);
+        // Verify external_games source was Steam (source = 1).
+        assert!(result.steam_app_id_confirmed);
+        // Verify game_time_to_beats was fetched.
+        let ttb = result.time_to_beat.unwrap();
+        assert_eq!(ttb.hastily_seconds, Some(12000));
+        assert_eq!(ttb.normally_seconds, Some(36000));
+        assert_eq!(ttb.completely_seconds, Some(108000));
+        assert_eq!(ttb.submission_count, Some(500));
+    }
 }

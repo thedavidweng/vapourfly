@@ -823,15 +823,17 @@ impl VapourflyApp {
         if ui.button("🔄 Refresh Backups").clicked() {
             self.backups.clear();
             if let Some(scan) = &self.scan_result {
-                // Find the cloudstorage directory
-                let cloud_dir = PathBuf::from(&scan.steam_dir)
+                // list_backups() expects the target file path (not directory),
+                // and derives the backup prefix from the file name.
+                let cloud_path = PathBuf::from(&scan.steam_dir)
                     .join("userdata")
                     .join(&scan.account)
                     .join("config")
-                    .join("cloudstorage");
+                    .join("cloudstorage")
+                    .join("cloud-storage-namespace-1.json");
 
-                if cloud_dir.exists() {
-                    match list_backups(&cloud_dir) {
+                if cloud_path.exists() {
+                    match list_backups(&cloud_path) {
                         Ok(backup_infos) => {
                             self.backups = backup_infos
                                 .into_iter()

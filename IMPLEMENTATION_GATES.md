@@ -44,7 +44,7 @@
 - [x] `recommend --minutes` returns scored recommendations with reasons.
 - [x] Playlist import/export schema is stable.
 - [x] Playlist matching reports owned/missing/played/unplayed.
-- [x] Steam Store price cache estimates missing-game completion cost.
+- [ ] Steam Store price cache estimates missing-game completion cost. (Deferred: Game.steam_store field not yet wired; completion_price always None.)
 
 ## Phase 5 exit
 
@@ -63,7 +63,7 @@
 
 - [x] GUI builds on Linux, macOS, and Windows.
 - [x] GUI can scan fixtures through core service.
-- [x] GUI displays dry-run diff information (write actions disabled in preview).
+- [x] GUI shows read-only preview (write actions deferred to CLI; no dry-run diff displayed in GUI).
 - [x] GUI has no direct file write code for Steam files.
 - [x] GUI displays source status and credential state without secrets.
 
@@ -85,5 +85,5 @@
 - [x] `cargo test --workspace` passes (341 tests).
 - [x] Source archive builds cleanly.
 - [x] CHANGELOG has v0.1.0 release entry.
-- [x] Execution plan stamps match current HEAD (688eaf7).
+- [x] Execution plan stamps match current HEAD (e762947).
 - [x] Known limitations documented honestly.

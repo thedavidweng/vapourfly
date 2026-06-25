@@ -1306,7 +1306,7 @@ Manual release evidence required:
 
 <!-- PHASE_8_ACCEPTANCE_STAMP_START -->
 - [x] Phase 8 accepted
-- Commit: 688eaf7
+- Commit: e762947
 - Date: 2026-06-25
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
@@ -1370,7 +1370,7 @@ cargo run -p vapourfly-cli -- recommend --fixtures data/fixtures/steam_minimal -
 - [x] Release accepted
 - Version: 0.1.0
 - Tag: v0.1.0
-- Commit: 688eaf7
+- Commit: e762947
 - Date: 2026-06-25
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
@@ -1387,6 +1387,7 @@ cargo run -p vapourfly-cli -- recommend --fixtures data/fixtures/steam_minimal -
 - Known limitations:
   - HLTB scraping behind feature gate (`--features hltb_scrape`)
   - GUI is read-only preview: Library/Junk/Recommend/Playlists/Collections views functional; write actions (apply/hide/sync/restore) disabled, use CLI
+  - Steam Store price enrichment deferred: `Game.steam_store` field not wired; `completion_price` in playlist match always `None`
   - GUI Settings are display-only; use CLI flags or config.toml
   - API enrichment via CLI (`scan --enrich`, `cache refresh`); GUI cache refresh deferred
   - `--allow-steam-running` flag available on CLI write commands

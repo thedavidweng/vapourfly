@@ -375,55 +375,16 @@ fn enrich_source(
                 Ok(s) if !s.is_empty() => s,
                 _ => return stats,
             };
-            for game in games.iter_mut() {
-                let key = format!("appid/{}", game.app_id);
-                if !options.force {
-                    if let Ok(Some(record)) = cache.get::<IgdbData>(source, &key) {
-                        if !record.stale {
-                            game.igdb = Some(record.data);
-                            stats.entries_skipped += 1;
-                            continue;
-                        }
-                    }
-                }
-                if options.offline {
-                    continue;
-                }
-                match crate::igdb::IgdbClient::new(
-                    igdb_id.clone(),
-                    igdb_secret.clone(),
-                    HttpClient::new(),
-                )
-                .fetch_game_details(game.app_id as u64)
-                {
-                    Ok(data) => {
-                        let record = CacheRecord {
-                            source: source.to_string(),
-                            key: key.clone(),
-                            fetched_at: chrono::Utc::now(),
-                            ttl: IGDB_TTL,
-                            data: data.clone(),
-                            stale: false,
-                            etag: None,
-                        };
-                        let _ = cache.put(&record);
-                        game.igdb = Some(data);
-                        stats.entries_refreshed += 1;
-                        stats.last_success = Some(chrono::Utc::now());
-                    }
-                    Err(e) => {
-                        errors.push(EnrichmentError {
-                            app_id: game.app_id,
-                            source: source.to_string(),
-                            message: e.to_string(),
-                        });
-                        stats.errors += 1;
-                        if let Ok(Some(record)) = cache.get::<IgdbData>(source, &key) {
-                            game.igdb = Some(record.data);
-                        }
-                    }
-                }
-            }
+            enrich_igdb(
+                games,
+                cache,
+                &igdb_id,
+                &igdb_secret,
+                HttpClient::new(),
+                options,
+                &mut stats,
+                errors,
+            );
         }
         SOURCE_STEAM_STORE => {
             // Steam Store data is already available from the local scan.
@@ -435,6 +396,81 @@ fn enrich_source(
     }
 
     stats
+}
+
+// ---------------------------------------------------------------------------
+// IGDB enrichment helper (testable with injected HttpClient)
+// ---------------------------------------------------------------------------
+
+/// Enrich games from IGDB using the given credentials and HTTP client.
+///
+/// Extracted from `enrich_source` so tests can inject a mock HTTP backend.
+/// Uses `resolve_by_steam_appid` to map Steam AppID → IGDB ID via
+/// `external_games`, then fetches full details and time-to-beat.
+#[allow(clippy::too_many_arguments)]
+fn enrich_igdb(
+    games: &mut [Game],
+    cache: &DiskCache,
+    igdb_id: &str,
+    igdb_secret: &str,
+    http: HttpClient,
+    options: &EnrichmentOptions,
+    stats: &mut SourceRefreshStats,
+    errors: &mut Vec<EnrichmentError>,
+) {
+    let source = SOURCE_IGDB;
+    let client = crate::igdb::IgdbClient::new(igdb_id.to_string(), igdb_secret.to_string(), http);
+    for game in games.iter_mut() {
+        let key = format!("appid/{}", game.app_id);
+        if !options.force {
+            if let Ok(Some(record)) = cache.get::<IgdbData>(source, &key) {
+                if !record.stale {
+                    game.igdb = Some(record.data);
+                    stats.entries_skipped += 1;
+                    continue;
+                }
+            }
+        }
+        if options.offline {
+            continue;
+        }
+        // Use resolve_by_steam_appid to map Steam AppID -> IGDB ID
+        // via external_games, then fetch game details and time-to-beat.
+        // Calling fetch_game_details directly would treat the Steam
+        // AppID as an IGDB game ID, returning wrong/empty data.
+        match client.resolve_by_steam_appid(game.app_id) {
+            Ok(Some(data)) => {
+                let record = CacheRecord {
+                    source: source.to_string(),
+                    key: key.clone(),
+                    fetched_at: chrono::Utc::now(),
+                    ttl: IGDB_TTL,
+                    data: data.clone(),
+                    stale: false,
+                    etag: None,
+                };
+                let _ = cache.put(&record);
+                game.igdb = Some(data);
+                stats.entries_refreshed += 1;
+                stats.last_success = Some(chrono::Utc::now());
+            }
+            Ok(None) => {
+                // No IGDB mapping found for this Steam AppID.
+                stats.entries_skipped += 1;
+            }
+            Err(e) => {
+                errors.push(EnrichmentError {
+                    app_id: game.app_id,
+                    source: source.to_string(),
+                    message: e.to_string(),
+                });
+                stats.errors += 1;
+                if let Ok(Some(record)) = cache.get::<IgdbData>(source, &key) {
+                    game.igdb = Some(record.data);
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -503,7 +539,130 @@ pub fn source_status(cache_root: &Path) -> Vec<SourceStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http::{HttpResponse, MockBackend};
+    use std::collections::HashMap;
     use tempfile::TempDir;
+    use vapourfly_core::models::{Game, IgdbData, SteamAppType};
+
+    fn make_test_game(app_id: u32, name: &str) -> Game {
+        Game {
+            app_id,
+            name: name.into(),
+            app_type: SteamAppType::Game,
+            installed: false,
+            install_dir: None,
+            library_folder: None,
+            playtime_minutes: None,
+            playtime_2wks_minutes: None,
+            playtime_disconnected_minutes: None,
+            last_played_unix: None,
+            steam_collections: vec![],
+            is_hidden: false,
+            is_junk: false,
+            hltb: None,
+            igdb: None,
+            rawg: None,
+            protondb: None,
+            pcgw: None,
+        }
+    }
+
+    #[test]
+    fn igdb_enrichment_uses_resolve_by_steam_appid() {
+        // Verify the enrichment path goes through external_games -> games
+        // -> game_time_to_beats (i.e. Steam AppID enters external_games,
+        // IGDB ID enters games).
+        let mut mock = MockBackend::new();
+        // Token endpoint
+        mock.register(
+            "https://id.twitch.tv/",
+            HttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: br#"{"access_token":"test_token","token_type":"bearer","expires_in":36000}"#
+                    .to_vec(),
+            },
+        );
+        // 1. external_games: Steam AppID 292030 -> IGDB game 1942
+        mock.register(
+            "https://api.igdb.com/v4/external_games",
+            HttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: br#"[{"game":1942,"uid":"292030","external_game_source":1}]"#.to_vec(),
+            },
+        );
+        // 2. games: IGDB ID 1942 -> full game details
+        mock.register(
+            "https://api.igdb.com/v4/games",
+            HttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: br#"[{"id":1942,"name":"The Witcher 3: Wild Hunt","slug":"the-witcher-3-wild-hunt","rating":93.0,"total_rating":92.0,"genres":[{"name":"Role-playing (RPG)"}],"themes":[{"name":"Fantasy"}],"keywords":[{"name":"open world"}],"similar_games":[1234,5678]}]"#.to_vec(),
+            },
+        );
+        // 3. game_time_to_beats: IGDB ID 1942 -> time-to-beat data
+        mock.register(
+            "https://api.igdb.com/v4/game_time_to_beats",
+            HttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: br#"[{"game_id":1942,"hastily":12000,"normally":36000,"completely":108000,"comp_count":500}]"#.to_vec(),
+            },
+        );
+
+        let http = HttpClient::with_backend(Box::new(mock));
+        let tmp = TempDir::new().unwrap();
+        let cache = DiskCache::new(tmp.path());
+        let options = EnrichmentOptions {
+            sources: vec![SOURCE_IGDB.to_string()],
+            offline: false,
+            force: true,
+        };
+
+        let mut games = vec![make_test_game(292030, "The Witcher 3")];
+        let mut stats = SourceRefreshStats {
+            source: SOURCE_IGDB.to_string(),
+            entries_refreshed: 0,
+            entries_skipped: 0,
+            errors: 0,
+            last_success: None,
+        };
+        let mut errors = Vec::new();
+
+        enrich_igdb(
+            &mut games,
+            &cache,
+            "test_id",
+            "test_secret",
+            http,
+            &options,
+            &mut stats,
+            &mut errors,
+        );
+
+        // Verify the enrichment succeeded via the full chain.
+        assert_eq!(stats.entries_refreshed, 1);
+        assert_eq!(stats.errors, 0);
+        assert!(errors.is_empty());
+
+        // Verify game got IGDB data.
+        let game = &games[0];
+        let igdb = game.igdb.as_ref().expect("IGDB data should be set");
+        assert_eq!(igdb.igdb_id, 1942);
+        assert_eq!(igdb.name, "The Witcher 3: Wild Hunt");
+        assert!(igdb.steam_app_id_confirmed);
+        assert!(igdb.time_to_beat.is_some());
+        let ttb = igdb.time_to_beat.as_ref().unwrap();
+        assert_eq!(ttb.normally_seconds, Some(36000));
+
+        // Verify cache was populated with the correct key.
+        let cached = cache
+            .get::<IgdbData>(SOURCE_IGDB, "appid/292030")
+            .unwrap()
+            .expect("cache entry should exist");
+        assert_eq!(cached.data.igdb_id, 1942);
+    }
 
     #[test]
     fn source_status_empty_cache() {
