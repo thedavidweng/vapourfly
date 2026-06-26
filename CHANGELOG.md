@@ -30,17 +30,17 @@ Initial release of Vapourfly — a local-first CLI/GUI tool for managing Steam g
 - `--verbose` flag for detailed output with full paths.
 - Version embedding with semver, git commit hash, and build date.
 
-#### GUI (Read-Only Preview)
+#### GUI
 
 - Multi-view desktop UI built with egui/eframe.
 - Library view with game table, search, and filters (installed, unplayed, hidden, junk).
-- Junk detection view with mode selector and signal breakdown (preview only).
+- Junk detection view with mode selector, signal breakdown, and write actions (apply to collection / add to hidden) with dry-run diff preview.
 - Recommendations view with minutes/count/deck/installed-only controls.
 - Playlists view with import and match report.
 - Collections view listing Steam collections.
 - Data Sources view showing credential status and cache info.
 - Backups view listing available backups.
-- Settings view displaying configuration (display-only in preview).
+- Settings view with editable fields that preserve existing IGDB/RAWG credentials on save.
 
 #### Core
 
@@ -80,9 +80,8 @@ Initial release of Vapourfly — a local-first CLI/GUI tool for managing Steam g
 ### Known Limitations
 
 - HLTB scraping is behind the `hltb_scrape` feature gate and not included in default builds.
-- GUI is a read-only preview: write actions (apply, hide, sync, restore) require the CLI.
-- GUI Settings are display-only; use CLI flags or `~/.config/vapourfly/config.toml`.
-- GUI does not yet read Steam directory from Settings input (uses auto-detection).
-- API enrichment is available via CLI (`scan --enrich`, `cache refresh`); GUI cache refresh is deferred.
+- GUI Junk write actions (apply to collection, add to hidden) show dry-run diff before writing; backup restore also supported.
+- GUI Settings are editable and preserve existing IGDB/RAWG credentials on save.
+- GUI cache refresh is available from Data Sources; scan enrichment output remains CLI-only.
 - IGDB enrichment requires credentials; games without credentials fall back to cache.
 - `cargo deny check` requires `cargo-deny` installed separately.

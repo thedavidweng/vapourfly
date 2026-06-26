@@ -31,11 +31,11 @@ document covers the interactive flows that require a running GUI.
 
 ### 3. Write Dry-Run Modal
 
-1. From the Junk view, select one or more candidates.
-2. Click the "Apply" action button.
+1. From the Junk view, run junk detection until candidates are listed.
+2. Click the "Apply to Collection" or "Add to Hidden" action button.
 3. Verify a dry-run diff modal appears before any file is written.
-4. Confirm the modal shows the target file path (e.g., `sharedconfig.vdf`).
-5. Verify added/removed AppID counts match the selection.
+4. Confirm the modal shows the target `cloud-storage-namespace-1.json` path.
+5. Verify added/removed AppID counts match the junk candidates.
 6. Confirm dismissing the modal does NOT write to disk.
 7. Confirm accepting the modal writes the plan and refreshes the view.
 

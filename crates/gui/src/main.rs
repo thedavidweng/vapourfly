@@ -6,9 +6,9 @@ use vapourfly_core::config::VapourflyConfig;
 use vapourfly_core::junk::evaluate_junk;
 use vapourfly_core::models::*;
 use vapourfly_core::recommend::recommend;
+use vapourfly_core::steam::BackupInfo;
 use vapourfly_core::steam::backup::list_backups;
 use vapourfly_core::steam::scan::{ScanOptions, scan_library};
-use vapourfly_core::steam::BackupInfo;
 
 // ---------------------------------------------------------------------------
 // View enum
@@ -105,25 +105,10 @@ static SCAN_RESULT: Mutex<Option<vapourfly_core::Result<ScanResult>>> = Mutex::n
 static WRITE_RESULT: Mutex<Option<Result<String, String>>> = Mutex::new(None);
 static ENRICH_RESULT: Mutex<Option<Result<vapourfly_api::enrichment::EnrichmentSummary, String>>> =
     Mutex::new(None);
+static DRY_RUN_RESULT: Mutex<Option<Result<vapourfly_core::models::WritePlan, String>>> =
+    Mutex::new(None);
 
 // ---------------------------------------------------------------------------
-// Config write struct (for serializing settings to TOML)
-// ---------------------------------------------------------------------------
-
-#[derive(serde::Serialize)]
-struct ConfigWrite {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    steam_dir: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    account: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cc: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    lang: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    backup_retention_count: Option<u32>,
-}
-
 // ---------------------------------------------------------------------------
 // App state
 // ---------------------------------------------------------------------------
@@ -190,6 +175,9 @@ struct VapourflyApp {
     write_result: Option<Result<String, String>>,
     show_confirm_dialog: bool,
     pending_action: Option<PendingAction>,
+    dry_run_plan: Option<vapourfly_core::models::WritePlan>,
+    dry_run_loading: bool,
+    dry_run_error: Option<String>,
 
     // Cache refresh
     cache_refresh_loading: bool,
@@ -295,6 +283,9 @@ impl VapourflyApp {
             write_result: None,
             show_confirm_dialog: false,
             pending_action: None,
+            dry_run_plan: None,
+            dry_run_loading: false,
+            dry_run_error: None,
 
             cache_refresh_loading: false,
             cache_refresh_msg: None,
@@ -308,14 +299,11 @@ impl VapourflyApp {
             .as_ref()
             .ok_or("Configuration not loaded. Set Steam directory in Settings.")?;
 
-        let accounts =
-            vapourfly_core::steam::detect_accounts(&config.steam_dir).map_err(|e| {
-                format!("Failed to detect Steam accounts: {e}")
-            })?;
+        let accounts = vapourfly_core::steam::detect_accounts(&config.steam_dir)
+            .map_err(|e| format!("Failed to detect Steam accounts: {e}"))?;
 
-        let selected =
-            vapourfly_core::steam::select_account(&accounts, config.account.as_deref())
-                .map_err(|e| format!("Failed to select account: {e}"))?;
+        let selected = vapourfly_core::steam::select_account(&accounts, config.account.as_deref())
+            .map_err(|e| format!("Failed to select account: {e}"))?;
 
         Ok(config
             .steam_dir
@@ -340,7 +328,7 @@ impl VapourflyApp {
             .config
             .as_ref()
             .map(|c| c.steam_dir.clone())
-            .or_else(|| vapourfly_core::config::VapourflyConfig::detect_steam_dir())
+            .or_else(vapourfly_core::config::VapourflyConfig::detect_steam_dir)
             .unwrap_or_else(|| {
                 dirs::home_dir()
                     .unwrap_or_default()
@@ -364,12 +352,45 @@ impl VapourflyApp {
     }
 
     /// Execute a pending write action in a background thread.
+    ///
+    /// For junk apply/hide the [`WritePlan`] was already generated during the
+    /// dry-run step and stored in `self.dry_run_plan`.  For backup restores we
+    /// fall back to the original on-the-fly path.
     fn execute_pending_action(&mut self) {
         let action = match self.pending_action.take() {
             Some(a) => a,
             None => return,
         };
 
+        self.show_confirm_dialog = false;
+
+        // If we have a pre-computed plan from the dry-run step, execute it
+        // directly.  Otherwise fall through to the legacy path (backup
+        // restore).
+        if let Some(plan) = self.dry_run_plan.take() {
+            self.write_loading = true;
+            self.write_result = None;
+            self.success_msg = None;
+            let allow_steam_running = self.allow_steam_running;
+
+            std::thread::spawn(move || {
+                let result = vapourfly_core::steam::check_write_safety(
+                    &plan.target_path,
+                    allow_steam_running,
+                )
+                .map_err(|e| format!("Safety check failed: {e}"))
+                .and_then(|_| {
+                    vapourfly_core::steam::backup::execute_write_plan(&plan, 5)
+                        .map_err(|e| format!("Write failed: {e}"))
+                })
+                .map(|_| format!("Write complete. Backup: {}", plan.backup_path.display()));
+
+                WRITE_RESULT.lock().unwrap().replace(result);
+            });
+            return;
+        }
+
+        // Legacy path for BackupRestore (no dry-run diff).
         let cloud_path = match self.cloud_storage_path() {
             Ok(p) => p,
             Err(e) => {
@@ -388,14 +409,12 @@ impl VapourflyApp {
 
         std::thread::spawn(move || {
             let result = match action {
-                PendingAction::JunkApply => {
-                    execute_junk_apply(
-                        cloud_path,
-                        junk_results,
-                        collection_name,
-                        allow_steam_running,
-                    )
-                }
+                PendingAction::JunkApply => execute_junk_apply(
+                    cloud_path,
+                    junk_results,
+                    collection_name,
+                    allow_steam_running,
+                ),
                 PendingAction::JunkHide => {
                     execute_junk_hide(cloud_path, junk_results, allow_steam_running)
                 }
@@ -408,6 +427,32 @@ impl VapourflyApp {
         });
     }
 
+    /// Generate a dry-run WritePlan for the pending action and show the diff
+    /// modal before committing to disk.
+    fn start_dry_run(&mut self, action: PendingAction) {
+        let cloud_path = match self.cloud_storage_path() {
+            Ok(p) => p,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
+
+        self.dry_run_loading = true;
+        self.dry_run_error = None;
+        self.dry_run_plan = None;
+        self.pending_action = Some(action.clone());
+
+        let junk_results = self.junk_results.clone();
+        let collection_name = self.junk_collection_name.clone();
+
+        std::thread::spawn(move || {
+            let result =
+                generate_dry_run_plan(cloud_path, &action, &junk_results, &collection_name);
+            DRY_RUN_RESULT.lock().unwrap().replace(result);
+        });
+    }
+
     /// Start a cache refresh for the given source (or all sources).
     fn start_cache_refresh(&mut self, source: Option<String>, ctx: &egui::Context) {
         if self.cache_refresh_loading {
@@ -417,7 +462,8 @@ impl VapourflyApp {
         let games = match &self.scan_result {
             Some(scan) => scan.games.clone(),
             None => {
-                self.cache_refresh_msg = Some("Scan your library first to enable cache refresh.".into());
+                self.cache_refresh_msg =
+                    Some("Scan your library first to enable cache refresh.".into());
                 return;
             }
         };
@@ -477,8 +523,7 @@ impl VapourflyApp {
                 }
                 if !self.search_query.is_empty() {
                     let q = self.search_query.to_lowercase();
-                    if !g.name.to_lowercase().contains(&q) && !g.app_id.to_string().contains(&q)
-                    {
+                    if !g.name.to_lowercase().contains(&q) && !g.app_id.to_string().contains(&q) {
                         return false;
                     }
                 }
@@ -497,6 +542,47 @@ impl VapourflyApp {
 // ---------------------------------------------------------------------------
 // Write operation helpers (run in background threads)
 // ---------------------------------------------------------------------------
+
+/// Generate a [`WritePlan`] without executing it, so the GUI can display a
+/// dry-run diff before the user confirms.
+fn generate_dry_run_plan(
+    cloud_path: PathBuf,
+    action: &PendingAction,
+    junk_results: &[JunkDecision],
+    collection_name: &str,
+) -> Result<vapourfly_core::models::WritePlan, String> {
+    let mut junk_app_ids: Vec<u32> = junk_results
+        .iter()
+        .filter(|d| d.is_junk)
+        .map(|d| d.app_id)
+        .collect();
+    junk_app_ids.sort();
+    junk_app_ids.dedup();
+
+    if junk_app_ids.is_empty() {
+        return Err("No junk candidates found.".into());
+    }
+
+    let cloud = vapourfly_core::steam::read_cloud_storage(&cloud_path)
+        .map_err(|e| format!("Failed to read cloud storage: {e}"))?;
+
+    let op = match action {
+        PendingAction::JunkApply => WriteOp::UpsertCollection {
+            id: collection_name.to_string(),
+            added: junk_app_ids,
+            removed: vec![],
+        },
+        PendingAction::JunkHide => WriteOp::AddToHidden {
+            app_ids: junk_app_ids,
+        },
+        PendingAction::BackupRestore(_) => {
+            return Err("Dry-run not supported for backup restore.".into());
+        }
+    };
+
+    vapourfly_core::steam::generate_write_plan(&cloud, vec![op], cloud_path)
+        .map_err(|e| format!("Failed to generate write plan: {e}"))
+}
 
 fn execute_junk_apply(
     cloud_path: PathBuf,
@@ -602,7 +688,7 @@ fn execute_backup_restore(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    Ok(format!("Restored backup '{}'", filename))
+    Ok(format!("Restored backup '{filename}'"))
 }
 
 // ---------------------------------------------------------------------------
@@ -678,6 +764,24 @@ impl eframe::App for VapourflyApp {
         }
 
         // -- Confirmation dialog -----------------------------------------------
+        // Poll background dry-run result.
+        if self.dry_run_loading {
+            let mut guard = DRY_RUN_RESULT.lock().unwrap();
+            if let Some(result) = guard.take() {
+                self.dry_run_loading = false;
+                match result {
+                    Ok(plan) => {
+                        self.dry_run_plan = Some(plan);
+                        self.dry_run_error = None;
+                        self.show_confirm_dialog = true;
+                    }
+                    Err(e) => {
+                        self.dry_run_error = Some(e);
+                        self.pending_action = None;
+                    }
+                }
+            }
+        }
         self.render_confirm_dialog(ctx);
 
         // -- Left panel: navigation -----------------------------------------
@@ -728,10 +832,7 @@ impl eframe::App for VapourflyApp {
             }
             if let Some(msg) = self.success_msg.clone() {
                 let resp = ui.horizontal(|ui| {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(50, 180, 50),
-                        format!("✓ {msg}"),
-                    );
+                    ui.colored_label(egui::Color32::from_rgb(50, 180, 50), format!("✓ {msg}"));
                     ui.button("✕").clicked()
                 });
                 dismiss_success = resp.inner;
@@ -770,6 +871,10 @@ impl eframe::App for VapourflyApp {
 impl VapourflyApp {
     fn render_confirm_dialog(&mut self, ctx: &egui::Context) {
         if !self.show_confirm_dialog {
+            // Surface dry-run errors even when the dialog isn't open.
+            if let Some(err) = self.dry_run_error.take() {
+                self.error = Some(err);
+            }
             return;
         }
 
@@ -777,38 +882,81 @@ impl VapourflyApp {
         egui::Window::new("Confirm Action")
             .open(&mut open)
             .collapsible(false)
-            .resizable(false)
+            .resizable(true)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                match &self.pending_action {
-                    Some(PendingAction::JunkApply) => {
-                        let count = self.junk_results.iter().filter(|d| d.is_junk).count();
-                        ui.label(format!(
-                            "Apply junk classification to collection '{}'?",
-                            self.junk_collection_name
-                        ));
-                        ui.label(format!("{} games will be added to the collection.", count));
-                    }
-                    Some(PendingAction::JunkHide) => {
-                        let count = self.junk_results.iter().filter(|d| d.is_junk).count();
-                        ui.label(format!(
-                            "Add {} junk games to the Hidden collection?",
-                            count
-                        ));
-                        ui.label("This will hide them from your Steam library view.");
-                    }
-                    Some(PendingAction::BackupRestore(path)) => {
-                        let filename = path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        ui.label(format!("Restore backup '{}'?", filename));
-                        ui.colored_label(
-                            egui::Color32::from_rgb(200, 150, 50),
-                            "This will overwrite your current cloud storage. A safety backup will be created first.",
-                        );
-                    }
-                    None => {}
+                // -- Dry-run diff (junk apply / hide) --------------------------
+                if let Some(plan) = &self.dry_run_plan {
+                    let diff = &plan.diff;
+
+                    ui.heading("Dry-Run Diff");
+                    ui.label(format!(
+                        "Target: {}",
+                        plan.target_path.display()
+                    ));
+                    ui.add_space(4.0);
+
+                    egui::Grid::new("dry_run_diff_grid")
+                        .num_columns(2)
+                        .spacing([12.0, 4.0])
+                        .show(ui, |ui| {
+                            if !diff.collections_changed.is_empty() {
+                                ui.label("Collections changed:");
+                                let names: Vec<&str> = diff
+                                    .collections_changed
+                                    .iter()
+                                    .map(|c| c.id.as_str())
+                                    .collect();
+                                ui.label(names.join(", "));
+                                ui.end_row();
+                            }
+
+                            if !diff.app_ids_added.is_empty() {
+                                ui.label("AppIDs added:");
+                                ui.label(format!("{} games", diff.app_ids_added.len()));
+                                ui.end_row();
+                            }
+
+                            if !diff.app_ids_removed.is_empty() {
+                                ui.label("AppIDs removed:");
+                                ui.label(format!("{} games", diff.app_ids_removed.len()));
+                                ui.end_row();
+                            }
+
+                            if !diff.hidden_app_ids_added.is_empty() {
+                                ui.label("Hidden AppIDs added:");
+                                ui.label(format!("{} games", diff.hidden_app_ids_added.len()));
+                                ui.end_row();
+                            }
+
+                            ui.label("Unchanged entries:");
+                            ui.label(diff.unchanged_count.to_string());
+                            ui.end_row();
+
+                            if diff.skipped_deleted_count > 0 {
+                                ui.label("Skipped deleted:");
+                                ui.label(diff.skipped_deleted_count.to_string());
+                                ui.end_row();
+                            }
+                        });
+
+                    ui.add_space(4.0);
+                    ui.colored_label(
+                        egui::Color32::from_rgb(200, 150, 50),
+                        "A safety backup will be created before writing.",
+                    );
+                }
+                // -- Backup restore (no dry-run diff) --------------------------
+                else if let Some(PendingAction::BackupRestore(path)) = &self.pending_action {
+                    let filename = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    ui.label(format!("Restore backup '{filename}'?"));
+                    ui.colored_label(
+                        egui::Color32::from_rgb(200, 150, 50),
+                        "This will overwrite your current cloud storage. A safety backup will be created first.",
+                    );
                 }
 
                 if self.write_loading {
@@ -826,6 +974,7 @@ impl VapourflyApp {
                         if ui.button("✕ Cancel").clicked() {
                             self.show_confirm_dialog = false;
                             self.pending_action = None;
+                            self.dry_run_plan = None;
                         }
                     });
                 }
@@ -1046,27 +1195,30 @@ impl VapourflyApp {
             ui.add_space(4.0);
 
             ui.horizontal(|ui| {
-                let apply_enabled = !self.write_loading && !self.junk_collection_name.is_empty();
+                let busy = self.write_loading || self.dry_run_loading;
+                let apply_enabled = !busy && !self.junk_collection_name.is_empty();
                 if ui
                     .add_enabled(apply_enabled, egui::Button::new("📁 Apply to Collection"))
                     .clicked()
                 {
-                    self.pending_action = Some(PendingAction::JunkApply);
-                    self.show_confirm_dialog = true;
+                    self.start_dry_run(PendingAction::JunkApply);
                 }
 
-                let hide_enabled = !self.write_loading;
+                let hide_enabled = !busy;
                 if ui
                     .add_enabled(hide_enabled, egui::Button::new("👁 Add to Hidden"))
                     .clicked()
                 {
-                    self.pending_action = Some(PendingAction::JunkHide);
-                    self.show_confirm_dialog = true;
+                    self.start_dry_run(PendingAction::JunkHide);
                 }
 
                 if self.write_loading {
                     ui.spinner();
                     ui.label("Writing...");
+                }
+                if self.dry_run_loading {
+                    ui.spinner();
+                    ui.label("Preparing diff...");
                 }
             });
         }
@@ -1127,12 +1279,9 @@ impl VapourflyApp {
                     ui.horizontal(|ui| {
                         ui.strong(&rec.name);
                         ui.label(format!("(AppID: {})", rec.app_id));
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                ui.label(format!("Score: {:.2}", rec.score));
-                            },
-                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(format!("Score: {:.2}", rec.score));
+                        });
                     });
                     if !rec.reasons.is_empty() {
                         ui.indent("rec_reasons", |ui| {
@@ -1647,43 +1796,92 @@ impl VapourflyApp {
         // Create directory if needed
         if let Some(parent) = config_path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
-                self.settings_save_msg =
-                    Some(format!("Failed to create config directory: {e}"));
+                self.settings_save_msg = Some(format!("Failed to create config directory: {e}"));
                 return;
             }
         }
 
+        // Read existing config.toml to preserve fields we don't manage in the
+        // GUI (e.g. igdb_client_id, igdb_client_secret, rawg_api_key).
+        let mut table: toml::Value = std::fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|s| toml::from_str(&s).ok())
+            .unwrap_or(toml::Value::Table(toml::map::Map::new()));
+
+        // Ensure we have a top-level table.
+        if !table.is_table() {
+            table = toml::Value::Table(toml::map::Map::new());
+        }
+
         let backup_retention = self.backup_retention_edit.parse::<u32>().ok();
 
-        let config = ConfigWrite {
-            steam_dir: if self.steam_dir_edit.is_empty() {
+        // Helper: set a string key, removing it when the value is None.
+        let tbl = table.as_table_mut().unwrap();
+        let set_str =
+            |tbl: &mut toml::map::Map<String, toml::Value>, key: &str, val: Option<String>| {
+                match val {
+                    Some(s) => {
+                        tbl.insert(key.to_string(), toml::Value::String(s));
+                    }
+                    None => {
+                        tbl.remove(key);
+                    }
+                }
+            };
+
+        set_str(
+            tbl,
+            "steam_dir",
+            if self.steam_dir_edit.is_empty() {
                 None
             } else {
                 Some(self.steam_dir_edit.clone())
             },
-            account: if self.account_edit.is_empty() {
+        );
+        set_str(
+            tbl,
+            "account",
+            if self.account_edit.is_empty() {
                 None
             } else {
                 Some(self.account_edit.clone())
             },
-            cc: if self.cc_edit.is_empty() {
+        );
+        set_str(
+            tbl,
+            "cc",
+            if self.cc_edit.is_empty() {
                 None
             } else {
                 Some(self.cc_edit.clone())
             },
-            lang: if self.lang_edit.is_empty() {
+        );
+        set_str(
+            tbl,
+            "lang",
+            if self.lang_edit.is_empty() {
                 None
             } else {
                 Some(self.lang_edit.clone())
             },
-            backup_retention_count: backup_retention,
-        };
+        );
 
-        match toml::to_string_pretty(&config) {
+        match backup_retention {
+            Some(n) => {
+                tbl.insert(
+                    "backup_retention_count".to_string(),
+                    toml::Value::Integer(n as i64),
+                );
+            }
+            None => {
+                tbl.remove("backup_retention_count");
+            }
+        }
+
+        match toml::to_string_pretty(&table) {
             Ok(toml_str) => match std::fs::write(&config_path, toml_str) {
                 Ok(()) => {
-                    self.settings_save_msg =
-                        Some(format!("Saved to {}", config_path.display()));
+                    self.settings_save_msg = Some(format!("Saved to {}", config_path.display()));
                     // Reload config
                     self.config = VapourflyConfig::from_cli_and_env(
                         vapourfly_core::config::CliOverrides::default(),
@@ -1764,6 +1962,8 @@ fn main() -> eframe::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use tempfile::TempDir;
 
     #[test]
     fn app_created_without_fixtures() {
@@ -1867,5 +2067,50 @@ mod tests {
         assert!(!app.backup_retention_edit.is_empty());
         assert!(!app.allow_steam_running);
         assert!(app.settings_save_msg.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn cached_dry_run_plan_still_checks_write_safety() {
+        vapourfly_core::steam::set_steam_running_override(Some(true));
+        WRITE_RESULT.lock().unwrap().take();
+
+        let temp_dir = TempDir::new().unwrap();
+        let target_path = temp_dir.path().join("cloud-storage-namespace-1.json");
+        std::fs::write(&target_path, "[]").unwrap();
+
+        let cloud = vapourfly_core::steam::read_cloud_storage(&target_path).unwrap();
+        let plan = vapourfly_core::steam::generate_write_plan(
+            &cloud,
+            vec![WriteOp::UpsertCollection {
+                id: "junk".into(),
+                added: vec![730],
+                removed: vec![],
+            }],
+            target_path.clone(),
+        )
+        .unwrap();
+
+        let mut app = VapourflyApp::new(None);
+        app.pending_action = Some(PendingAction::JunkApply);
+        app.dry_run_plan = Some(plan);
+        app.allow_steam_running = false;
+        app.execute_pending_action();
+
+        let result = poll_write_result();
+        assert!(result.unwrap_err().contains("Steam is currently running"));
+        assert_eq!(std::fs::read_to_string(&target_path).unwrap(), "[]");
+
+        vapourfly_core::steam::set_steam_running_override(None);
+    }
+
+    fn poll_write_result() -> Result<String, String> {
+        for _ in 0..100 {
+            if let Some(result) = WRITE_RESULT.lock().unwrap().take() {
+                return result;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("timed out waiting for write result");
     }
 }

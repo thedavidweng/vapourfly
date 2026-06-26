@@ -49,9 +49,9 @@
 ## Phase 5 exit
 
 - [x] GUI calls core write plans rather than writing files directly.
-- [x] GUI shows read-only preview (write actions deferred to CLI).
+- [x] GUI Junk write actions show dry-run diff before writing; backup restore supported.
 - [x] GUI displays API source status and credential state.
-- [x] GUI backup list functional; restore via CLI only.
+- [x] GUI backup list with restore support (dry-run diff for junk, direct restore for backups).
 
 ## Phase 6 exit
 
@@ -63,13 +63,13 @@
 
 - [x] GUI builds on Linux, macOS, and Windows.
 - [x] GUI can scan fixtures through core service.
-- [x] GUI shows read-only preview (write actions deferred to CLI; no dry-run diff displayed in GUI).
+- [x] GUI Junk write actions show dry-run diff before writing.
 - [x] GUI has no direct file write code for Steam files.
 - [x] GUI displays source status and credential state without secrets.
 
 ## Phase 8 exit
 
-- [x] All tests pass in clean checkout (347 tests).
+- [x] All tests pass in clean checkout (349 tests).
 - [x] `cargo check -p vapourfly-api --features hltb_scrape` passes.
 - [x] `--allow-steam-running` flag on CLI write commands.
 - [x] API enrichment service implemented (`scan --enrich`, `cache refresh`).
@@ -82,9 +82,9 @@
 
 - [x] `cargo fmt --all -- --check` passes.
 - [x] `cargo clippy --workspace --all-targets -- -D warnings` passes.
-- [x] `cargo test --workspace` passes (347 tests).
+- [x] `cargo test --workspace` passes (349 tests).
 - [x] Source archive builds cleanly.
 - [x] Release candidate checklist complete (docs/release-candidate-checklist.md).
 - [x] CHANGELOG has v0.1.0 release entry.
-- [x] Execution plan stamps match v0.1.0 tag (c977f94).
+- [x] Execution plan stamps match v0.1.0 tag (a2b4faf).
 - [x] Known limitations documented honestly.

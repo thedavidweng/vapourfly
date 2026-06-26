@@ -3753,6 +3753,8 @@ dependencies = [
  "egui_extras",
  "serde",
  "serde_json",
+ "serial_test",
+ "tempfile",
  "toml",
  "tracing",
  "vapourfly-api",

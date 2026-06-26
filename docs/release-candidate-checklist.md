@@ -3,7 +3,7 @@
 **Version**: 0.1.0
 **Tag**: v0.1.0
 **Date**: 2026-06-25
-**Commit**: c977f94
+**Commit**: a2b4faf
 
 ## Release Type
 
@@ -31,7 +31,7 @@ a4946ebea8efc23138fa615a2762d3b5bf539875410ebfdd34d6c6055c4d6467  vapourfly-0.1.
 
 | Platform | Build | Tests | Notes |
 |---|---|---|---|
-| macOS (aarch64) | ✅ | ✅ 347 passed | Primary dev platform |
+| macOS (aarch64) | ✅ | ✅ 349 passed | Primary dev platform |
 
 Cross-platform builds (Linux, Windows) have not been validated in this
 release candidate. The codebase uses only cross-platform Rust std and
@@ -94,10 +94,9 @@ checked `[x]`. No unchecked items remain.
 ## Known Limitations
 
 1. HLTB scraping behind `hltb_scrape` feature gate (not in default builds).
-2. GUI is read-only preview: write actions (apply, hide, sync, restore) require CLI.
-3. GUI Settings display-only; use CLI flags or `~/.config/vapourfly/config.toml`.
-4. GUI does not read Steam directory from Settings input (auto-detection only).
-5. API enrichment via CLI only; GUI cache refresh deferred.
-6. IGDB enrichment requires credentials; falls back to cache without them.
-7. `cargo deny check` requires `cargo-deny` installed separately.
-8. Source-only release: no pre-built binaries.
+2. GUI Junk write actions (apply to collection, add to hidden) show dry-run diff before writing; backup restore also supported.
+3. GUI Settings are editable and preserve existing IGDB/RAWG credentials on save.
+4. GUI cache refresh is available from Data Sources; scan enrichment output remains CLI-only.
+5. IGDB enrichment requires credentials; falls back to cache without them.
+6. `cargo deny check` requires `cargo-deny` installed separately.
+7. Source-only release: no pre-built binaries.

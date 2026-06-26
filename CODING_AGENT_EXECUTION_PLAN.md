@@ -1309,12 +1309,12 @@ Manual release evidence required:
 
 <!-- PHASE_8_ACCEPTANCE_STAMP_START -->
 - [x] Phase 8 accepted
-- Commit: c977f94
+- Commit: a2b4faf
 - Date: 2026-06-25
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
   - `cargo clippy --workspace --all-targets -- -D warnings` -> pass
-  - `cargo test --workspace` -> pass (347 tests)
+  - `cargo test --workspace` -> pass (349 tests)
   - `cargo check -p vapourfly-api --features hltb_scrape` -> pass
   - `cargo run -p vapourfly-cli -- --version` -> pass (vapourfly 0.1.0)
   - `cargo run -p vapourfly-cli -- --version --verbose` -> pass
@@ -1326,7 +1326,7 @@ Manual release evidence required:
   - docs/API_SOURCES.md
   - docs/gui-smoke-test.md
   - README.md (updated)
-- Notes: Full documentation, version embedding with git commit, diagnostics export, enrichment service, GUI read-only preview, --allow-steam-running flag
+- Notes: Full documentation, version embedding with git commit, diagnostics export, enrichment service, GUI with write operations and dry-run diff, --allow-steam-running flag
 <!-- PHASE_8_ACCEPTANCE_STAMP_END -->
 
 ---
@@ -1373,12 +1373,12 @@ cargo run -p vapourfly-cli -- recommend --fixtures data/fixtures/steam_minimal -
 - [x] Release accepted
 - Version: 0.1.0
 - Tag: v0.1.0
-- Commit: c977f94
+- Commit: a2b4faf
 - Date: 2026-06-25
 - Commands run:
   - `cargo fmt --all -- --check` -> pass
   - `cargo clippy --workspace --all-targets -- -D warnings` -> pass
-  - `cargo test --workspace` -> pass (347 tests)
+  - `cargo test --workspace` -> pass (349 tests)
   - `cargo check -p vapourfly-api --features hltb_scrape` -> pass
   - `cargo run -p vapourfly-cli -- doctor --fixtures data/fixtures/steam_minimal` -> pass
   - `cargo run -p vapourfly-cli -- scan --fixtures data/fixtures/steam_minimal --format json` -> pass
@@ -1391,9 +1391,9 @@ cargo run -p vapourfly-cli -- recommend --fixtures data/fixtures/steam_minimal -
 - Release checklist: docs/release-candidate-checklist.md
 - Known limitations:
   - HLTB scraping behind feature gate (`--features hltb_scrape`)
-  - GUI is read-only preview: Library/Junk/Recommend/Playlists/Collections views functional; write actions (apply/hide/sync/restore) disabled, use CLI
-  - GUI Settings are display-only; use CLI flags or config.toml
-  - API enrichment via CLI (`scan --enrich`, `cache refresh`); GUI cache refresh deferred
+  - GUI Junk write actions (apply to collection, add to hidden) show dry-run diff before writing; backup restore also supported
+  - GUI Settings are editable and preserve existing IGDB/RAWG credentials on save
+  - GUI cache refresh is available from Data Sources; scan enrichment output remains CLI-only
   - `--allow-steam-running` flag available on CLI write commands
 <!-- FINAL_RELEASE_STAMP_END -->
 
