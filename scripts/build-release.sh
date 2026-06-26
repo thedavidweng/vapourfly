@@ -54,6 +54,8 @@ rsync -a \
     --exclude='target' \
     ./ "${TMPDIR}/"
 
+git rev-parse --short HEAD > "${TMPDIR}/crates/cli/release-git-hash"
+
 COPYFILE_DISABLE=1 tar czf "${OUTDIR}/${ARCHIVE_NAME}.tar.gz" -C "${TMPPARENT}" "${ARCHIVE_NAME}"
 rm -rf "${TMPPARENT}"
 
