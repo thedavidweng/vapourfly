@@ -15,8 +15,27 @@ set -euo pipefail
 VERSION="${1:-$(grep '^version' crates/cli/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')}"
 OUTDIR="target/release-artifacts"
 ARCHIVE_NAME="vapourfly-${VERSION}-source"
+TAG="v${VERSION}"
 
 echo "Building release archive for version: ${VERSION}"
+
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+        echo "Refusing to build release archive from a dirty worktree." >&2
+        echo "Commit or remove local changes before running this script." >&2
+        exit 1
+    fi
+
+    if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+        TAG_COMMIT="$(git rev-list -n 1 "${TAG}")"
+        HEAD_COMMIT="$(git rev-parse HEAD)"
+        if [ "${TAG_COMMIT}" != "${HEAD_COMMIT}" ]; then
+            echo "Refusing to build ${TAG}: tag points to ${TAG_COMMIT}, HEAD is ${HEAD_COMMIT}." >&2
+            echo "Move ${TAG} to the intended release commit before building artifacts." >&2
+            exit 1
+        fi
+    fi
+fi
 
 # Clean output directory
 rm -rf "${OUTDIR}"

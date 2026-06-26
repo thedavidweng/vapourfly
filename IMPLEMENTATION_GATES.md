@@ -1,6 +1,6 @@
 # Vapourfly Implementation Gates
 
-**Version**: 2026-06-25
+**Version**: 2026-06-26
 
 > **Single source of truth**: See [CODING_AGENT_EXECUTION_PLAN.md](CODING_AGENT_EXECUTION_PLAN.md) for detailed phase order, acceptance stamps, commands, and stop conditions. This file provides a quick-reference checklist only.
 
