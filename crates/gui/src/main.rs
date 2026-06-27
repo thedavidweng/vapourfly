@@ -78,6 +78,7 @@ enum PendingAction {
     JunkApply,
     JunkHide,
     RecommendCollection,
+    PlaylistSync(PlaylistFile),
     BackupRestore(PathBuf),
 }
 
@@ -152,6 +153,7 @@ struct VapourflyApp {
 
     // Playlists view
     playlist_import_path: String,
+    playlist_export_path: String,
     playlist_share_code_input: String,
     playlist_share_code_output: Option<String>,
     playlist_edit_id: String,
@@ -287,6 +289,7 @@ impl VapourflyApp {
             recommend_results: Vec::new(),
 
             playlist_import_path: String::new(),
+            playlist_export_path: String::new(),
             playlist_share_code_input: String::new(),
             playlist_share_code_output: None,
             playlist_edit_id: String::new(),
@@ -461,6 +464,9 @@ impl VapourflyApp {
                 PendingAction::RecommendCollection => {
                     Err("Recommendation collection writes require a dry-run plan.".into())
                 }
+                PendingAction::PlaylistSync(_) => {
+                    Err("Playlist sync writes require a dry-run plan.".into())
+                }
             };
 
             WRITE_RESULT.lock().unwrap().replace(result);
@@ -470,6 +476,14 @@ impl VapourflyApp {
     /// Generate a dry-run WritePlan for the pending action and show the diff
     /// modal before committing to disk.
     fn start_dry_run(&mut self, action: PendingAction) {
+        let action = match self.resolve_dry_run_action(action) {
+            Ok(action) => action,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
+
         let cloud_path = match self.cloud_storage_path() {
             Ok(p) => p,
             Err(e) => {
@@ -608,6 +622,49 @@ impl VapourflyApp {
         playlist::export_playlist(pf, &path).map_err(|e| e.to_string())
     }
 
+    fn export_loaded_playlist(&self) -> Result<(), String> {
+        let pf = self
+            .playlist_last_import
+            .as_ref()
+            .ok_or("Load or save a playlist before exporting.")?;
+        if self.playlist_export_path.trim().is_empty() {
+            return Err("Choose an export path before exporting.".into());
+        }
+
+        playlist::export_playlist(pf, Path::new(self.playlist_export_path.trim()))
+            .map_err(|e| e.to_string())
+    }
+
+    fn resolve_dry_run_action(&self, action: PendingAction) -> Result<PendingAction, String> {
+        match action {
+            PendingAction::PlaylistSync(pf) => {
+                if matches!(pf.playlist.content, PlaylistContent::Manual { .. }) {
+                    return Ok(PendingAction::PlaylistSync(pf));
+                }
+
+                let games = self
+                    .prepared_games(JunkMode::Default)
+                    .ok_or("Scan your library before syncing a rule-based playlist.")?;
+                let report = playlist::match_playlist(&pf, &games)
+                    .map_err(|e| format!("Match failed: {e}"))?;
+
+                Ok(PendingAction::PlaylistSync(PlaylistFile {
+                    vapourfly_schema: pf.vapourfly_schema,
+                    created_by: pf.created_by,
+                    playlist: Playlist {
+                        id: pf.playlist.id,
+                        name: pf.playlist.name,
+                        description: pf.playlist.description,
+                        content: PlaylistContent::Manual {
+                            app_ids: report.owned,
+                        },
+                    },
+                }))
+            }
+            other => Ok(other),
+        }
+    }
+
     fn match_playlist_against_library(&mut self, pf: &PlaylistFile) {
         if let Some(games) = self.prepared_games(JunkMode::Default) {
             match playlist::match_playlist(pf, &games) {
@@ -676,6 +733,28 @@ fn generate_dry_run_plan(
             }
             WriteOp::UpsertCollection {
                 id: RECOMMEND_COLLECTION_ID.into(),
+                added: app_ids,
+                removed: vec![],
+            }
+        }
+        PendingAction::PlaylistSync(pf) => {
+            let collection_id = playlist::slugify(&pf.playlist.id);
+            if collection_id.is_empty() {
+                return Err("Playlist ID cannot produce a Steam collection ID.".into());
+            }
+            let mut app_ids = match &pf.playlist.content {
+                PlaylistContent::Manual { app_ids } => app_ids.clone(),
+                PlaylistContent::Rules { .. } => {
+                    return Err("Rule-based playlist sync was not resolved before dry-run.".into());
+                }
+            };
+            app_ids.sort_unstable();
+            app_ids.dedup();
+            if app_ids.is_empty() {
+                return Err("No app IDs to sync.".into());
+            }
+            WriteOp::UpsertCollection {
+                id: collection_id,
                 added: app_ids,
                 removed: vec![],
             }
@@ -1592,7 +1671,7 @@ impl VapourflyApp {
         ui.separator();
 
         // Show imported playlist info
-        if let Some(pf) = &self.playlist_last_import {
+        if let Some(pf) = self.playlist_last_import.clone() {
             ui.group(|ui| {
                 ui.strong(format!("Playlist: {}", pf.playlist.name));
                 ui.label(format!("ID: {}", pf.playlist.id));
@@ -1609,7 +1688,7 @@ impl VapourflyApp {
                 }
 
                 if ui.button("Copy Share Code").clicked() {
-                    match share_code::encode_share_code(pf) {
+                    match share_code::encode_share_code(&pf) {
                         Ok(code) => {
                             self.playlist_share_code_output = Some(code.clone());
                             ui.ctx().copy_text(code);
@@ -1620,6 +1699,38 @@ impl VapourflyApp {
                 }
                 if let Some(code) = &self.playlist_share_code_output {
                     ui.label(format!("Share code: {code}"));
+                }
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("Export path:");
+                    ui.text_edit_singleline(&mut self.playlist_export_path);
+                    if ui.button("Export Playlist").clicked() {
+                        match self.export_loaded_playlist() {
+                            Ok(()) => {
+                                self.success_msg = Some(format!(
+                                    "Exported playlist '{}' to {}",
+                                    pf.playlist.name,
+                                    self.playlist_export_path.trim()
+                                ));
+                            }
+                            Err(e) => self.error = Some(format!("Export failed: {e}")),
+                        }
+                    }
+                });
+
+                let busy = self.write_loading || self.dry_run_loading;
+                if ui
+                    .add_enabled(!busy, egui::Button::new("Sync to Steam Collection"))
+                    .clicked()
+                {
+                    self.start_dry_run(PendingAction::PlaylistSync(pf.clone()));
+                }
+                if self.dry_run_loading {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Preparing diff...");
+                    });
                 }
             });
             ui.separator();
@@ -2352,6 +2463,114 @@ mod tests {
         };
 
         assert_eq!(manual_playlist_app_ids_csv(&pf), "730, 427520");
+    }
+
+    #[test]
+    fn export_loaded_playlist_writes_selected_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let export_path = temp_dir.path().join("deck-shortlist.json");
+        let pf = PlaylistFile {
+            vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
+            created_by: "test".into(),
+            playlist: Playlist {
+                id: "deck-shortlist".into(),
+                name: "Deck Shortlist".into(),
+                description: "Games to play on Deck".into(),
+                content: PlaylistContent::Manual {
+                    app_ids: vec![427520, 730],
+                },
+            },
+        };
+
+        let mut app = VapourflyApp::new(None);
+        app.playlist_last_import = Some(pf.clone());
+        app.playlist_export_path = export_path.to_string_lossy().to_string();
+
+        app.export_loaded_playlist().unwrap();
+
+        let exported = playlist::import_playlist(&export_path).unwrap();
+        assert_eq!(exported.playlist.id, pf.playlist.id);
+        assert_eq!(manual_playlist_app_ids_csv(&exported), "730, 427520");
+    }
+
+    #[test]
+    fn playlist_sync_dry_run_uses_slugged_playlist_id_and_deduped_app_ids() {
+        let temp_dir = TempDir::new().unwrap();
+        let target_path = temp_dir.path().join("cloud-storage-namespace-1.json");
+        std::fs::write(&target_path, "[]").unwrap();
+        let playlist = PlaylistFile {
+            vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
+            created_by: "test".into(),
+            playlist: Playlist {
+                id: "Deck Shortlist!".into(),
+                name: "Deck Shortlist".into(),
+                description: String::new(),
+                content: PlaylistContent::Manual {
+                    app_ids: vec![730, 427520, 730],
+                },
+            },
+        };
+
+        let plan = generate_dry_run_plan(
+            target_path,
+            &PendingAction::PlaylistSync(playlist),
+            &[],
+            "junk",
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(plan.diff.collections_changed[0].id, "deck-shortlist");
+        assert_eq!(plan.diff.app_ids_added, vec![730, 427520]);
+        match &plan.operations[0] {
+            WriteOp::UpsertCollection { id, added, removed } => {
+                assert_eq!(id, "deck-shortlist");
+                assert_eq!(added, &vec![730, 427520]);
+                assert!(removed.is_empty());
+            }
+            WriteOp::AddToHidden { .. } => panic!("expected collection upsert"),
+        }
+    }
+
+    #[test]
+    fn playlist_sync_resolves_rule_playlist_before_dry_run() {
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
+        let scan_result = scan_library(&ScanOptions {
+            steam_dir: fixtures.clone(),
+            account: None,
+            fixtures: Some(fixtures),
+        })
+        .unwrap();
+        let playlist = PlaylistFile {
+            vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
+            created_by: "test".into(),
+            playlist: Playlist {
+                id: "installed-games".into(),
+                name: "Installed Games".into(),
+                description: String::new(),
+                content: PlaylistContent::Rules {
+                    rules: vec![PlaylistRule::Installed],
+                },
+            },
+        };
+
+        let mut app = VapourflyApp::new(None);
+        app.scan_result = Some(scan_result);
+
+        let action = app
+            .resolve_dry_run_action(PendingAction::PlaylistSync(playlist))
+            .unwrap();
+
+        match action {
+            PendingAction::PlaylistSync(pf) => match pf.playlist.content {
+                PlaylistContent::Manual { app_ids } => {
+                    assert_eq!(app_ids, vec![730, 223850]);
+                }
+                PlaylistContent::Rules { .. } => panic!("rule playlist should be resolved"),
+            },
+            other => panic!("unexpected action: {other:?}"),
+        }
     }
 
     #[test]

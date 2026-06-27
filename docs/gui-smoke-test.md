@@ -8,6 +8,11 @@ document covers the interactive flows that require a running GUI.
 
 - Build the GUI: `cargo build -p vapourfly-gui`
 - Have fixture data available: `data/fixtures/steam_minimal/`
+- Junk write-action checks require at least one low-playtime game with a second
+  junk signal from cached metadata (low rating or short completion time).
+  `steam_minimal` by itself has only playtime data; without a seeded cache or a
+  real library/cache that produces a candidate, Junk Preview should show zero
+  candidates without errors and the write buttons should remain unavailable.
 
 ## Test Steps
 
@@ -26,12 +31,14 @@ document covers the interactive flows that require a running GUI.
 1. Navigate to Junk view via the left sidebar.
 2. Choose Default, Strict, or Aggressive mode.
 3. Click "Run Junk Detection".
-4. Verify junk candidates are displayed with confidence scores and signal text.
-5. Switch modes, run detection again, and confirm the table updates without errors.
+4. Verify the evaluation table is displayed with confidence scores and signal text.
+5. If the active fixture/cache has candidates, verify the candidate count is nonzero.
+6. If using bare `steam_minimal`, verify the table reports zero candidates without errors.
+7. Switch modes, run detection again, and confirm the table updates without errors.
 
 ### 3. Write Dry-Run Modal
 
-1. From the Junk view, run junk detection until candidates are listed.
+1. From the Junk view, run junk detection with a fixture/cache that produces at least one candidate.
 2. Click the "Apply to Collection" or "Add to Hidden" action button.
 3. Verify a dry-run diff modal appears before any file is written.
 4. Confirm the modal shows the target `cloud-storage-namespace-1.json` path.
@@ -57,8 +64,12 @@ document covers the interactive flows that require a running GUI.
 3. Click "Save Playlist" and verify a match report appears.
 4. Click "Copy Share Code" and verify a `VF1:` code is shown.
 5. Paste the code into Share code and click "Import Code"; verify the same playlist is loaded.
-6. Click "Generate Discover" and verify a Discover playlist is created.
-7. Compile `deck-session`, `finish-it`, `mood`, and `playlist-radio` templates and verify each produces a playlist or rule summary without errors.
+6. Enter an export path and click "Export Playlist"; verify a Vapourfly playlist JSON file is written.
+7. Click "Sync to Steam Collection"; verify a dry-run diff modal appears before any file is written and targets the slugged playlist ID as the Steam collection.
+8. Cancel the sync modal and verify the Steam cloud storage file is unchanged.
+9. Confirm the sync modal and verify a backup is created before the Steam collection is written.
+10. Click "Generate Discover" and verify a Discover playlist is created.
+11. Compile `deck-session`, `finish-it`, `mood`, and `playlist-radio` templates and verify each produces a playlist or rule summary without errors.
 
 ### 6. Backup List
 

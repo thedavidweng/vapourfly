@@ -30,11 +30,11 @@ feature row, the command reference, and the relevant GUI smoke test.
 | Recommendations | Yes | Yes | Recommends from hydrated scanned game records by available minutes, count, installed-only, Deck mode, and optional seed in CLI. |
 | Temporary recommendation collection | Yes | Yes | CLI `recommend --to-collection --dry-run|--confirm` and GUI Recommend view write to `vapourfly-picks` after dry-run confirmation. |
 | Playlist import | Yes | Yes | Imports Vapourfly JSON playlist files. CLI stores imported playlists under the app data playlist directory. |
-| Playlist export | Yes | No | CLI exports a stored playlist by ID. GUI can import and inspect, but not export. |
+| Playlist export | Yes | Yes | CLI exports a stored playlist by ID. GUI exports the currently loaded playlist to a selected JSON path. |
 | Playlist match report | Yes | Yes | Reports owned, missing, played, unplayed, hidden, and junk counts for a playlist. |
 | Playlist completion price | Partial | Partial | Core can calculate missing-game price when `steam_store` data is present. CLI/GUI match flows hydrate cached metadata before matching, so this field appears when cache data exists. |
 | Rule-based playlists | Partial | Partial | Rule files can be imported and evaluated. CLI/GUI workflows hydrate cached metadata before rule evaluation when cache entries exist. |
-| Playlist sync to Steam collection | Yes | No | `vapourfly sync collection <playlist-id>` resolves a stored playlist and writes a Steam collection with dry-run/confirmation. |
+| Playlist sync to Steam collection | Yes | Yes | CLI `vapourfly sync collection <playlist-id>` and GUI Playlists sync resolve a playlist and write a Steam collection with dry-run/confirmation. |
 | Data source cache refresh | Yes | Yes | CLI `cache refresh --source <source>` and GUI Data Sources refresh support `igdb`, `rawg`, `protondb`, `pcgw`, `hltb`, `steam-store`, and `all`. |
 | Data source status | Yes | Yes | CLI `sources status`; GUI Data Sources table. Shows credential state, cache entries, stale entries, and last success. |
 | Offline mode | Yes | Partial | CLI `--offline` blocks network calls and uses cache during enrichment. GUI has no offline toggle. |
