@@ -95,10 +95,10 @@ impl Cli {
         let steam_dir = self.resolve_steam_dir()?;
         let accounts = steam::detect_accounts(&steam_dir)?;
         let selected = steam::select_account(&accounts, self.account.as_deref())?;
-        Ok(steam_dir
-            .join("userdata")
-            .join(&selected.steam_id64)
-            .join("config/cloudstorage/cloud-storage-namespace-1.json"))
+        Ok(
+            steam::resolve_userdata_dir(&steam_dir, &selected.steam_id64)
+                .join("config/cloudstorage/cloud-storage-namespace-1.json"),
+        )
     }
 }
 
@@ -517,9 +517,7 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 
             // Cloud storage
             if let Some(acc) = selected {
-                let cloud_path = dir
-                    .join("userdata")
-                    .join(&acc.steam_id64)
+                let cloud_path = steam::resolve_userdata_dir(&dir, &acc.steam_id64)
                     .join("config/cloudstorage/cloud-storage-namespace-1.json");
                 if cloud_path.exists() {
                     println!("Cloud storage: available");
@@ -1220,9 +1218,7 @@ fn cmd_sync_collection(
     let accounts = steam::detect_accounts(&steam_dir)?;
     let selected = steam::select_account(&accounts, cli.account.as_deref())?;
 
-    let cloud_path = steam_dir
-        .join("userdata")
-        .join(&selected.steam_id64)
+    let cloud_path = steam::resolve_userdata_dir(&steam_dir, &selected.steam_id64)
         .join("config/cloudstorage/cloud-storage-namespace-1.json");
 
     let cloud = steam::read_cloud_storage(&cloud_path)?;

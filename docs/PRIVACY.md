@@ -20,14 +20,15 @@ Vapourfly reads the following files from your Steam installation:
 | `userdata/<id>/config/cloudstorage/cloud-storage-namespace-1.json` | Collections, hidden apps, and other cloud storage entries |
 | `steamapps/appmanifest_*.acf` | Game names, install state, install directories |
 | `steamapps/libraryfolders.vdf` | Library folder paths |
-| `appcache/librarycache/*.json` | Game name fallbacks from Steam's library cache |
+| `userdata/<id>/config/librarycache/librarycache.json` | Legacy aggregated game name fallbacks, when present |
+| `appcache/appinfo.vdf` | App display names from Steam's app metadata cache |
 
 ## What Vapourfly Writes
 
 Vapourfly writes to a single file:
 
 ```
-userdata/<steam_id64>/config/cloudstorage/cloud-storage-namespace-1.json
+userdata/<account_id_or_steam_id64>/config/cloudstorage/cloud-storage-namespace-1.json
 ```
 
 This is Steam's cloud storage file for user-defined collections. See [STEAM_FILE_SAFETY.md](STEAM_FILE_SAFETY.md) for details on the write process and backup strategy.

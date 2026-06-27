@@ -6,12 +6,15 @@ use std::path::PathBuf;
 use crate::error::Result;
 use crate::models::{Game, ScanResult, ScanWarning, SteamAppType};
 use crate::steam::account::select_account;
+use crate::steam::appinfo::lookup_appinfo_names;
 use crate::steam::collections::{
     get_all_hidden_app_ids, read_cloud_storage, read_user_collections,
 };
 use crate::steam::librarycache::parse_librarycache;
 use crate::steam::localconfig::parse_localconfig;
-use crate::steam::paths::{detect_accounts, detect_library_folders, parse_appmanifests};
+use crate::steam::paths::{
+    detect_accounts, detect_library_folders, parse_appmanifests, resolve_userdata_dir,
+};
 
 /// Options for a library scan.
 #[derive(Clone, Debug)]
@@ -38,7 +41,8 @@ pub struct ScanOptions {
 /// 6. Parse librarycache for name fallback
 /// 7. Parse cloud storage for collections and hidden status
 /// 8. Merge into Game records
-/// 9. Sort games by name then app_id
+/// 9. Resolve remaining placeholder names from `appcache/appinfo.vdf`
+/// 10. Sort games by name then app_id
 pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
     let mut warnings = Vec::new();
 
@@ -96,11 +100,10 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
         }
     }
 
+    let userdata_dir = resolve_userdata_dir(&steam_root, &user_id);
+
     // -- 5. Parse localconfig for playtime data -------------------------------
-    let localconfig_path = steam_root
-        .join("userdata")
-        .join(&user_id)
-        .join("config/localconfig.vdf");
+    let localconfig_path = userdata_dir.join("config/localconfig.vdf");
     let local_apps = match parse_localconfig(&localconfig_path) {
         Ok(apps) => apps,
         Err(_) => {
@@ -113,10 +116,7 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
     };
 
     // -- 6. Parse librarycache for name fallback ------------------------------
-    let cache_path = steam_root
-        .join("userdata")
-        .join(&user_id)
-        .join("config/librarycache/librarycache.json");
+    let cache_path = userdata_dir.join("config/librarycache");
     let library_cache = match parse_librarycache(&cache_path) {
         Ok(cache) => cache,
         Err(e) => {
@@ -129,10 +129,7 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
     };
 
     // -- 7. Parse cloud storage for collections and hidden status -------------
-    let cloud_path = steam_root
-        .join("userdata")
-        .join(&user_id)
-        .join("config/cloudstorage/cloud-storage-namespace-1.json");
+    let cloud_path = userdata_dir.join("config/cloudstorage/cloud-storage-namespace-1.json");
     let (collections, hidden_ids) = match read_cloud_storage(&cloud_path) {
         Ok(cloud) => match read_user_collections(&cloud) {
             Ok(cols) => {
@@ -266,7 +263,32 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
         );
     }
 
-    // -- 9. Sort games by name then app_id ------------------------------------
+    // -- 9. Resolve remaining names from appinfo.vdf --------------------------
+    let unresolved: HashSet<u32> = games_map
+        .iter()
+        .filter(|(app_id, game)| game.name == placeholder_name(**app_id))
+        .map(|(app_id, _)| *app_id)
+        .collect();
+
+    if !unresolved.is_empty() {
+        match lookup_appinfo_names(&steam_root, &unresolved) {
+            Ok(appinfo_names) => {
+                for (app_id, name) in appinfo_names {
+                    if let Some(game) = games_map.get_mut(&app_id) {
+                        game.name = name;
+                    }
+                }
+            }
+            Err(e) => {
+                warnings.push(ScanWarning {
+                    code: "appinfo_error".into(),
+                    message: format!("appinfo.vdf lookup failed: {e}"),
+                });
+            }
+        }
+    }
+
+    // -- 10. Sort games by name then app_id -----------------------------------
     let mut games: Vec<Game> = games_map.into_values().collect();
     games.sort_by(|a, b| a.name.cmp(&b.name).then(a.app_id.cmp(&b.app_id)));
 
@@ -276,6 +298,10 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
         steam_dir: steam_root.display().to_string(),
         account: account_name,
     })
+}
+
+fn placeholder_name(app_id: u32) -> String {
+    format!("App {app_id}")
 }
 
 /// Classify app type from state flags (simplified).

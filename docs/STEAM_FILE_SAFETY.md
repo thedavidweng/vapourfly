@@ -7,7 +7,7 @@ Vapourfly modifies Steam configuration files to manage collections, hidden state
 Vapourfly writes to a single file per account:
 
 ```
-<steam_dir>/userdata/<steam_id64>/config/cloudstorage/cloud-storage-namespace-1.json
+<steam_dir>/userdata/<account_id_or_steam_id64>/config/cloudstorage/cloud-storage-namespace-1.json
 ```
 
 This is Steam's cloud storage file. It contains user-defined collections, hidden app state, and other per-account metadata. Vapourfly reads and writes this file using the same JSON schema that Steam uses internally.
@@ -18,6 +18,8 @@ This is Steam's cloud storage file. It contains user-defined collections, hidden
 - `loginusers.vdf` -- account metadata (read-only)
 - `libraryfolders.vdf` -- library folder configuration (read-only)
 - `appmanifest_*.acf` -- per-game install metadata (read-only)
+- `appinfo.vdf` -- app metadata cache (read-only)
+- `librarycache` -- app library cache data (read-only)
 
 ## Safety Checks
 

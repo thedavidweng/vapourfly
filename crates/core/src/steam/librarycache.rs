@@ -1,22 +1,27 @@
-//! Parse Steam's `librarycache.json` for name fallback.
+//! Parse Steam's legacy aggregated `librarycache.json` for name fallback.
 //!
-//! Path: `{steam}/userdata/{uid}/config/librarycache/librarycache.json`
+//! Path: `{steam}/userdata/{uid}/config/librarycache/`
 //!
-//! The file is a JSON array of `{"appid": N, "name": "..."}` objects produced
-//! by Steam's library cache.  When an installed app's name is missing from its
-//! `appmanifest_*.acf` the library cache provides a fallback.
+//! Modern macOS Steam installs commonly store per-app JSON files in this
+//! directory. Those files do not provide a stable app display name, so this
+//! parser only consumes the aggregated `librarycache.json` array when present.
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::Path;
 
 use crate::error::{Result, VapourflyError};
 
-/// Parse a `librarycache.json` file and return a map of `appid -> name`.
+/// Parse aggregated library cache data from a directory or `librarycache.json`.
 ///
-/// Returns an empty `HashMap` if the file does not exist or contains
-/// unparseable JSON. Returns `Err` only on I/O errors other than "not found".
+/// Returns an empty `HashMap` if nothing usable is found. Returns `Err` only on
+/// I/O errors other than "not found".
 pub fn parse_librarycache(path: &Path) -> Result<HashMap<u32, String>> {
-    let content = match std::fs::read_to_string(path) {
+    if path.is_dir() {
+        return parse_librarycache_dir(path);
+    }
+
+    let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
         Err(e) => {
@@ -29,6 +34,14 @@ pub fn parse_librarycache(path: &Path) -> Result<HashMap<u32, String>> {
     };
 
     parse_librarycache_json(&content)
+}
+
+fn parse_librarycache_dir(dir: &Path) -> Result<HashMap<u32, String>> {
+    let json_path = dir.join("librarycache.json");
+    if json_path.is_file() {
+        return parse_librarycache(&json_path);
+    }
+    Ok(HashMap::new())
 }
 
 /// Parse library cache JSON content into an app-id-to-name map.

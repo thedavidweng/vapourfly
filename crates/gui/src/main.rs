@@ -305,11 +305,10 @@ impl VapourflyApp {
         let selected = vapourfly_core::steam::select_account(&accounts, config.account.as_deref())
             .map_err(|e| format!("Failed to select account: {e}"))?;
 
-        Ok(config
-            .steam_dir
-            .join("userdata")
-            .join(&selected.steam_id64)
-            .join("config/cloudstorage/cloud-storage-namespace-1.json"))
+        Ok(
+            vapourfly_core::steam::resolve_userdata_dir(&config.steam_dir, &selected.steam_id64)
+                .join("config/cloudstorage/cloud-storage-namespace-1.json"),
+        )
     }
 
     fn start_scan(&mut self, ctx: &egui::Context) {

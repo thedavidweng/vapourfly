@@ -104,10 +104,10 @@
 循环:
   [u32] app_id (0=end)
   [u32] data_length
-  [data_length bytes]: 16B + 20B SHA1 + 4B changeNumber + property_table
+  [data_length bytes]: 16B + 20B SHA1 + 4B changeNumber + [V2/V3: 20B extra hash] + property_table
 Property Table:
   [u8] type: 0=Table, 1=String, 2=Int32, 3=Float, 5=WString, 6=Color, 7=Uint64, 8=End
-  [null-terminated string or u16 index] name
+  [null-terminated string or i32 string-pool index] name
   [type-specific data]
 ```
 

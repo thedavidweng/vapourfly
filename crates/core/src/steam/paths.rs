@@ -27,6 +27,9 @@ pub struct SteamAccount {
     pub most_recent: bool,
 }
 
+/// Base constant for converting a SteamID64 to the 32-bit account ID folder name.
+pub const STEAM_ID64_BASE: u64 = 76561197960265728;
+
 /// An installed application parsed from an `appmanifest_*.acf` file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppManifest {
@@ -156,6 +159,50 @@ pub fn detect_accounts(steam_dir: &Path) -> Result<Vec<SteamAccount>> {
     Ok(accounts)
 }
 
+/// Convert a SteamID64 string to the 32-bit account ID used by some Steam
+/// installs for `userdata/` directory names.
+pub fn steam_account_id(steam_id64: &str) -> Option<String> {
+    let id: u64 = steam_id64.parse().ok()?;
+    if id < STEAM_ID64_BASE {
+        return None;
+    }
+    Some((id - STEAM_ID64_BASE).to_string())
+}
+
+/// Resolve the `userdata/{id}` directory for an account.
+///
+/// Steam may name this folder with either the full SteamID64 or the 32-bit
+/// account ID. Current macOS Steam installs and the SteamTools reference use
+/// the 32-bit account ID, so it is probed first; SteamID64 remains supported
+/// for existing fixtures and older layouts.
+pub fn resolve_userdata_dir(steam_dir: &Path, steam_id64: &str) -> PathBuf {
+    let userdata_root = steam_dir.join("userdata");
+    let mut candidates = Vec::new();
+    if let Some(account_id) = steam_account_id(steam_id64) {
+        candidates.push(account_id);
+    }
+    if !candidates.iter().any(|c| c == steam_id64) {
+        candidates.push(steam_id64.to_string());
+    }
+
+    for id in &candidates {
+        let dir = userdata_root.join(id);
+        if userdata_dir_has_account_data(&dir) {
+            return dir;
+        }
+    }
+
+    userdata_root.join(steam_id64)
+}
+
+fn userdata_dir_has_account_data(dir: &Path) -> bool {
+    let config = dir.join("config");
+    config.join("localconfig.vdf").is_file()
+        || config
+            .join("cloudstorage/cloud-storage-namespace-1.json")
+            .is_file()
+}
+
 // ---------------------------------------------------------------------------
 // Library folder detection
 // ---------------------------------------------------------------------------
@@ -243,29 +290,6 @@ pub fn select_account<'a>(
     Err(VapourflyError::AmbiguousAccount {
         count: accounts.len(),
     })
-}
-
-/// Parse librarycache JSON for name fallback.
-pub fn parse_librarycache(path: &Path) -> Result<std::collections::HashMap<u32, String>> {
-    let mut map = std::collections::HashMap::new();
-    if !path.exists() {
-        return Ok(map);
-    }
-
-    let content = std::fs::read_to_string(path).map_err(|_| VapourflyError::FileNotFound {
-        path: crate::SafePath::new(path),
-    })?;
-
-    // librarycache.json is a simple JSON object: {"730": "Counter-Strike 2", ...}
-    if let Ok(obj) = serde_json::from_str::<std::collections::HashMap<String, String>>(&content) {
-        for (k, v) in obj {
-            if let Ok(app_id) = k.parse::<u32>() {
-                map.insert(app_id, v);
-            }
-        }
-    }
-
-    Ok(map)
 }
 
 // ---------------------------------------------------------------------------
@@ -440,6 +464,104 @@ mod tests {
     fn detect_accounts_missing_file_returns_error() {
         let result = detect_accounts(Path::new("/nonexistent/steam"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn steam_account_id_converts_steam_id64() {
+        assert_eq!(steam_account_id("76561197960265729").as_deref(), Some("1"));
+        assert_eq!(
+            steam_account_id("76561198000000000").as_deref(),
+            Some("39734272")
+        );
+    }
+
+    #[test]
+    fn resolve_userdata_dir_uses_fixture_steam_id64() {
+        let dir = resolve_userdata_dir(&fixture_steam_dir(), "76561198000000000");
+        assert_eq!(dir, fixture_steam_dir().join("userdata/76561198000000000"));
+        assert!(userdata_dir_has_account_data(&dir));
+    }
+
+    #[test]
+    fn resolve_userdata_dir_prefers_account_id_when_both_candidates_exist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let steam_dir = tmp.path();
+        let steam_id64 = "76561198000000000";
+        let account_id = steam_account_id(steam_id64).unwrap();
+
+        std::fs::create_dir_all(
+            steam_dir
+                .join("userdata")
+                .join(steam_id64)
+                .join("config/cloudstorage"),
+        )
+        .unwrap();
+        std::fs::write(
+            steam_dir
+                .join("userdata")
+                .join(steam_id64)
+                .join("config/cloudstorage/cloud-storage-namespace-1.json"),
+            "[]",
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(
+            steam_dir
+                .join("userdata")
+                .join(&account_id)
+                .join("config/cloudstorage"),
+        )
+        .unwrap();
+        std::fs::write(
+            steam_dir
+                .join("userdata")
+                .join(&account_id)
+                .join("config/cloudstorage/cloud-storage-namespace-1.json"),
+            "[]",
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_userdata_dir(steam_dir, steam_id64),
+            steam_dir.join("userdata").join(account_id)
+        );
+    }
+
+    #[test]
+    fn resolve_userdata_dir_ignores_cache_only_candidate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let steam_dir = tmp.path();
+        let steam_id64 = "76561198000000000";
+        let account_id = steam_account_id(steam_id64).unwrap();
+
+        std::fs::create_dir_all(
+            steam_dir
+                .join("userdata")
+                .join(&account_id)
+                .join("config/librarycache"),
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(
+            steam_dir
+                .join("userdata")
+                .join(steam_id64)
+                .join("config/cloudstorage"),
+        )
+        .unwrap();
+        std::fs::write(
+            steam_dir
+                .join("userdata")
+                .join(steam_id64)
+                .join("config/cloudstorage/cloud-storage-namespace-1.json"),
+            "[]",
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_userdata_dir(steam_dir, steam_id64),
+            steam_dir.join("userdata").join(steam_id64)
+        );
     }
 
     // -- detect_library_folders ---------------------------------------------
