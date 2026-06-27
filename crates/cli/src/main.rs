@@ -60,10 +60,6 @@ struct Cli {
     #[arg(long)]
     account: Option<String>,
 
-    /// Path to a custom config file.
-    #[arg(long)]
-    config: Option<PathBuf>,
-
     /// Enable verbose output (shows full paths instead of redacted names).
     #[arg(long, global = true)]
     verbose: bool,
@@ -108,6 +104,14 @@ fn credential_status() -> (bool, bool) {
         && std::env::var("VAPOURFLY_IGDB_CLIENT_SECRET").is_ok();
     let rawg = std::env::var("VAPOURFLY_RAWG_KEY").is_ok();
     (igdb, rawg)
+}
+
+fn cache_refresh_valid_sources() -> Vec<&'static str> {
+    vapourfly_api::enrichment::ALL_SOURCES
+        .iter()
+        .copied()
+        .chain(std::iter::once("all"))
+        .collect()
 }
 
 #[derive(Subcommand)]
@@ -1269,7 +1273,7 @@ fn cmd_sync_collection(
 }
 
 fn cmd_cache_refresh(cli: &Cli, source: String) -> Result<(), Box<dyn std::error::Error>> {
-    let valid_sources = ["igdb", "rawg", "protondb", "pcgw", "hltb", "all"];
+    let valid_sources = cache_refresh_valid_sources();
     if !valid_sources.contains(&source.as_str()) {
         eprintln!(
             "Invalid source '{}'. Must be one of: {}",
@@ -1565,5 +1569,20 @@ fn format_junk_mode(mode: &JunkMode) -> &'static str {
         JunkMode::Default => "default",
         JunkMode::Strict => "strict",
         JunkMode::Aggressive => "aggressive",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_refresh_accepts_every_enrichment_source() {
+        let valid_sources = cache_refresh_valid_sources();
+
+        for source in vapourfly_api::enrichment::ALL_SOURCES {
+            assert!(valid_sources.contains(source), "missing source: {source}");
+        }
+        assert!(valid_sources.contains(&"all"));
     }
 }

@@ -7,6 +7,8 @@ Vapourfly helps you organize, categorize, and curate your Steam library. Define 
 ## Status
 
 v0.1.0 is a source-only release. Expect breaking changes until v1.0.
+For the current CLI/GUI feature contract, see
+[docs/FEATURES.md](docs/FEATURES.md).
 
 ## Supported Platforms
 
@@ -81,7 +83,8 @@ Backups are stored alongside the original file and include a SHA-256 hash for in
 
 ## API Credential Setup
 
-Some features (genre data, ratings, completion times) require external API credentials. Set these environment variables in your shell profile or `.env` file:
+Some enriched metadata features require external API credentials. Set these
+environment variables before launching the CLI or GUI:
 
 | Variable | Source | Required For |
 |---|---|---|
@@ -90,6 +93,8 @@ Some features (genre data, ratings, completion times) require external API crede
 | `VAPOURFLY_RAWG_KEY` | [RAWG API](https://rawg.io/apidocs) | Genre, tag, and rating data from RAWG |
 
 ProtonDB, PCGamingWiki, HLTB, and Steam Store data do not require credentials.
+Direct HLTB scraping is compiled behind the optional `hltb_scrape` feature;
+IGDB time-to-beat fields are available when IGDB credentials are configured.
 
 Check your credential status at any time:
 
@@ -152,6 +157,9 @@ Identify games you are unlikely to play using three evaluation modes:
 | **Aggressive** | Low playtime + at least one other negative signal, no minimum data requirement |
 
 Every decision is explainable: the output includes which signals matched, which were missing, and a confidence score reflecting data completeness.
+Current CLI and GUI junk flows evaluate the fields present in their scanned
+game records; they do not automatically hydrate cached external metadata before
+classification.
 
 ```bash
 # Preview junk candidates (default mode)
@@ -186,6 +194,11 @@ vapourfly recommend --minutes 60 --installed-only --deck
 # Reproducible results with a seed
 vapourfly recommend --minutes 120 --seed 42
 ```
+
+Current CLI and GUI recommendation flows use the Steam scan result created for
+that command or GUI session. The core scoring model can use external metadata
+when enriched game records are supplied, but the frontends do not automatically
+hydrate cached external metadata before scoring.
 
 ## Playlists
 
@@ -234,6 +247,8 @@ Rule playlists support composable boolean logic:
 ```
 
 Available rule operators: `ProtonAtLeast`, `HltbMaxMinutes`, `PlaytimeBetween`, `RatingAtLeast`, `HasGenre`, `HasTag`, `Installed`, `NotJunk`, `NotHidden`, `And`, `Or`, `Not`.
+Rules are evaluated against the game records available to the command. External
+metadata rules only match when those fields are already present.
 
 ### Match Reports
 
@@ -267,6 +282,7 @@ External API responses are cached locally. Refresh specific sources:
 
 ```bash
 vapourfly cache refresh --source igdb
+vapourfly cache refresh --source steam-store
 vapourfly cache refresh --source all
 ```
 
@@ -282,6 +298,7 @@ See [docs/PRIVACY.md](docs/PRIVACY.md) for what is included and redacted.
 
 ## Documentation
 
+- [docs/FEATURES.md](docs/FEATURES.md) -- Current feature contract for CLI/GUI parity
 - [docs/CLI.md](docs/CLI.md) -- Full command reference with examples
 - [docs/STEAM_FILE_SAFETY.md](docs/STEAM_FILE_SAFETY.md) -- Write targets, backup strategy, and atomic writes
 - [docs/API_SOURCES.md](docs/API_SOURCES.md) -- IGDB, RAWG, ProtonDB, PCGW, HLTB data strategy

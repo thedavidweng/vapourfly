@@ -1471,7 +1471,7 @@ impl VapourflyApp {
         }
 
         ui.separator();
-        ui.label("Set credentials via environment variables or ~/.config/vapourfly/config.toml.");
+        ui.label("Set credentials via environment variables before launching Vapourfly.");
         ui.separator();
 
         // Cache refresh section
@@ -1800,8 +1800,8 @@ impl VapourflyApp {
             }
         }
 
-        // Read existing config.toml to preserve fields we don't manage in the
-        // GUI (e.g. igdb_client_id, igdb_client_secret, rawg_api_key).
+        // Read existing config.toml to preserve fields this panel does not
+        // manage.
         let mut table: toml::Value = std::fs::read_to_string(&config_path)
             .ok()
             .and_then(|s| toml::from_str(&s).ok())

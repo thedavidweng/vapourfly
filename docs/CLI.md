@@ -2,6 +2,9 @@
 
 Full command reference for the `vapourfly` CLI.
 
+For CLI/GUI parity and current feature status, see
+[FEATURES.md](FEATURES.md).
+
 ## Global Flags
 
 These flags are available on all commands:
@@ -10,7 +13,6 @@ These flags are available on all commands:
 |---|---|
 | `--steam-dir <path>` | Override the Steam installation directory |
 | `--account <id>` | Override the Steam account identifier |
-| `--config <path>` | Path to a custom config file |
 | `--verbose` | Show full paths instead of redacted names (also enables debug logging) |
 | `--offline` | Prohibit network calls; use cache only |
 | `--allow-steam-running` | Allow writes while Steam is detected as running |
@@ -57,11 +59,18 @@ vapourfly scan
 
 # JSON output
 vapourfly scan --format json
+
+# JSON output with external metadata populated when available
+vapourfly scan --enrich --format json
 ```
 
 **Output columns (table):** AppID, Name, Installed, Playtime (minutes), Collections count.
 
 **JSON output** includes: `app_id`, `name`, `installed`, `playtime_minutes`, `playtime_2wks_minutes`, `collections`, `is_hidden`, plus a `warnings` array.
+
+`--enrich` uses IGDB, RAWG, ProtonDB, PCGW, HLTB, and Steam Store sources. It
+uses the local cache and fetches stale or missing records unless global
+`--offline` is set.
 
 ### `vapourfly collections`
 
@@ -122,6 +131,10 @@ Cannot use `--strict` and `--aggressive` together.
 
 Each decision includes a confidence score (fraction of possible signals for which data was available) and lists which signals matched and which were missing.
 
+Current CLI junk commands scan the library for each run and do not automatically
+hydrate cached external metadata before evaluation. In a plain CLI run, junk
+decisions are therefore based on the fields present in the Steam scan result.
+
 ### `vapourfly recommend`
 
 Get game recommendations based on available play time.
@@ -141,6 +154,11 @@ vapourfly recommend --minutes 120 --format json
 ```
 
 **Output columns (table):** App ID, Name, Score, Reasons.
+
+Current CLI recommendations run against the Steam scan result created for the
+command. The core scoring engine can use external metadata when enriched game
+records are supplied, but this command does not automatically hydrate cached
+external data before scoring.
 
 ### `vapourfly playlist`
 
@@ -165,6 +183,11 @@ vapourfly playlist match my-playlist.json --format json
 - **Rules** -- boolean expression tree evaluated against game metadata
 
 Available rule operators: `ProtonAtLeast`, `HltbMaxMinutes`, `PlaytimeBetween`, `RatingAtLeast`, `HasGenre`, `HasTag`, `Installed`, `NotJunk`, `NotHidden`, `And`, `Or`, `Not`.
+
+Rules are evaluated against the game records available to the command. Rules
+that require external metadata, such as `ProtonAtLeast`, `HltbMaxMinutes`,
+`RatingAtLeast`, `HasGenre`, or `HasTag`, only match when those fields are
+already present.
 
 ### `vapourfly sync`
 
@@ -192,7 +215,7 @@ vapourfly cache refresh --source igdb
 vapourfly cache refresh --source all
 ```
 
-Valid sources: `igdb`, `rawg`, `protondb`, `pcgw`, `hltb`, `all`.
+Valid sources: `igdb`, `rawg`, `protondb`, `pcgw`, `hltb`, `steam-store`, `all`.
 
 Cache refresh is blocked in `--offline` mode.
 
@@ -263,6 +286,9 @@ Most commands that produce tabular output support `--format`:
 | Variable | Purpose |
 |---|---|
 | `VAPOURFLY_STEAM_DIR` | Override Steam installation directory |
+| `VAPOURFLY_ACCOUNT` | Override Steam account selection |
+| `VAPOURFLY_CC` | Steam Store country code for price queries |
+| `VAPOURFLY_LANG` | Steam Store language |
 | `VAPOURFLY_IGDB_CLIENT_ID` | IGDB / Twitch client ID |
 | `VAPOURFLY_IGDB_CLIENT_SECRET` | IGDB / Twitch client secret |
 | `VAPOURFLY_RAWG_KEY` | RAWG API key |

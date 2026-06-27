@@ -25,9 +25,6 @@ struct ConfigFile {
     cc: Option<String>,
     lang: Option<String>,
     backup_retention_count: Option<u32>,
-    igdb_client_id: Option<String>,
-    igdb_client_secret: Option<String>,
-    rawg_api_key: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -110,18 +107,10 @@ impl VapourflyConfig {
         let app_data_root = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
 
         // -- credentials (presence only) -------------------------------------
-        let has_igdb_credentials = env_or_file_present(
-            "VAPOURFLY_IGDB_CLIENT_ID",
-            file.as_ref().and_then(|f| f.igdb_client_id.as_deref()),
-        ) && env_or_file_present(
-            "VAPOURFLY_IGDB_CLIENT_SECRET",
-            file.as_ref().and_then(|f| f.igdb_client_secret.as_deref()),
-        );
+        let has_igdb_credentials =
+            env_present("VAPOURFLY_IGDB_CLIENT_ID") && env_present("VAPOURFLY_IGDB_CLIENT_SECRET");
 
-        let has_rawg_credentials = env_or_file_present(
-            "VAPOURFLY_RAWG_API_KEY",
-            file.as_ref().and_then(|f| f.rawg_api_key.as_deref()),
-        );
+        let has_rawg_credentials = env_present("VAPOURFLY_RAWG_KEY");
 
         // -- store locale ----------------------------------------------------
         let cc = file
@@ -232,16 +221,9 @@ fn env_path(key: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Check whether a credential is present: environment variable first, then
-/// config file fallback.
-fn env_or_file_present(env_key: &str, file_value: Option<&str>) -> bool {
-    if let Ok(val) = std::env::var(env_key) {
-        !val.is_empty()
-    } else if let Some(val) = file_value {
-        !val.is_empty()
-    } else {
-        false
-    }
+/// Check whether a credential environment variable is present.
+fn env_present(env_key: &str) -> bool {
+    std::env::var(env_key).is_ok_and(|val| !val.is_empty())
 }
 
 // ---------------------------------------------------------------------------
@@ -275,7 +257,7 @@ mod tests {
             "VAPOURFLY_LANG",
             "VAPOURFLY_IGDB_CLIENT_ID",
             "VAPOURFLY_IGDB_CLIENT_SECRET",
-            "VAPOURFLY_RAWG_API_KEY",
+            "VAPOURFLY_RAWG_KEY",
             "VAPOURFLY_TEST_EMPTY",
             "VAPOURFLY_TEST_SET",
             "VAPOURFLY_TEST_PRESENT",
@@ -455,9 +437,6 @@ account = "myuser"
 cc = "DE"
 lang = "german"
 backup_retention_count = 10
-igdb_client_id = "abc"
-igdb_client_secret = "def"
-rawg_api_key = "ghi"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
         assert_eq!(file.steam_dir.as_deref(), Some("/opt/steam"));
@@ -465,9 +444,6 @@ rawg_api_key = "ghi"
         assert_eq!(file.cc.as_deref(), Some("DE"));
         assert_eq!(file.lang.as_deref(), Some("german"));
         assert_eq!(file.backup_retention_count, Some(10));
-        assert_eq!(file.igdb_client_id.as_deref(), Some("abc"));
-        assert_eq!(file.igdb_client_secret.as_deref(), Some("def"));
-        assert_eq!(file.rawg_api_key.as_deref(), Some("ghi"));
     }
 
     #[test]
@@ -514,7 +490,7 @@ rawg_api_key = "ghi"
     #[test]
     #[serial]
     fn rawg_credentials_detected_when_env_var_set() {
-        set_env("VAPOURFLY_RAWG_API_KEY", "key");
+        set_env("VAPOURFLY_RAWG_KEY", "key");
 
         let cli = CliOverrides {
             steam_dir: Some(PathBuf::from("/tmp/fake")),
@@ -529,8 +505,8 @@ rawg_api_key = "ghi"
     #[test]
     #[serial]
     fn rawg_credentials_absent_when_env_var_empty() {
-        remove_env("VAPOURFLY_RAWG_API_KEY");
-        set_env("VAPOURFLY_RAWG_API_KEY", "");
+        remove_env("VAPOURFLY_RAWG_KEY");
+        set_env("VAPOURFLY_RAWG_KEY", "");
 
         let cli = CliOverrides {
             steam_dir: Some(PathBuf::from("/tmp/fake")),
@@ -566,33 +542,27 @@ rawg_api_key = "ghi"
         assert_eq!(p, Some(PathBuf::from("/some/path")));
     }
 
-    // -- env_or_file_present helper ------------------------------------------
+    // -- env_present helper ---------------------------------------------------
 
     #[test]
     #[serial]
-    fn env_or_file_present_prefers_env() {
+    fn env_present_returns_true_for_non_empty_env() {
         set_env("VAPOURFLY_TEST_PRESENT", "from_env");
-        assert!(env_or_file_present(
-            "VAPOURFLY_TEST_PRESENT",
-            Some("from_file")
-        ));
+        assert!(env_present("VAPOURFLY_TEST_PRESENT"));
     }
 
     #[test]
     #[serial]
-    fn env_or_file_present_falls_back_to_file() {
-        remove_env("VAPOURFLY_TEST_ABSENT");
-        assert!(env_or_file_present(
-            "VAPOURFLY_TEST_ABSENT",
-            Some("from_file")
-        ));
+    fn env_present_returns_false_for_empty_env() {
+        set_env("VAPOURFLY_TEST_EMPTY", "");
+        assert!(!env_present("VAPOURFLY_TEST_EMPTY"));
     }
 
     #[test]
     #[serial]
-    fn env_or_file_present_returns_false_when_neither() {
+    fn env_present_returns_false_when_unset() {
         remove_env("VAPOURFLY_TEST_NEITHER");
-        assert!(!env_or_file_present("VAPOURFLY_TEST_NEITHER", None));
+        assert!(!env_present("VAPOURFLY_TEST_NEITHER"));
     }
 
     // -- helpers -------------------------------------------------------------

@@ -110,7 +110,8 @@ ProtonDB data is useful for Steam Deck and Linux compatibility filtering:
 **Authentication:** None
 **Feature Gate:** `hltb_scrape` (not enabled by default)
 
-HLTB data is also available through IGDB's time-to-beat fields, which do not require the feature gate.
+Time-to-beat data is also available through IGDB when IGDB credentials are
+configured; that path does not require the `hltb_scrape` feature gate.
 
 ### Data Used
 
@@ -156,6 +157,7 @@ All API responses are cached locally under the Vapourfly cache directory (report
 ```bash
 # Refresh a single source
 vapourfly cache refresh --source igdb
+vapourfly cache refresh --source steam-store
 
 # Refresh all sources
 vapourfly cache refresh --source all
@@ -165,6 +167,12 @@ vapourfly sources status
 ```
 
 Cache refresh is blocked in `--offline` mode.
+
+Cache refresh stores source responses locally. Current Junk, Recommend, Playlist
+Match, and Playlist Sync frontends do not automatically hydrate those cached
+responses into their scanned game records before evaluating rules or scores.
+Use `scan --enrich --format json` when you need to inspect enriched game data
+from the CLI.
 
 ## Data Priority
 

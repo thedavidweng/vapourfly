@@ -15,8 +15,8 @@ document covers the interactive flows that require a running GUI.
 
 1. Launch GUI with fixtures: `cargo run -p vapourfly-gui -- --fixtures data/fixtures/steam_minimal`
 2. Verify the Library view loads automatically on startup.
-3. Confirm the heading shows the fixture account name (`vapourfly_fixture_user`) and path.
-4. Verify the table displays at least two games (Counter-Strike 2, Factorio) with columns: App ID, Name, Installed, Playtime.
+3. Verify the sidebar game count appears after the scan completes.
+4. Verify the table displays at least two games (Counter-Strike 2, Factorio) with columns: App ID, Name, Installed, Playtime, Status.
 5. Confirm CS2 shows a checkmark for Installed and playtime `6h 58m`.
 6. Confirm Factorio shows a checkmark for Installed and playtime `17h 18m`.
 7. Confirm app 999 (non-installed) shows a dash for Installed and playtime `5m`.
@@ -24,10 +24,10 @@ document covers the interactive flows that require a running GUI.
 ### 2. Junk Preview
 
 1. Navigate to Junk view via the left sidebar.
-2. Verify junk candidates are displayed with reasons (e.g., low playtime, zero playtime).
-3. Verify confidence scores are shown for each candidate.
-4. Test mode switching between Default, Strict, and Aggressive thresholds.
-5. Confirm changing mode re-filters the list without errors.
+2. Choose Default, Strict, or Aggressive mode.
+3. Click "Run Junk Detection".
+4. Verify junk candidates are displayed with confidence scores and signal text.
+5. Switch modes, run detection again, and confirm the table updates without errors.
 
 ### 3. Write Dry-Run Modal
 
@@ -45,16 +45,17 @@ document covers the interactive flows that require a running GUI.
 2. Set available time (e.g., 60 minutes).
 3. Click "Get Recommendations".
 4. Verify recommendations are displayed sorted by score.
-5. Confirm each recommendation shows a score, reason line, and game metadata (name, playtime).
-6. Verify games already played recently are ranked lower or excluded.
+5. Confirm each recommendation shows name, AppID, score, and reason lines.
+6. Toggle Deck mode and Installed only, rerun recommendations, and confirm the result set updates without errors.
 
 ### 5. Backup List
 
 1. Navigate to Backups view via the left sidebar.
 2. Verify the backup list is displayed (empty for a fresh install).
-3. Trigger a backup from the Settings or action area.
-4. Verify the new backup entry appears with metadata: file path, created_at timestamp, SHA256 prefix.
-5. Verify restoring a backup replaces the current Steam config file.
+3. If no backups exist, create one by confirming a Junk write against fixture data.
+4. Click "Refresh Backups".
+5. Verify the new backup entry appears with filename, created timestamp, SHA256 prefix, and Restore action.
+6. Verify restoring a backup asks for confirmation before replacing the current Steam config file.
 
 ## Expected Behavior
 
