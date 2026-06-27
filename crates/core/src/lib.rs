@@ -5,11 +5,14 @@
 //! It has no network dependencies and no UI dependencies.
 
 pub mod config;
+pub mod discover;
+pub mod dynamic;
 pub mod error;
 pub mod junk;
 pub mod models;
 pub mod playlist;
 pub mod recommend;
+pub mod share_code;
 pub mod steam;
 
 pub use error::{Result, SafePath, VapourflyError};

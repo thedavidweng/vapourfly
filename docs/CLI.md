@@ -82,9 +82,19 @@ vapourfly collections list
 
 # Export collections to a Vapourfly JSON file
 vapourfly collections export --out collections.json
+
+# Compile a dynamic template into a stored playlist
+vapourfly collections dynamic deck-session --minutes 90
+vapourfly collections dynamic finish-it --out finish-it.json
+vapourfly collections dynamic mood --mood "Roguelike"
+vapourfly collections dynamic playlist-radio --seed 367520
 ```
 
 Hidden collections are reported separately as a count.
+
+Dynamic templates hydrate cached external metadata before compiling. Hydration
+is cache-only; run `vapourfly cache refresh --source all` first when a template
+depends on ProtonDB, HLTB, RAWG, IGDB, PCGW, or Steam Store data.
 
 ### `vapourfly junk`
 
@@ -131,9 +141,9 @@ Cannot use `--strict` and `--aggressive` together.
 
 Each decision includes a confidence score (fraction of possible signals for which data was available) and lists which signals matched and which were missing.
 
-Current CLI junk commands scan the library for each run and do not automatically
-hydrate cached external metadata before evaluation. In a plain CLI run, junk
-decisions are therefore based on the fields present in the Steam scan result.
+Current CLI junk commands scan the library, hydrate cached external metadata,
+and then evaluate junk rules. Hydration is cache-only and never makes network
+requests.
 
 ### `vapourfly recommend`
 
@@ -151,25 +161,41 @@ vapourfly recommend --minutes 120 --seed 42
 
 # JSON output
 vapourfly recommend --minutes 120 --format json
+
+# Save recommendations to the temporary Steam collection `vapourfly-picks`
+vapourfly recommend --minutes 120 --count 5 --to-collection --dry-run
+vapourfly recommend --minutes 120 --count 5 --to-collection --confirm
 ```
 
 **Output columns (table):** App ID, Name, Score, Reasons.
 
-Current CLI recommendations run against the Steam scan result created for the
-command. The core scoring engine can use external metadata when enriched game
-records are supplied, but this command does not automatically hydrate cached
-external data before scoring.
+Current CLI recommendations scan the library, hydrate cached external metadata,
+annotate junk flags, and then score games. Hydration is cache-only and never
+makes network requests.
 
 ### `vapourfly playlist`
 
 Import, export, and match playlists.
 
 ```bash
+# Create a manual playlist and store it locally
+vapourfly playlist create --id deck-shortlist --name "Deck Shortlist" --app-ids 292030,367520
+
 # Import a playlist from JSON
 vapourfly playlist import my-playlist.json
 
+# Import a playlist from a share code
+vapourfly playlist import --code 'VF1:...'
+
 # Export a stored playlist by ID
 vapourfly playlist export my-playlist-id --out exported.json
+
+# Print a share code for a stored playlist
+vapourfly playlist share my-playlist-id
+
+# Generate a Discover playlist from cached metadata
+vapourfly playlist discover --count 20
+vapourfly playlist discover --seed 367520 --out discover.json
 
 # Match a playlist against the library
 vapourfly playlist match my-playlist.json
@@ -182,12 +208,13 @@ vapourfly playlist match my-playlist.json --format json
 - **Manual** -- explicit list of AppIDs
 - **Rules** -- boolean expression tree evaluated against game metadata
 
-Available rule operators: `ProtonAtLeast`, `HltbMaxMinutes`, `PlaytimeBetween`, `RatingAtLeast`, `HasGenre`, `HasTag`, `Installed`, `NotJunk`, `NotHidden`, `And`, `Or`, `Not`.
+Available rule operators: `ProtonAtLeast`, `HltbMaxMinutes`,
+`ControllerSupportFull`, `PlaytimeBetween`, `RatingAtLeast`, `HasGenre`,
+`HasTag`, `Installed`, `NotJunk`, `NotHidden`, `And`, `Or`, `Not`.
 
-Rules are evaluated against the game records available to the command. Rules
-that require external metadata, such as `ProtonAtLeast`, `HltbMaxMinutes`,
-`RatingAtLeast`, `HasGenre`, or `HasTag`, only match when those fields are
-already present.
+Playlist import, match, sync, and discover workflows hydrate cached external
+metadata before evaluating rules or similarity. Rules that depend on external
+metadata only match when the relevant cache entries exist.
 
 ### `vapourfly sync`
 
@@ -202,6 +229,8 @@ vapourfly sync collection my-playlist-id --confirm
 ```
 
 The playlist ID is slugified to produce the Steam collection ID. For rule-based playlists, the rules are evaluated against the current library to resolve matching AppIDs.
+Rule-based sync hydrates cached external metadata before resolving matching
+AppIDs.
 
 ### `vapourfly cache`
 
@@ -210,6 +239,7 @@ Manage the local API data cache.
 ```bash
 # Refresh a specific source
 vapourfly cache refresh --source igdb
+vapourfly cache refresh --source steam-store
 
 # Refresh all sources
 vapourfly cache refresh --source all
@@ -259,7 +289,7 @@ See [PRIVACY.md](PRIVACY.md) for what is included and redacted.
 
 ## Write Operations
 
-All commands that modify Steam files (`junk apply`, `junk hide`, `sync collection`) require exactly one of:
+All commands that modify Steam files (`junk apply`, `junk hide`, `recommend --to-collection`, `sync collection`) require exactly one of:
 
 | Flag | Behaviour |
 |---|---|

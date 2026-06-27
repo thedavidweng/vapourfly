@@ -3,9 +3,13 @@ use std::sync::Mutex;
 
 use eframe::egui;
 use vapourfly_core::config::VapourflyConfig;
-use vapourfly_core::junk::evaluate_junk;
+use vapourfly_core::discover::{self, DiscoverOptions};
+use vapourfly_core::dynamic::{self, DynamicTemplate, DynamicTemplateOptions};
+use vapourfly_core::junk::{ManualOverrides, apply_junk_flags, evaluate_junk};
 use vapourfly_core::models::*;
+use vapourfly_core::playlist;
 use vapourfly_core::recommend::recommend;
+use vapourfly_core::share_code;
 use vapourfly_core::steam::BackupInfo;
 use vapourfly_core::steam::backup::list_backups;
 use vapourfly_core::steam::scan::{ScanOptions, scan_library};
@@ -73,6 +77,7 @@ impl View {
 enum PendingAction {
     JunkApply,
     JunkHide,
+    RecommendCollection,
     BackupRestore(PathBuf),
 }
 
@@ -147,8 +152,19 @@ struct VapourflyApp {
 
     // Playlists view
     playlist_import_path: String,
+    playlist_share_code_input: String,
+    playlist_share_code_output: Option<String>,
+    playlist_edit_id: String,
+    playlist_edit_name: String,
+    playlist_edit_description: String,
+    playlist_edit_app_ids: String,
     playlist_last_import: Option<PlaylistFile>,
     playlist_match_report: Option<PlaylistMatchReport>,
+    playlist_discover_seed: String,
+    dynamic_template: String,
+    dynamic_minutes: String,
+    dynamic_mood: String,
+    dynamic_seed: String,
 
     // Collections view
     collections: Vec<SteamCollection>,
@@ -182,6 +198,17 @@ struct VapourflyApp {
     // Cache refresh
     cache_refresh_loading: bool,
     cache_refresh_msg: Option<String>,
+}
+
+fn manual_playlist_app_ids_csv(pf: &PlaylistFile) -> String {
+    match &pf.playlist.content {
+        PlaylistContent::Manual { app_ids } => app_ids
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        PlaylistContent::Rules { .. } => String::new(),
+    }
 }
 
 impl VapourflyApp {
@@ -260,8 +287,19 @@ impl VapourflyApp {
             recommend_results: Vec::new(),
 
             playlist_import_path: String::new(),
+            playlist_share_code_input: String::new(),
+            playlist_share_code_output: None,
+            playlist_edit_id: String::new(),
+            playlist_edit_name: String::new(),
+            playlist_edit_description: String::new(),
+            playlist_edit_app_ids: String::new(),
             playlist_last_import: None,
             playlist_match_report: None,
+            playlist_discover_seed: String::new(),
+            dynamic_template: "deck-session".into(),
+            dynamic_minutes: "90".into(),
+            dynamic_mood: "Relaxing".into(),
+            dynamic_seed: String::new(),
 
             collections: Vec::new(),
 
@@ -420,6 +458,9 @@ impl VapourflyApp {
                 PendingAction::BackupRestore(backup_path) => {
                     execute_backup_restore(backup_path, cloud_path, allow_steam_running)
                 }
+                PendingAction::RecommendCollection => {
+                    Err("Recommendation collection writes require a dry-run plan.".into())
+                }
             };
 
             WRITE_RESULT.lock().unwrap().replace(result);
@@ -444,10 +485,16 @@ impl VapourflyApp {
 
         let junk_results = self.junk_results.clone();
         let collection_name = self.junk_collection_name.clone();
+        let recommend_results = self.recommend_results.clone();
 
         std::thread::spawn(move || {
-            let result =
-                generate_dry_run_plan(cloud_path, &action, &junk_results, &collection_name);
+            let result = generate_dry_run_plan(
+                cloud_path,
+                &action,
+                &junk_results,
+                &collection_name,
+                &recommend_results,
+            );
             DRY_RUN_RESULT.lock().unwrap().replace(result);
         });
     }
@@ -536,6 +583,39 @@ impl VapourflyApp {
         let cache_root = vapourfly_core::config::default_cache_dir();
         self.source_statuses = vapourfly_api::enrichment::source_status(&cache_root);
     }
+
+    /// Hydrate cached external metadata and annotate junk flags for workflows.
+    fn prepared_games(&self, junk_mode: JunkMode) -> Option<Vec<Game>> {
+        let scan = self.scan_result.as_ref()?;
+        let mut games = scan.games.clone();
+        let cache =
+            vapourfly_api::cache::DiskCache::new(vapourfly_core::config::default_cache_dir());
+        vapourfly_api::enrichment::hydrate_from_cache(&mut games, &cache);
+        apply_junk_flags(
+            &mut games,
+            &JunkRules::default(),
+            &junk_mode,
+            &ManualOverrides::default(),
+        );
+        Some(games)
+    }
+
+    fn store_playlist(&self, pf: &PlaylistFile) -> Result<(), String> {
+        let store_dir = vapourfly_core::config::default_playlists_dir();
+        std::fs::create_dir_all(&store_dir)
+            .map_err(|e| format!("Failed to create playlist dir: {e}"))?;
+        let path = store_dir.join(format!("{}.json", pf.playlist.id));
+        playlist::export_playlist(pf, &path).map_err(|e| e.to_string())
+    }
+
+    fn match_playlist_against_library(&mut self, pf: &PlaylistFile) {
+        if let Some(games) = self.prepared_games(JunkMode::Default) {
+            match playlist::match_playlist(pf, &games) {
+                Ok(report) => self.playlist_match_report = Some(report),
+                Err(e) => self.error = Some(format!("Match failed: {e}")),
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -544,36 +624,62 @@ impl VapourflyApp {
 
 /// Generate a [`WritePlan`] without executing it, so the GUI can display a
 /// dry-run diff before the user confirms.
+const RECOMMEND_COLLECTION_ID: &str = "vapourfly-picks";
+
 fn generate_dry_run_plan(
     cloud_path: PathBuf,
     action: &PendingAction,
     junk_results: &[JunkDecision],
     collection_name: &str,
+    recommend_results: &[Recommendation],
 ) -> Result<vapourfly_core::models::WritePlan, String> {
-    let mut junk_app_ids: Vec<u32> = junk_results
-        .iter()
-        .filter(|d| d.is_junk)
-        .map(|d| d.app_id)
-        .collect();
-    junk_app_ids.sort();
-    junk_app_ids.dedup();
-
-    if junk_app_ids.is_empty() {
-        return Err("No junk candidates found.".into());
-    }
-
     let cloud = vapourfly_core::steam::read_cloud_storage(&cloud_path)
         .map_err(|e| format!("Failed to read cloud storage: {e}"))?;
 
     let op = match action {
-        PendingAction::JunkApply => WriteOp::UpsertCollection {
-            id: collection_name.to_string(),
-            added: junk_app_ids,
-            removed: vec![],
-        },
-        PendingAction::JunkHide => WriteOp::AddToHidden {
-            app_ids: junk_app_ids,
-        },
+        PendingAction::JunkApply => {
+            let mut junk_app_ids: Vec<u32> = junk_results
+                .iter()
+                .filter(|d| d.is_junk)
+                .map(|d| d.app_id)
+                .collect();
+            junk_app_ids.sort();
+            junk_app_ids.dedup();
+            if junk_app_ids.is_empty() {
+                return Err("No junk candidates found.".into());
+            }
+            WriteOp::UpsertCollection {
+                id: collection_name.to_string(),
+                added: junk_app_ids,
+                removed: vec![],
+            }
+        }
+        PendingAction::JunkHide => {
+            let mut junk_app_ids: Vec<u32> = junk_results
+                .iter()
+                .filter(|d| d.is_junk)
+                .map(|d| d.app_id)
+                .collect();
+            junk_app_ids.sort();
+            junk_app_ids.dedup();
+            if junk_app_ids.is_empty() {
+                return Err("No junk candidates found.".into());
+            }
+            WriteOp::AddToHidden {
+                app_ids: junk_app_ids,
+            }
+        }
+        PendingAction::RecommendCollection => {
+            let app_ids: Vec<u32> = recommend_results.iter().map(|r| r.app_id).collect();
+            if app_ids.is_empty() {
+                return Err("No recommendations to write.".into());
+            }
+            WriteOp::UpsertCollection {
+                id: RECOMMEND_COLLECTION_ID.into(),
+                added: app_ids,
+                removed: vec![],
+            }
+        }
         PendingAction::BackupRestore(_) => {
             return Err("Dry-run not supported for backup restore.".into());
         }
@@ -1099,15 +1205,18 @@ impl VapourflyApp {
 
         // Run junk detection
         if ui.button("🔍 Run Junk Detection").clicked() {
-            if let Some(scan) = &self.scan_result {
-                let mode = match self.junk_mode {
-                    JunkModeChoice::Default => vapourfly_core::models::JunkMode::Default,
-                    JunkModeChoice::Strict => vapourfly_core::models::JunkMode::Strict,
-                    JunkModeChoice::Aggressive => vapourfly_core::models::JunkMode::Aggressive,
-                };
-                let overrides = vapourfly_core::junk::ManualOverrides::default();
-                self.junk_results =
-                    evaluate_junk(&scan.games, &JunkRules::default(), &mode, &overrides);
+            let mode = match self.junk_mode {
+                JunkModeChoice::Default => JunkMode::Default,
+                JunkModeChoice::Strict => JunkMode::Strict,
+                JunkModeChoice::Aggressive => JunkMode::Aggressive,
+            };
+            if let Some(games) = self.prepared_games(mode.clone()) {
+                self.junk_results = evaluate_junk(
+                    &games,
+                    &JunkRules::default(),
+                    &mode,
+                    &ManualOverrides::default(),
+                );
                 self.junk_selected.clear();
             }
         }
@@ -1243,7 +1352,7 @@ impl VapourflyApp {
         ui.separator();
 
         if ui.button("⭐ Get Recommendations").clicked() {
-            if let Some(scan) = &self.scan_result {
+            if let Some(games) = self.prepared_games(JunkMode::Default) {
                 let minutes: u32 = self.recommend_minutes.parse().unwrap_or(120);
                 let count: usize = self.recommend_count.parse().unwrap_or(5);
                 let request = RecommendRequest {
@@ -1254,7 +1363,7 @@ impl VapourflyApp {
                     seed: Some(42),
                     exclude_collections: vec!["hidden".into()],
                 };
-                self.recommend_results = recommend(&scan.games, &request);
+                self.recommend_results = recommend(&games, &request);
             }
         }
 
@@ -1270,6 +1379,17 @@ impl VapourflyApp {
             self.recommend_results.len()
         ));
         ui.separator();
+
+        if !self.recommend_results.is_empty() {
+            ui.separator();
+            let busy = self.write_loading || self.dry_run_loading;
+            if ui
+                .add_enabled(!busy, egui::Button::new("📁 Save to Steam Collection"))
+                .clicked()
+            {
+                self.start_dry_run(PendingAction::RecommendCollection);
+            }
+        }
 
         // Recommendation cards
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -1304,36 +1424,170 @@ impl VapourflyApp {
         ui.heading("Playlists");
         ui.separator();
 
-        // Import section
+        ui.group(|ui| {
+            ui.strong("Create / Edit Playlist");
+            ui.horizontal(|ui| {
+                ui.label("ID:");
+                ui.text_edit_singleline(&mut self.playlist_edit_id);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Name:");
+                ui.text_edit_singleline(&mut self.playlist_edit_name);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Description:");
+                ui.text_edit_singleline(&mut self.playlist_edit_description);
+            });
+            ui.horizontal(|ui| {
+                ui.label("App IDs:");
+                ui.text_edit_singleline(&mut self.playlist_edit_app_ids);
+            });
+            ui.label("Comma-separated Steam AppIDs for manual playlists.");
+            if ui.button("💾 Save Playlist").clicked() {
+                let app_ids: Vec<u32> = self
+                    .playlist_edit_app_ids
+                    .split(',')
+                    .filter_map(|part| part.trim().parse().ok())
+                    .collect();
+                let pf = PlaylistFile {
+                    vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
+                    created_by: "user".into(),
+                    playlist: Playlist {
+                        id: self.playlist_edit_id.clone(),
+                        name: self.playlist_edit_name.clone(),
+                        description: self.playlist_edit_description.clone(),
+                        content: PlaylistContent::Manual { app_ids },
+                    },
+                };
+                match self.store_playlist(&pf) {
+                    Ok(()) => {
+                        self.playlist_last_import = Some(pf.clone());
+                        self.match_playlist_against_library(&pf);
+                        self.success_msg = Some(format!("Saved playlist '{}'", pf.playlist.name));
+                    }
+                    Err(e) => self.error = Some(e),
+                }
+            }
+        });
+        ui.separator();
+
         ui.group(|ui| {
             ui.strong("Import Playlist");
             ui.horizontal(|ui| {
                 ui.label("Path:");
                 ui.text_edit_singleline(&mut self.playlist_import_path);
-                if ui.button("Import").clicked() && !self.playlist_import_path.is_empty() {
-                    match vapourfly_core::playlist::import_playlist(Path::new(
-                        &self.playlist_import_path,
-                    )) {
+                if ui.button("Import File").clicked() && !self.playlist_import_path.is_empty() {
+                    match playlist::import_playlist(Path::new(&self.playlist_import_path)) {
                         Ok(pf) => {
-                            // Run match against library
-                            if let Some(scan) = &self.scan_result {
-                                match vapourfly_core::playlist::match_playlist(&pf, &scan.games) {
-                                    Ok(report) => {
-                                        self.playlist_match_report = Some(report);
-                                    }
-                                    Err(e) => {
-                                        self.error = Some(format!("Match failed: {e}"));
-                                    }
-                                }
+                            if let Err(e) = self.store_playlist(&pf) {
+                                self.error = Some(e);
+                            } else {
+                                self.playlist_last_import = Some(pf.clone());
+                                self.match_playlist_against_library(&pf);
+                                self.playlist_edit_id = pf.playlist.id.clone();
+                                self.playlist_edit_name = pf.playlist.name.clone();
+                                self.playlist_edit_description = pf.playlist.description.clone();
+                                self.playlist_edit_app_ids = manual_playlist_app_ids_csv(&pf);
                             }
-                            self.playlist_last_import = Some(pf);
                         }
-                        Err(e) => {
-                            self.error = Some(format!("Import failed: {e}"));
+                        Err(e) => self.error = Some(format!("Import failed: {e}")),
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Share code:");
+                ui.text_edit_singleline(&mut self.playlist_share_code_input);
+                if ui.button("Import Code").clicked() && !self.playlist_share_code_input.is_empty()
+                {
+                    match share_code::decode_share_code(&self.playlist_share_code_input) {
+                        Ok(pf) => {
+                            if let Err(e) = self.store_playlist(&pf) {
+                                self.error = Some(e);
+                            } else {
+                                self.playlist_last_import = Some(pf.clone());
+                                self.match_playlist_against_library(&pf);
+                                self.playlist_edit_id = pf.playlist.id.clone();
+                                self.playlist_edit_name = pf.playlist.name.clone();
+                                self.playlist_edit_description = pf.playlist.description.clone();
+                                self.playlist_edit_app_ids = manual_playlist_app_ids_csv(&pf);
+                            }
+                        }
+                        Err(e) => self.error = Some(format!("Share code import failed: {e}")),
+                    }
+                }
+            });
+        });
+        ui.separator();
+
+        ui.group(|ui| {
+            ui.strong("Discover & Dynamic Templates");
+            ui.horizontal(|ui| {
+                ui.label("Discover seed AppID:");
+                ui.text_edit_singleline(&mut self.playlist_discover_seed);
+                if ui.button("Generate Discover").clicked() {
+                    if let Some(games) = self.prepared_games(JunkMode::Default) {
+                        let seed = self.playlist_discover_seed.trim().parse().ok();
+                        let pf = discover::generate_discover_playlist(
+                            &games,
+                            &DiscoverOptions {
+                                seed_app_id: seed,
+                                count: 20,
+                            },
+                        );
+                        if let Err(e) = self.store_playlist(&pf) {
+                            self.error = Some(e);
+                        } else {
+                            self.playlist_last_import = Some(pf.clone());
+                            self.match_playlist_against_library(&pf);
+                            self.success_msg = Some(format!(
+                                "Generated Discover playlist '{}'",
+                                pf.playlist.name
+                            ));
                         }
                     }
                 }
             });
+            ui.horizontal(|ui| {
+                ui.label("Template:");
+                ui.text_edit_singleline(&mut self.dynamic_template);
+                ui.label("Minutes:");
+                ui.text_edit_singleline(&mut self.dynamic_minutes);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Mood/tag:");
+                ui.text_edit_singleline(&mut self.dynamic_mood);
+                ui.label("Seed AppID:");
+                ui.text_edit_singleline(&mut self.dynamic_seed);
+            });
+            if ui.button("Compile Dynamic Template").clicked() {
+                if let Some(template) = DynamicTemplate::parse(&self.dynamic_template) {
+                    if let Some(games) = self.prepared_games(JunkMode::Default) {
+                        let pf = dynamic::compile_dynamic_template(
+                            template,
+                            &games,
+                            &DynamicTemplateOptions {
+                                session_minutes: self.dynamic_minutes.parse().unwrap_or(90),
+                                mood: Some(self.dynamic_mood.clone()),
+                                seed_app_id: self.dynamic_seed.trim().parse().ok(),
+                                count: 25,
+                            },
+                        );
+                        if let Err(e) = self.store_playlist(&pf) {
+                            self.error = Some(e);
+                        } else {
+                            self.playlist_last_import = Some(pf.clone());
+                            self.match_playlist_against_library(&pf);
+                            self.success_msg =
+                                Some(format!("Compiled dynamic template '{}'", pf.playlist.name));
+                        }
+                    }
+                } else {
+                    self.error = Some(
+                        "Unknown template. Use deck-session, finish-it, mood, or playlist-radio."
+                            .into(),
+                    );
+                }
+            }
         });
         ui.separator();
 
@@ -1352,6 +1606,20 @@ impl VapourflyApp {
                     PlaylistContent::Rules { rules } => {
                         ui.label(format!("Rule-based playlist with {} rules", rules.len()));
                     }
+                }
+
+                if ui.button("Copy Share Code").clicked() {
+                    match share_code::encode_share_code(pf) {
+                        Ok(code) => {
+                            self.playlist_share_code_output = Some(code.clone());
+                            ui.ctx().copy_text(code);
+                            self.success_msg = Some("Share code copied to clipboard.".into());
+                        }
+                        Err(e) => self.error = Some(format!("Share code failed: {e}")),
+                    }
+                }
+                if let Some(code) = &self.playlist_share_code_output {
+                    ui.label(format!("Share code: {code}"));
                 }
             });
             ui.separator();
@@ -2066,6 +2334,24 @@ mod tests {
         assert!(!app.backup_retention_edit.is_empty());
         assert!(!app.allow_steam_running);
         assert!(app.settings_save_msg.is_none());
+    }
+
+    #[test]
+    fn manual_playlist_app_ids_render_as_csv_for_editing() {
+        let pf = PlaylistFile {
+            vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
+            created_by: "test".into(),
+            playlist: Playlist {
+                id: "deck-shortlist".into(),
+                name: "Deck Shortlist".into(),
+                description: String::new(),
+                content: PlaylistContent::Manual {
+                    app_ids: vec![730, 427520],
+                },
+            },
+        };
+
+        assert_eq!(manual_playlist_app_ids_csv(&pf), "730, 427520");
     }
 
     #[test]

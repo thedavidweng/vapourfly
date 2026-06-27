@@ -24,16 +24,16 @@ feature row, the command reference, and the relevant GUI smoke test.
 | Enriched scan output | Yes | No | `vapourfly scan --enrich` adds external metadata to that command's output and cache. GUI has cache refresh controls but does not display enriched fields in Library. |
 | Collections list | Yes | Yes | CLI lists Steam collections; GUI displays collection names, counts, and hidden status after scan. |
 | Collections export | Yes | No | `vapourfly collections export --out <file>` writes a Vapourfly playlist-style JSON export. |
-| Junk preview | Yes | Yes | Evaluates Default, Strict, or Aggressive junk modes against data present in the current scanned game records. |
+| Junk preview | Yes | Yes | Evaluates Default, Strict, or Aggressive junk modes after hydrating cached external metadata into scanned game records. |
 | Junk apply to collection | Yes | Yes | Writes junk candidates to a Steam collection after dry-run/confirmation and backup. |
 | Junk hide | Yes | Yes | Adds junk candidates to Steam's hidden collection after dry-run/confirmation and backup. |
-| Recommendations | Yes | Yes | Recommends from current scanned game records by available minutes, count, installed-only, Deck mode, and optional seed in CLI. |
-| Temporary recommendation collection | No | No | Recommendations are displayed only; they are not written to a temporary Steam collection. |
+| Recommendations | Yes | Yes | Recommends from hydrated scanned game records by available minutes, count, installed-only, Deck mode, and optional seed in CLI. |
+| Temporary recommendation collection | Yes | Yes | CLI `recommend --to-collection --dry-run|--confirm` and GUI Recommend view write to `vapourfly-picks` after dry-run confirmation. |
 | Playlist import | Yes | Yes | Imports Vapourfly JSON playlist files. CLI stores imported playlists under the app data playlist directory. |
 | Playlist export | Yes | No | CLI exports a stored playlist by ID. GUI can import and inspect, but not export. |
 | Playlist match report | Yes | Yes | Reports owned, missing, played, unplayed, hidden, and junk counts for a playlist. |
-| Playlist completion price | Partial | Partial | Core can calculate missing-game price when `steam_store` data is present. Current CLI/GUI match flows do not auto-enrich before matching, so this field is usually absent. |
-| Rule-based playlists | Partial | Partial | Rule files can be imported and evaluated. Rules that require external fields only work when those fields are already present on the game records. |
+| Playlist completion price | Partial | Partial | Core can calculate missing-game price when `steam_store` data is present. CLI/GUI match flows hydrate cached metadata before matching, so this field appears when cache data exists. |
+| Rule-based playlists | Partial | Partial | Rule files can be imported and evaluated. CLI/GUI workflows hydrate cached metadata before rule evaluation when cache entries exist. |
 | Playlist sync to Steam collection | Yes | No | `vapourfly sync collection <playlist-id>` resolves a stored playlist and writes a Steam collection with dry-run/confirmation. |
 | Data source cache refresh | Yes | Yes | CLI `cache refresh --source <source>` and GUI Data Sources refresh support `igdb`, `rawg`, `protondb`, `pcgw`, `hltb`, `steam-store`, and `all`. |
 | Data source status | Yes | Yes | CLI `sources status`; GUI Data Sources table. Shows credential state, cache entries, stale entries, and last success. |
@@ -42,21 +42,21 @@ feature row, the command reference, and the relevant GUI smoke test.
 | Backup restore | Yes | Yes | Restores a selected backup after confirmation. |
 | Diagnostics export | Yes | No | `vapourfly diagnostics export --out <file>` writes sanitized support data. |
 | Settings | Partial | Yes | CLI uses flags, environment variables, and the standard config file. GUI edits Steam directory, account, store locale, backup retention, and write safety. |
-| Playlist creation/editing UI | No | No | Users create playlist JSON files outside Vapourfly, then import them. |
-| Share codes | No | No | JSON import/export is the supported sharing format. |
-| Discover / similar-game playlist generation | Core only | No | Recommendation scoring has taste-similarity support when metadata is present; no user command generates a Discover playlist. |
-| Dynamic collection templates | No | No | Deck session, Finish It, Mood, and Playlist Radio collections are not exposed as commands or GUI flows. |
+| Playlist creation/editing UI | Yes | Yes | CLI `playlist create`; GUI Playlists view supports create/edit fields and save to the local playlist store. |
+| Share codes | Yes | Yes | `VF1:` base64url playlist codes via CLI `playlist share` / `playlist import --code` and GUI copy/import controls. |
+| Discover / similar-game playlist generation | Yes | Yes | CLI `playlist discover`; GUI Playlists view generates a Discover playlist from taste similarity or an optional seed AppID. |
+| Dynamic collection templates | Yes | Yes | CLI `collections dynamic <template>`; GUI Playlists view compiles deck-session, finish-it, mood, and playlist-radio templates. Deck Session requires installed, not hidden, not junk, ProtonDB Gold-or-better, PCGW full controller support, and HLTB within the requested session length. |
 
 ## Current Data Flow
 
 1. `scan` reads local Steam files and builds the library model.
 2. `scan --enrich` or cache refresh fetches external metadata and stores API responses in the local cache.
-3. User workflows such as Junk, Recommend, Playlist Match, and Sync currently operate on the scanned game records they create for that command or GUI session.
-4. Current CLI/GUI workflows do not automatically hydrate cached external metadata back into Junk, Recommend, or Playlist rule evaluation.
+3. User workflows such as Junk, Recommend, Playlist Match, Sync, Discover, and Dynamic templates scan the library, then hydrate cached external metadata before evaluation.
+4. Hydration is cache-only (no network). Use `scan --enrich` or `cache refresh` to populate missing cache entries first.
 
-For developers, that means the core model already has fields for ProtonDB,
-PCGW, HLTB, RAWG, IGDB, and Steam Store data, but a frontend feature should
-explicitly load enrichment before promising behavior based on those fields.
+For developers, junk/recommend/playlist workflows call
+`vapourfly_api::enrichment::hydrate_from_cache` and annotate `Game.is_junk`
+before scoring or rule evaluation.
 
 ## Supported Data Sources
 
@@ -134,5 +134,5 @@ Rule playlist:
 ```
 
 Available rule operators: `ProtonAtLeast`, `HltbMaxMinutes`,
-`PlaytimeBetween`, `RatingAtLeast`, `HasGenre`, `HasTag`, `Installed`,
-`NotJunk`, `NotHidden`, `And`, `Or`, and `Not`.
+`ControllerSupportFull`, `PlaytimeBetween`, `RatingAtLeast`, `HasGenre`,
+`HasTag`, `Installed`, `NotJunk`, `NotHidden`, `And`, `Or`, and `Not`.

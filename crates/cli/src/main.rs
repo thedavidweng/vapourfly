@@ -26,14 +26,17 @@ fn long_version() -> &'static str {
         .as_str()
 }
 
-use vapourfly_core::junk::{JunkPreviewResult, ManualOverrides, evaluate_junk};
+use vapourfly_core::discover::{self, DiscoverOptions};
+use vapourfly_core::dynamic::{self, DynamicTemplate, DynamicTemplateOptions};
+use vapourfly_core::junk::{JunkPreviewResult, ManualOverrides, apply_junk_flags, evaluate_junk};
 use vapourfly_core::models::{
-    JunkMode, JunkRules, JunkSignal, PlaylistContent, PlaylistFile, RecommendRequest,
+    JunkMode, JunkRules, JunkSignal, PlaylistContent, PlaylistFile, RecommendRequest, ScanResult,
     VAPOURFLY_JUNK_PREVIEW_SCHEMA, VAPOURFLY_PLAYLIST_SCHEMA, VAPOURFLY_RECOMMENDATIONS_SCHEMA,
     VAPOURFLY_SCAN_SCHEMA, WriteOp,
 };
 use vapourfly_core::playlist;
 use vapourfly_core::recommend;
+use vapourfly_core::share_code;
 use vapourfly_core::steam;
 
 // ---------------------------------------------------------------------------
@@ -170,6 +173,18 @@ enum Commands {
         #[arg(long)]
         seed: Option<u64>,
 
+        /// Write recommendations to a temporary Steam collection.
+        #[arg(long)]
+        to_collection: bool,
+
+        /// Preview collection write without modifying Steam files.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Confirm and write the temporary recommendation collection.
+        #[arg(long)]
+        confirm: bool,
+
         /// Output format.
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
@@ -229,6 +244,28 @@ enum CollectionsAction {
         #[arg(long)]
         out: PathBuf,
     },
+
+    /// Compile a dynamic collection template into a playlist.
+    Dynamic {
+        /// Template name: deck-session, finish-it, mood, playlist-radio.
+        template: String,
+
+        /// Session length in minutes (deck-session).
+        #[arg(long, default_value = "90")]
+        minutes: u32,
+
+        /// Genre or tag filter (mood).
+        #[arg(long)]
+        mood: Option<String>,
+
+        /// Seed AppID (playlist-radio).
+        #[arg(long)]
+        seed: Option<u32>,
+
+        /// Output playlist JSON path.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -277,10 +314,33 @@ enum JunkAction {
 
 #[derive(Subcommand)]
 enum PlaylistAction {
-    /// Import a playlist from a JSON file.
+    /// Create and store a manual playlist.
+    Create {
+        /// Playlist ID.
+        #[arg(long)]
+        id: String,
+
+        /// Playlist display name.
+        #[arg(long)]
+        name: String,
+
+        /// Optional description.
+        #[arg(long, default_value = "")]
+        description: String,
+
+        /// Comma-separated Steam AppIDs.
+        #[arg(long, value_delimiter = ',')]
+        app_ids: Vec<u32>,
+    },
+
+    /// Import a playlist from a JSON file or share code.
     Import {
         /// Path to the playlist file.
-        path: PathBuf,
+        path: Option<PathBuf>,
+
+        /// Vapourfly share code (VF1:...).
+        #[arg(long)]
+        code: Option<String>,
     },
 
     /// Export a playlist to a JSON file.
@@ -291,6 +351,27 @@ enum PlaylistAction {
         /// Output file path.
         #[arg(long)]
         out: PathBuf,
+    },
+
+    /// Emit a share code for a stored playlist.
+    Share {
+        /// Playlist ID to share.
+        id: String,
+    },
+
+    /// Generate a Discover playlist from taste similarity.
+    Discover {
+        /// Optional seed AppID.
+        #[arg(long)]
+        seed: Option<u32>,
+
+        /// Number of games to include.
+        #[arg(long, default_value = "20")]
+        count: usize,
+
+        /// Output playlist JSON path.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 
     /// Match a playlist against the local library.
@@ -325,7 +406,7 @@ enum SyncAction {
 enum CacheAction {
     /// Refresh cached data from external sources.
     Refresh {
-        /// Source to refresh: igdb, rawg, protondb, pcgw, hltb, or all.
+        /// Source to refresh: igdb, rawg, protondb, pcgw, hltb, steam-store, or all.
         #[arg(long)]
         source: String,
     },
@@ -398,6 +479,20 @@ fn main() {
         Commands::Collections { action } => match action {
             CollectionsAction::List => cmd_collections_list(&cli),
             CollectionsAction::Export { out } => cmd_collections_export(&cli, out.clone()),
+            CollectionsAction::Dynamic {
+                template,
+                minutes,
+                mood,
+                seed,
+                out,
+            } => cmd_collections_dynamic(
+                &cli,
+                template.clone(),
+                *minutes,
+                mood.clone(),
+                *seed,
+                out.clone(),
+            ),
         },
         Commands::Junk { action } => match action {
             JunkAction::Preview {
@@ -418,6 +513,9 @@ fn main() {
             deck,
             installed_only,
             seed,
+            to_collection,
+            dry_run,
+            confirm,
             format,
         } => cmd_recommend(
             &cli,
@@ -426,12 +524,32 @@ fn main() {
             *deck,
             *installed_only,
             *seed,
+            *to_collection,
+            *dry_run,
+            *confirm,
             *format,
         ),
         Commands::Playlist { action } => match action {
-            PlaylistAction::Import { path } => cmd_playlist_import(&cli, path.clone()),
+            PlaylistAction::Create {
+                id,
+                name,
+                description,
+                app_ids,
+            } => cmd_playlist_create(
+                id.clone(),
+                name.clone(),
+                description.clone(),
+                app_ids.clone(),
+            ),
+            PlaylistAction::Import { path, code } => {
+                cmd_playlist_import(&cli, path.clone(), code.clone())
+            }
             PlaylistAction::Export { id, out } => {
                 cmd_playlist_export(&cli, id.clone(), out.clone())
+            }
+            PlaylistAction::Share { id } => cmd_playlist_share(&cli, id.clone()),
+            PlaylistAction::Discover { seed, count, out } => {
+                cmd_playlist_discover(&cli, *seed, *count, out.clone())
             }
             PlaylistAction::Match { path, format } => {
                 cmd_playlist_match(&cli, path.clone(), *format)
@@ -755,6 +873,49 @@ fn cmd_collections_list(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn cmd_collections_dynamic(
+    cli: &Cli,
+    template: String,
+    minutes: u32,
+    mood: Option<String>,
+    seed: Option<u32>,
+    out: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let template = DynamicTemplate::parse(&template).ok_or_else(|| {
+        format!(
+            "unknown dynamic template '{template}'. Expected one of: deck-session, finish-it, mood, playlist-radio"
+        )
+    })?;
+
+    let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
+    let pf = dynamic::compile_dynamic_template(
+        template,
+        &scan_result.games,
+        &DynamicTemplateOptions {
+            session_minutes: minutes,
+            mood,
+            seed_app_id: seed,
+            count: 25,
+        },
+    );
+
+    store_playlist(&pf)?;
+    println!("Compiled dynamic template: {}", template.label());
+    println!("  Playlist ID: {}", pf.playlist.id);
+    println!("  Name:        {}", pf.playlist.name);
+    match &pf.playlist.content {
+        PlaylistContent::Manual { app_ids } => println!("  Games:       {}", app_ids.len()),
+        PlaylistContent::Rules { rules } => println!("  Rules:       {}", rules.len()),
+    }
+
+    if let Some(out) = out {
+        playlist::export_playlist(&pf, &out)?;
+        println!("  Exported to {}", out.display());
+    }
+
+    Ok(())
+}
+
 fn cmd_collections_export(cli: &Cli, out: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let cloud_path = cli.cloud_storage_path()?;
     let cloud = steam::read_cloud_storage(&cloud_path)?;
@@ -768,6 +929,32 @@ fn cmd_collections_export(cli: &Cli, out: PathBuf) -> Result<(), Box<dyn std::er
         out.display()
     );
     Ok(())
+}
+
+fn scan_library_hydrated(
+    cli: &Cli,
+    junk_mode: JunkMode,
+) -> Result<ScanResult, Box<dyn std::error::Error>> {
+    let steam_dir = cli.resolve_steam_dir()?;
+    let mut scan_result = steam::scan_library(&steam::ScanOptions {
+        steam_dir,
+        account: cli.account.clone(),
+        fixtures: cli.fixtures.clone(),
+    })?;
+
+    let cache = vapourfly_api::cache::DiskCache::new(vapourfly_core::config::default_cache_dir());
+    let hydration = vapourfly_api::enrichment::hydrate_from_cache(&mut scan_result.games, &cache);
+    tracing::debug!(
+        hydrated = hydration.fields_hydrated,
+        stale = hydration.stale_fields_used,
+        "hydrated cached metadata for workflow"
+    );
+
+    let rules = JunkRules::default();
+    let overrides = ManualOverrides::default();
+    apply_junk_flags(&mut scan_result.games, &rules, &junk_mode, &overrides);
+
+    Ok(scan_result)
 }
 
 fn cmd_junk_preview(
@@ -788,13 +975,7 @@ fn cmd_junk_preview(
         JunkMode::Default
     };
 
-    let steam_dir = cli.resolve_steam_dir()?;
-
-    let scan_result = steam::scan_library(&steam::ScanOptions {
-        steam_dir,
-        account: cli.account.clone(),
-        fixtures: cli.fixtures.clone(),
-    })?;
+    let scan_result = scan_library_hydrated(cli, mode.clone())?;
 
     // Print scan warnings to stderr
     for w in &scan_result.warnings {
@@ -871,22 +1052,13 @@ fn cmd_junk_apply(
     validate_write_flags(dry_run, confirm)?;
 
     let cloud_path = cli.cloud_storage_path()?;
-    let steam_dir = cli.resolve_steam_dir()?;
+    let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
 
-    let scan_result = steam::scan_library(&steam::ScanOptions {
-        steam_dir,
-        account: cli.account.clone(),
-        fixtures: cli.fixtures.clone(),
-    })?;
-
-    let rules = JunkRules::default();
-    let overrides = ManualOverrides::default();
-    let decisions = evaluate_junk(&scan_result.games, &rules, &JunkMode::Default, &overrides);
-
-    let mut junk_app_ids: Vec<u32> = decisions
+    let mut junk_app_ids: Vec<u32> = scan_result
+        .games
         .iter()
-        .filter(|d| d.is_junk)
-        .map(|d| d.app_id)
+        .filter(|g| g.is_junk)
+        .map(|g| g.app_id)
         .collect();
     junk_app_ids.sort();
     junk_app_ids.dedup();
@@ -947,22 +1119,13 @@ fn cmd_junk_hide(
     validate_write_flags(dry_run, confirm)?;
 
     let cloud_path = cli.cloud_storage_path()?;
-    let steam_dir = cli.resolve_steam_dir()?;
+    let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
 
-    let scan_result = steam::scan_library(&steam::ScanOptions {
-        steam_dir,
-        account: cli.account.clone(),
-        fixtures: cli.fixtures.clone(),
-    })?;
-
-    let rules = JunkRules::default();
-    let overrides = ManualOverrides::default();
-    let decisions = evaluate_junk(&scan_result.games, &rules, &JunkMode::Default, &overrides);
-
-    let mut junk_app_ids: Vec<u32> = decisions
+    let mut junk_app_ids: Vec<u32> = scan_result
+        .games
         .iter()
-        .filter(|d| d.is_junk)
-        .map(|d| d.app_id)
+        .filter(|g| g.is_junk)
+        .map(|g| g.app_id)
         .collect();
     junk_app_ids.sort();
     junk_app_ids.dedup();
@@ -1009,6 +1172,8 @@ fn cmd_junk_hide(
     Ok(())
 }
 
+const RECOMMEND_COLLECTION_ID: &str = "vapourfly-picks";
+
 fn cmd_recommend(
     cli: &Cli,
     minutes: u32,
@@ -1016,15 +1181,16 @@ fn cmd_recommend(
     deck: bool,
     installed_only: bool,
     seed: Option<u64>,
+    to_collection: bool,
+    dry_run: bool,
+    confirm: bool,
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let steam_dir = cli.resolve_steam_dir()?;
+    if to_collection {
+        validate_write_flags(dry_run, confirm)?;
+    }
 
-    let scan_result = steam::scan_library(&steam::ScanOptions {
-        steam_dir,
-        account: cli.account.clone(),
-        fixtures: cli.fixtures.clone(),
-    })?;
+    let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
 
     let request = RecommendRequest {
         available_minutes: minutes,
@@ -1036,6 +1202,53 @@ fn cmd_recommend(
     };
 
     let recommendations = recommend::recommend(&scan_result.games, &request);
+
+    if to_collection {
+        let app_ids: Vec<u32> = recommendations.iter().map(|r| r.app_id).collect();
+        if app_ids.is_empty() {
+            println!("No recommendations to write.");
+            return Ok(());
+        }
+
+        let cloud_path = cli.cloud_storage_path()?;
+        let cloud = steam::read_cloud_storage(&cloud_path)?;
+        let plan = steam::generate_write_plan(
+            &cloud,
+            vec![WriteOp::UpsertCollection {
+                id: RECOMMEND_COLLECTION_ID.into(),
+                added: app_ids.clone(),
+                removed: vec![],
+            }],
+            cloud_path.clone(),
+        )?;
+
+        println!("Temporary recommendation collection");
+        println!("===============================");
+        println!("Collection ID: {RECOMMEND_COLLECTION_ID}");
+        println!("Games:         {}", app_ids.len());
+        println!();
+        println!("Diff:");
+        for change in &plan.diff.collections_changed {
+            println!("  Collection '{}': {}", change.id, change.action);
+        }
+        if !plan.diff.app_ids_added.is_empty() {
+            println!("  App IDs to add: {}", plan.diff.app_ids_added.len());
+        }
+        println!("  Unchanged entries: {}", plan.diff.unchanged_count);
+
+        if dry_run {
+            println!();
+            println!("Dry run complete. No changes made.");
+            return Ok(());
+        }
+
+        steam::check_write_safety(&cloud_path, cli.allow_steam_running)?;
+        steam::execute_write_plan(&plan, 5)?;
+        println!();
+        println!("Write complete.");
+        println!("  Backup: {}", plan.backup_path.display());
+        return Ok(());
+    }
 
     match format {
         OutputFormat::Table => {
@@ -1076,14 +1289,44 @@ fn cmd_recommend(
     Ok(())
 }
 
-fn cmd_playlist_import(cli: &Cli, path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let pf = playlist::import_playlist(&path)?;
+fn cmd_playlist_create(
+    id: String,
+    name: String,
+    description: String,
+    app_ids: Vec<u32>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let pf = PlaylistFile {
+        vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
+        created_by: "user".into(),
+        playlist: vapourfly_core::models::Playlist {
+            id,
+            name,
+            description,
+            content: PlaylistContent::Manual { app_ids },
+        },
+    };
 
-    // Store the imported playlist locally for later retrieval by ID.
-    let store_dir = playlist_store_dir();
-    std::fs::create_dir_all(&store_dir)?;
-    let stored_path = store_dir.join(format!("{}.json", pf.playlist.id));
-    playlist::export_playlist(&pf, &stored_path)?;
+    store_playlist(&pf)?;
+    println!("Created playlist: {}", pf.playlist.name);
+    println!("  ID: {}", pf.playlist.id);
+    Ok(())
+}
+
+fn cmd_playlist_import(
+    cli: &Cli,
+    path: Option<PathBuf>,
+    code: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let pf = if let Some(code) = code {
+        share_code::decode_share_code(&code)?
+    } else if let Some(path) = path {
+        playlist::import_playlist(&path)?
+    } else {
+        return Err("must specify a playlist file path or --code".into());
+    };
+
+    store_playlist(&pf)?;
+    let stored_path = playlist_store_dir().join(format!("{}.json", pf.playlist.id));
 
     println!("Imported playlist: {}", pf.playlist.name);
     println!("  ID: {}", pf.playlist.id);
@@ -1099,14 +1342,7 @@ fn cmd_playlist_import(cli: &Cli, path: PathBuf) -> Result<(), Box<dyn std::erro
         }
     }
 
-    // Match against library for a summary.
-    let steam_dir = cli.resolve_steam_dir()?;
-
-    let scan_result = steam::scan_library(&steam::ScanOptions {
-        steam_dir,
-        account: cli.account.clone(),
-        fixtures: cli.fixtures.clone(),
-    })?;
+    let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
     let report = playlist::match_playlist(&pf, &scan_result.games)?;
 
     println!();
@@ -1119,6 +1355,45 @@ fn cmd_playlist_import(cli: &Cli, path: PathBuf) -> Result<(), Box<dyn std::erro
     println!("  Junk:     {}", report.junk.len());
     println!();
     println!("Stored to {}", stored_path.display());
+    Ok(())
+}
+
+fn cmd_playlist_share(_cli: &Cli, id: String) -> Result<(), Box<dyn std::error::Error>> {
+    let pf = load_stored_playlist(&id)?;
+    let code = share_code::encode_share_code(&pf)?;
+    println!("Share code for '{}':", pf.playlist.name);
+    println!("{code}");
+    Ok(())
+}
+
+fn cmd_playlist_discover(
+    cli: &Cli,
+    seed: Option<u32>,
+    count: usize,
+    out: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
+    let pf = discover::generate_discover_playlist(
+        &scan_result.games,
+        &DiscoverOptions {
+            seed_app_id: seed,
+            count,
+        },
+    );
+
+    store_playlist(&pf)?;
+    println!("Generated Discover playlist: {}", pf.playlist.name);
+    println!("  ID: {}", pf.playlist.id);
+    match &pf.playlist.content {
+        PlaylistContent::Manual { app_ids } => println!("  Games: {}", app_ids.len()),
+        PlaylistContent::Rules { .. } => {}
+    }
+
+    if let Some(out) = out {
+        playlist::export_playlist(&pf, &out)?;
+        println!("  Exported to {}", out.display());
+    }
+
     Ok(())
 }
 
@@ -1143,14 +1418,7 @@ fn cmd_playlist_match(
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pf = playlist::import_playlist(&path)?;
-
-    let steam_dir = cli.resolve_steam_dir()?;
-
-    let scan_result = steam::scan_library(&steam::ScanOptions {
-        steam_dir,
-        account: cli.account.clone(),
-        fixtures: cli.fixtures.clone(),
-    })?;
+    let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
     let report = playlist::match_playlist(&pf, &scan_result.games)?;
 
     match format {
@@ -1198,15 +1466,7 @@ fn cmd_sync_collection(
             ids
         }
         PlaylistContent::Rules { rules: _ } => {
-            // Evaluate rules against the library to resolve matching app IDs.
-            let steam_dir = cli.resolve_steam_dir()?;
-
-            let scan_result = steam::scan_library(&steam::ScanOptions {
-                steam_dir,
-                account: cli.account.clone(),
-                fixtures: cli.fixtures.clone(),
-            })?;
-
+            let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
             let report = playlist::match_playlist(&pf, &scan_result.games)?;
             report.owned
         }
@@ -1503,6 +1763,15 @@ fn cmd_diagnostics_export(_cli: &Cli, out: PathBuf) -> Result<(), Box<dyn std::e
 /// Return the directory where imported playlists are stored.
 fn playlist_store_dir() -> PathBuf {
     vapourfly_core::config::default_playlists_dir()
+}
+
+/// Persist a playlist to the local playlist store.
+fn store_playlist(pf: &PlaylistFile) -> Result<(), Box<dyn std::error::Error>> {
+    let store_dir = playlist_store_dir();
+    std::fs::create_dir_all(&store_dir)?;
+    let stored_path = store_dir.join(format!("{}.json", pf.playlist.id));
+    playlist::export_playlist(pf, &stored_path)?;
+    Ok(())
 }
 
 /// Load a stored playlist by ID from the local playlist store.

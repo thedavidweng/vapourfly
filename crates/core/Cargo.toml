@@ -17,6 +17,7 @@ sha2 = { workspace = true }
 tempfile = { workspace = true }
 toml = { workspace = true }
 strsim = "0.11"
+base64 = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 winreg = { workspace = true }

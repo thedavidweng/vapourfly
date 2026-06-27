@@ -28,6 +28,7 @@ serial_test = "3"
 eframe = "0.31"
 egui = "0.31"
 egui_extras = "0.31"
+base64 = "0.22"
 
 [profile.release]
 opt-level = 3

@@ -236,6 +236,24 @@ pub fn evaluate_junk(
         .collect()
 }
 
+/// Evaluate junk rules and write `is_junk` flags back onto the game records.
+///
+/// Playlist match reports and recommendation filters read `Game.is_junk`, so
+/// workflows that hydrate external metadata should call this after junk
+/// evaluation to keep downstream features consistent.
+pub fn apply_junk_flags(
+    games: &mut [Game],
+    rules: &JunkRules,
+    mode: &JunkMode,
+    overrides: &ManualOverrides,
+) -> Vec<JunkDecision> {
+    let decisions = evaluate_junk(games, rules, mode, overrides);
+    for (game, decision) in games.iter_mut().zip(decisions.iter()) {
+        game.is_junk = decision.is_junk;
+    }
+    decisions
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

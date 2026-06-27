@@ -157,9 +157,9 @@ Identify games you are unlikely to play using three evaluation modes:
 | **Aggressive** | Low playtime + at least one other negative signal, no minimum data requirement |
 
 Every decision is explainable: the output includes which signals matched, which were missing, and a confidence score reflecting data completeness.
-Current CLI and GUI junk flows evaluate the fields present in their scanned
-game records; they do not automatically hydrate cached external metadata before
-classification.
+Current CLI and GUI junk flows scan the library, hydrate cached external
+metadata, and then classify games. Hydration is cache-only and does not make
+network requests.
 
 ```bash
 # Preview junk candidates (default mode)
@@ -193,12 +193,14 @@ vapourfly recommend --minutes 60 --installed-only --deck
 
 # Reproducible results with a seed
 vapourfly recommend --minutes 120 --seed 42
+
+# Save recommendations to the temporary Steam collection
+vapourfly recommend --minutes 120 --to-collection --dry-run
+vapourfly recommend --minutes 120 --to-collection --confirm
 ```
 
-Current CLI and GUI recommendation flows use the Steam scan result created for
-that command or GUI session. The core scoring model can use external metadata
-when enriched game records are supplied, but the frontends do not automatically
-hydrate cached external metadata before scoring.
+Current CLI and GUI recommendation flows hydrate cached external metadata and
+annotate junk flags before scoring. Hydration is cache-only.
 
 ## Playlists
 
@@ -207,14 +209,31 @@ Playlists are JSON files that describe a named subset of your library. They can 
 ### Import and Export
 
 ```bash
+# Create a manual playlist
+vapourfly playlist create --id deck-shortlist --name "Deck Shortlist" --app-ids 292030,367520
+
 # Import a playlist from a JSON file
 vapourfly playlist import my-playlist.json
+
+# Import or emit a share code
+vapourfly playlist import --code 'VF1:...'
+vapourfly playlist share my-playlist-id
+
+# Generate a Discover playlist
+vapourfly playlist discover --count 20
+vapourfly playlist discover --seed 367520 --out discover.json
 
 # Export a stored playlist by ID
 vapourfly playlist export my-playlist-id --out exported.json
 
 # Export Steam collections to Vapourfly JSON
 vapourfly collections export --out collections.json
+
+# Compile dynamic playlist templates
+vapourfly collections dynamic deck-session --minutes 90
+vapourfly collections dynamic finish-it
+vapourfly collections dynamic mood --mood "Roguelike"
+vapourfly collections dynamic playlist-radio --seed 367520
 ```
 
 ### Rule-Based Playlists
@@ -246,9 +265,12 @@ Rule playlists support composable boolean logic:
 }
 ```
 
-Available rule operators: `ProtonAtLeast`, `HltbMaxMinutes`, `PlaytimeBetween`, `RatingAtLeast`, `HasGenre`, `HasTag`, `Installed`, `NotJunk`, `NotHidden`, `And`, `Or`, `Not`.
-Rules are evaluated against the game records available to the command. External
-metadata rules only match when those fields are already present.
+Available rule operators: `ProtonAtLeast`, `HltbMaxMinutes`,
+`ControllerSupportFull`, `PlaytimeBetween`, `RatingAtLeast`, `HasGenre`,
+`HasTag`, `Installed`, `NotJunk`, `NotHidden`, `And`, `Or`, `Not`.
+Playlist import, match, sync, discover, and dynamic template workflows hydrate
+cached external metadata before evaluating rules or similarity. External
+metadata rules only match when the relevant cache entries exist.
 
 ### Match Reports
 

@@ -168,11 +168,11 @@ vapourfly sources status
 
 Cache refresh is blocked in `--offline` mode.
 
-Cache refresh stores source responses locally. Current Junk, Recommend, Playlist
-Match, and Playlist Sync frontends do not automatically hydrate those cached
-responses into their scanned game records before evaluating rules or scores.
-Use `scan --enrich --format json` when you need to inspect enriched game data
-from the CLI.
+Cache refresh stores source responses locally. Junk, Recommend, Playlist Match,
+Playlist Sync, Discover, and Dynamic Template workflows hydrate cached responses
+into scanned game records before evaluating rules or scores. Hydration is
+cache-only and never makes network requests. Use `scan --enrich --format json`
+when you need to inspect enriched game data from the CLI.
 
 ## Data Priority
 

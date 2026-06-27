@@ -47,8 +47,20 @@ document covers the interactive flows that require a running GUI.
 4. Verify recommendations are displayed sorted by score.
 5. Confirm each recommendation shows name, AppID, score, and reason lines.
 6. Toggle Deck mode and Installed only, rerun recommendations, and confirm the result set updates without errors.
+7. Click "Save to Steam Collection".
+8. Verify the dry-run diff targets the `vapourfly-picks` collection and requires confirmation before writing.
 
-### 5. Backup List
+### 5. Playlists
+
+1. Navigate to Playlists view via the left sidebar.
+2. Fill Create / Edit Playlist with an ID, name, description, and comma-separated AppIDs.
+3. Click "Save Playlist" and verify a match report appears.
+4. Click "Copy Share Code" and verify a `VF1:` code is shown.
+5. Paste the code into Share code and click "Import Code"; verify the same playlist is loaded.
+6. Click "Generate Discover" and verify a Discover playlist is created.
+7. Compile `deck-session`, `finish-it`, `mood`, and `playlist-radio` templates and verify each produces a playlist or rule summary without errors.
+
+### 6. Backup List
 
 1. Navigate to Backups view via the left sidebar.
 2. Verify the backup list is displayed (empty for a fresh install).

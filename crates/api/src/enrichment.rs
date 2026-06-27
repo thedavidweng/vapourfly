@@ -74,6 +74,14 @@ impl Default for EnrichmentOptions {
 // Enrichment result
 // ---------------------------------------------------------------------------
 
+/// Summary of a cache-only hydration pass.
+#[derive(Clone, Debug, Default)]
+pub struct HydrationSummary {
+    pub games_processed: usize,
+    pub fields_hydrated: usize,
+    pub stale_fields_used: usize,
+}
+
 /// Summary of what the enrichment pass did.
 #[derive(Clone, Debug, Default)]
 pub struct EnrichmentSummary {
@@ -538,6 +546,72 @@ fn enrich_steam_store(
 }
 
 // ---------------------------------------------------------------------------
+// Cache-only hydration (for Junk / Recommend / Playlist workflows)
+// ---------------------------------------------------------------------------
+
+/// Load cached external metadata onto game records without network calls.
+///
+/// Fresh and stale cache entries are both applied. Missing cache entries are
+/// left unset so callers can still degrade gracefully.
+pub fn hydrate_from_cache(games: &mut [Game], cache: &DiskCache) -> HydrationSummary {
+    let mut summary = HydrationSummary {
+        games_processed: games.len(),
+        ..Default::default()
+    };
+
+    for game in games.iter_mut() {
+        let app_key = format!("app/{}", game.app_id);
+        let appid_key = format!("appid/{}", game.app_id);
+        let name_key = format!("name/{}", game.name);
+
+        if let Ok(Some(record)) = cache.get::<ProtonDbData>(SOURCE_PROTONDB, &app_key) {
+            game.protondb = Some(record.data);
+            summary.fields_hydrated += 1;
+            if record.stale {
+                summary.stale_fields_used += 1;
+            }
+        }
+        if let Ok(Some(record)) = cache.get::<PcgwData>(SOURCE_PCGW, &app_key) {
+            game.pcgw = Some(record.data);
+            summary.fields_hydrated += 1;
+            if record.stale {
+                summary.stale_fields_used += 1;
+            }
+        }
+        if let Ok(Some(record)) = cache.get::<HltbData>(SOURCE_HLTB, &name_key) {
+            game.hltb = Some(record.data);
+            summary.fields_hydrated += 1;
+            if record.stale {
+                summary.stale_fields_used += 1;
+            }
+        }
+        if let Ok(Some(record)) = cache.get::<RawgData>(SOURCE_RAWG, &name_key) {
+            game.rawg = Some(record.data);
+            summary.fields_hydrated += 1;
+            if record.stale {
+                summary.stale_fields_used += 1;
+            }
+        }
+        if let Ok(Some(record)) = cache.get::<IgdbData>(SOURCE_IGDB, &appid_key) {
+            game.igdb = Some(record.data);
+            summary.fields_hydrated += 1;
+            if record.stale {
+                summary.stale_fields_used += 1;
+            }
+        }
+        if let Ok(Some(record)) = cache.get::<SteamStoreDetails>(SOURCE_STEAM_STORE, &app_key) {
+            game.steam_store = Some(record.data);
+            summary.fields_hydrated += 1;
+            if record.stale {
+                summary.stale_fields_used += 1;
+            }
+        }
+    }
+
+    summary
+}
+
+// ---------------------------------------------------------------------------
 // Cache status (for `sources status` CLI command)
 // ---------------------------------------------------------------------------
 
@@ -606,7 +680,7 @@ mod tests {
     use crate::http::{HttpResponse, MockBackend};
     use std::collections::HashMap;
     use tempfile::TempDir;
-    use vapourfly_core::models::{Game, IgdbData, SteamAppType};
+    use vapourfly_core::models::{Game, IgdbData, ProtonDbData, ProtonTier, SteamAppType};
 
     fn make_test_game(app_id: u32, name: &str) -> Game {
         Game {
@@ -804,6 +878,36 @@ mod tests {
             .unwrap()
             .expect("cache entry should exist");
         assert_eq!(cached.data.app_id, 292030);
+    }
+
+    #[test]
+    fn hydrate_from_cache_applies_stale_entries() {
+        let tmp = TempDir::new().unwrap();
+        let cache = DiskCache::new(tmp.path());
+        let record = CacheRecord {
+            source: SOURCE_PROTONDB.to_string(),
+            key: "app/730".to_string(),
+            fetched_at: chrono::Utc::now() - chrono::Duration::days(30),
+            ttl: Duration::from_secs(3600),
+            data: ProtonDbData {
+                tier: ProtonTier::Platinum,
+                confidence: Some("high".into()),
+                score: None,
+            },
+            stale: true,
+            etag: None,
+        };
+        cache.put(&record).unwrap();
+
+        let mut games = vec![make_test_game(730, "Counter-Strike 2")];
+        let summary = hydrate_from_cache(&mut games, &cache);
+
+        assert_eq!(summary.fields_hydrated, 1);
+        assert_eq!(summary.stale_fields_used, 1);
+        assert_eq!(
+            games[0].protondb.as_ref().unwrap().tier,
+            ProtonTier::Platinum
+        );
     }
 
     #[test]

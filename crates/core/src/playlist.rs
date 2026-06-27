@@ -30,8 +30,8 @@ use std::path::Path;
 
 use crate::error::{Result, SafePath, VapourflyError};
 use crate::models::{
-    Game, Money, PlaylistContent, PlaylistFile, PlaylistMatchReport, PlaylistRule, ProtonTier,
-    VAPOURFLY_PLAYLIST_SCHEMA,
+    ControllerSupport, Game, Money, PlaylistContent, PlaylistFile, PlaylistMatchReport,
+    PlaylistRule, ProtonTier, VAPOURFLY_PLAYLIST_SCHEMA,
 };
 
 // ---------------------------------------------------------------------------
@@ -109,6 +109,7 @@ fn validate_rule_operators(rules: &[PlaylistRule]) -> Result<()> {
                 }
             }
             PlaylistRule::HltbMaxMinutes { minutes: _ }
+            | PlaylistRule::ControllerSupportFull
             | PlaylistRule::PlaytimeBetween { min: _, max: _ }
             | PlaylistRule::RatingAtLeast { rating_0_5: _ }
             | PlaylistRule::HasGenre { genre: _ }
@@ -162,6 +163,40 @@ fn validate_app_ids(app_ids: &[u32]) -> Result<()> {
     Ok(())
 }
 
+/// Validate a parsed playlist file before importing, exporting, or sharing it.
+pub(crate) fn validate_playlist_file(pf: &PlaylistFile) -> Result<()> {
+    if pf.vapourfly_schema != VAPOURFLY_PLAYLIST_SCHEMA {
+        return Err(VapourflyError::InvalidInput(format!(
+            "unsupported playlist schema '{}', expected '{}'",
+            pf.vapourfly_schema, VAPOURFLY_PLAYLIST_SCHEMA,
+        )));
+    }
+
+    if pf.playlist.id.trim().is_empty() {
+        return Err(VapourflyError::InvalidInput(
+            "playlist id must not be empty".into(),
+        ));
+    }
+
+    if pf.playlist.name.trim().is_empty() {
+        return Err(VapourflyError::InvalidInput(
+            "playlist name must not be empty".into(),
+        ));
+    }
+
+    match &pf.playlist.content {
+        PlaylistContent::Manual { app_ids } => {
+            validate_app_ids(app_ids)?;
+        }
+        PlaylistContent::Rules { rules } => {
+            validate_rule_operators(rules)?;
+            validate_rule_depth(rules, 1)?;
+        }
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // import_playlist
 // ---------------------------------------------------------------------------
@@ -188,39 +223,7 @@ pub fn import_playlist(path: &Path) -> Result<PlaylistFile> {
             reason: e.to_string(),
         })?;
 
-    // 1. Schema version
-    if pf.vapourfly_schema != VAPOURFLY_PLAYLIST_SCHEMA {
-        return Err(VapourflyError::InvalidInput(format!(
-            "unsupported playlist schema '{}', expected '{}'",
-            pf.vapourfly_schema, VAPOURFLY_PLAYLIST_SCHEMA,
-        )));
-    }
-
-    // 2. Non-empty id
-    if pf.playlist.id.trim().is_empty() {
-        return Err(VapourflyError::InvalidInput(
-            "playlist id must not be empty".into(),
-        ));
-    }
-
-    // 3. Non-empty name
-    if pf.playlist.name.trim().is_empty() {
-        return Err(VapourflyError::InvalidInput(
-            "playlist name must not be empty".into(),
-        ));
-    }
-
-    // 4. Content-specific validation
-    match &pf.playlist.content {
-        PlaylistContent::Manual { app_ids } => {
-            validate_app_ids(app_ids)?;
-        }
-        PlaylistContent::Rules { rules } => {
-            validate_rule_operators(rules)?;
-            validate_rule_depth(rules, 1)?;
-        }
-    }
-
+    validate_playlist_file(&pf)?;
     Ok(pf)
 }
 
@@ -233,6 +236,8 @@ pub fn import_playlist(path: &Path) -> Result<PlaylistFile> {
 /// For manual playlists, the AppID list is sorted ascending before writing.
 /// Rule-based playlists are written as-is (rules have no inherent ordering).
 pub fn export_playlist(playlist: &PlaylistFile, path: &Path) -> Result<()> {
+    validate_playlist_file(playlist)?;
+
     let mut pf = playlist.clone();
 
     // Sort AppIDs in manual playlists for deterministic output.
@@ -305,6 +310,12 @@ fn eval(rule: &PlaylistRule, game: &Game) -> bool {
                 None => false, // fail closed
             }
         }
+
+        // -- Controller support -----------------------------------------------
+        PlaylistRule::ControllerSupportFull => game
+            .pcgw
+            .as_ref()
+            .is_some_and(|pcgw| matches!(pcgw.controller_support, ControllerSupport::Full)),
 
         // -- Playtime between --------------------------------------------------
         PlaylistRule::PlaytimeBetween { min, max } => {
@@ -521,7 +532,7 @@ pub fn match_playlist(playlist: &PlaylistFile, games: &[Game]) -> Result<Playlis
 mod tests {
     use super::*;
     use crate::models::{
-        HltbData, HltbSource, IgdbData, Playlist, ProtonDbData, RawgData, SteamAppType,
+        HltbData, HltbSource, IgdbData, PcgwData, Playlist, ProtonDbData, RawgData, SteamAppType,
     };
     use std::fs;
 
@@ -685,6 +696,20 @@ mod tests {
         }
 
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn export_rejects_empty_id() {
+        let dir = std::env::temp_dir().join("vapourfly_playlist_test");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("empty_export_id.json");
+        let _ = fs::remove_file(&path);
+
+        let pf = make_manual_playlist("", "Name", vec![730]);
+        let err = export_playlist(&pf, &path).unwrap_err();
+
+        assert!(err.to_string().contains("playlist id must not be empty"));
+        assert!(!path.exists());
     }
 
     // -- import validation ----------------------------------------------------
@@ -861,6 +886,32 @@ mod tests {
         let game = make_game(1, "Game");
         assert!(!evaluate_rules(
             &[PlaylistRule::HltbMaxMinutes { minutes: 9999 }],
+            &game
+        ));
+    }
+
+    #[test]
+    fn rule_controller_support_full() {
+        let mut game = make_game(1, "Game");
+        game.pcgw = Some(PcgwData {
+            page_name: Some("Game".into()),
+            controller_support: crate::models::ControllerSupport::Full,
+            steam_deck_notes: None,
+            fixes_url: None,
+        });
+        assert!(evaluate_rules(
+            &[PlaylistRule::ControllerSupportFull],
+            &game
+        ));
+
+        game.pcgw = Some(PcgwData {
+            page_name: Some("Game".into()),
+            controller_support: crate::models::ControllerSupport::Partial,
+            steam_deck_notes: None,
+            fixes_url: None,
+        });
+        assert!(!evaluate_rules(
+            &[PlaylistRule::ControllerSupportFull],
             &game
         ));
     }

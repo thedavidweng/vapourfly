@@ -416,6 +416,7 @@ pub enum PlaylistContent {
 pub enum PlaylistRule {
     ProtonAtLeast { tier: ProtonTier },
     HltbMaxMinutes { minutes: u32 },
+    ControllerSupportFull,
     PlaytimeBetween { min: u32, max: u32 },
     RatingAtLeast { rating_0_5: f32 },
     HasGenre { genre: String },
