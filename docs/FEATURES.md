@@ -19,11 +19,11 @@ feature row, the command reference, and the relevant GUI smoke test.
 |---|---|---|---|
 | Steam directory detection | Yes | Yes | Uses platform defaults, `--steam-dir`, `VAPOURFLY_STEAM_DIR`, or the standard config file path. |
 | Steam account selection | Yes | Yes | CLI supports `--account`; GUI has an Account Override setting. If unset, Vapourfly selects the most recent Steam account or the only account. |
-| Setup diagnostics | Yes | No | `vapourfly doctor` reports Steam paths, accounts, library folders, cloud storage, cache path, and credential status. |
+| Setup diagnostics | Yes | Yes | CLI `vapourfly doctor` and GUI Settings setup check report Steam paths, accounts, library folders, cloud storage, cache path, and credential status. |
 | Library scan | Yes | Yes | CLI `scan`; GUI scans on startup and via Refresh. Both read installed games, playtime, hidden state, and Steam collections. |
-| Enriched scan output | Yes | No | `vapourfly scan --enrich` adds external metadata to that command's output and cache. GUI has cache refresh controls but does not display enriched fields in Library. |
+| Enriched scan output | Yes | Yes | CLI `vapourfly scan --enrich` adds external metadata to that command's output and cache. GUI Library hydrates cached metadata and shows a Metadata column when cache entries exist. |
 | Collections list | Yes | Yes | CLI lists Steam collections; GUI displays collection names, counts, and hidden status after scan. |
-| Collections export | Yes | No | `vapourfly collections export --out <file>` writes a Vapourfly playlist-style JSON export. |
+| Collections export | Yes | Yes | CLI `vapourfly collections export --out <file>` and GUI Collections export write the same Steam collection JSON export. |
 | Junk preview | Yes | Yes | Evaluates Default, Strict, or Aggressive junk modes after hydrating cached external metadata into scanned game records. |
 | Junk apply to collection | Yes | Yes | Writes junk candidates to a Steam collection after dry-run/confirmation and backup. |
 | Junk hide | Yes | Yes | Adds junk candidates to Steam's hidden collection after dry-run/confirmation and backup. |
@@ -40,7 +40,7 @@ feature row, the command reference, and the relevant GUI smoke test.
 | Offline mode | Yes | Partial | CLI `--offline` blocks network calls and uses cache during enrichment. GUI has no offline toggle. |
 | Backup list | Yes | Yes | Lists backups next to the Steam cloud storage file. |
 | Backup restore | Yes | Yes | Restores a selected backup after confirmation. |
-| Diagnostics export | Yes | No | `vapourfly diagnostics export --out <file>` writes sanitized support data. |
+| Diagnostics export | Yes | Yes | CLI `vapourfly diagnostics export --out <file>` and GUI Settings diagnostics export write sanitized support data. |
 | Settings | Partial | Yes | CLI uses flags, environment variables, and the standard config file. GUI edits Steam directory, account, store locale, backup retention, and write safety. |
 | Playlist creation/editing UI | Yes | Yes | CLI `playlist create`; GUI Playlists view supports create/edit fields and save to the local playlist store. |
 | Share codes | Yes | Yes | `VF1:` base64url playlist codes via CLI `playlist share` / `playlist import --code` and GUI copy/import controls. |

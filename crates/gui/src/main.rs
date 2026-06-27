@@ -13,6 +13,10 @@ use vapourfly_core::share_code;
 use vapourfly_core::steam::BackupInfo;
 use vapourfly_core::steam::backup::list_backups;
 use vapourfly_core::steam::scan::{ScanOptions, scan_library};
+use vapourfly_core::steam::{
+    detect_accounts, detect_library_folders, read_cloud_storage, read_user_collections,
+    redact_path, resolve_userdata_dir, select_account,
+};
 
 // ---------------------------------------------------------------------------
 // View enum
@@ -170,6 +174,11 @@ struct VapourflyApp {
 
     // Collections view
     collections: Vec<SteamCollection>,
+    collections_export_path: String,
+
+    // Setup / diagnostics (Settings view)
+    setup_diagnostics: Option<String>,
+    diagnostics_export_path: String,
 
     // Data Sources view
     has_igdb: bool,
@@ -200,6 +209,79 @@ struct VapourflyApp {
     // Cache refresh
     cache_refresh_loading: bool,
     cache_refresh_msg: Option<String>,
+}
+
+fn mask_steam_id(id: &str) -> String {
+    if id.len() <= 4 {
+        "***".to_string()
+    } else {
+        format!("***{}", &id[id.len() - 4..])
+    }
+}
+
+fn proton_tier_label(tier: &ProtonTier) -> &'static str {
+    match tier {
+        ProtonTier::Borked => "Borked",
+        ProtonTier::Bronze => "Bronze",
+        ProtonTier::Silver => "Silver",
+        ProtonTier::Gold => "Gold",
+        ProtonTier::Platinum => "Platinum",
+        ProtonTier::Native => "Native",
+        ProtonTier::Unknown => "Unknown",
+    }
+}
+
+fn format_hltb_seconds(seconds: u32) -> String {
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else {
+        format!("{minutes}m")
+    }
+}
+
+fn game_metadata_summary(game: &Game) -> String {
+    let mut parts = Vec::new();
+
+    if let Some(proton) = &game.protondb {
+        parts.push(proton_tier_label(&proton.tier).to_string());
+    }
+
+    if let Some(hltb) = &game.hltb {
+        if let Some(seconds) = hltb.main_story_seconds {
+            parts.push(format_hltb_seconds(seconds));
+        }
+    }
+
+    if let Some(rating) = game
+        .rawg
+        .as_ref()
+        .and_then(|rawg| rawg.rating_0_5)
+        .or_else(|| {
+            game.igdb
+                .as_ref()
+                .and_then(|igdb| igdb.rating_0_100)
+                .map(|rating| rating / 20.0)
+        })
+    {
+        parts.push(format!("{rating:.1}★"));
+    }
+
+    if let Some(genre) = game
+        .igdb
+        .as_ref()
+        .and_then(|igdb| igdb.genres.first())
+        .or_else(|| game.rawg.as_ref().and_then(|rawg| rawg.genres.first()))
+    {
+        parts.push(genre.clone());
+    }
+
+    if parts.is_empty() {
+        "—".to_string()
+    } else {
+        parts.join(" · ")
+    }
 }
 
 fn manual_playlist_app_ids_csv(pf: &PlaylistFile) -> String {
@@ -305,6 +387,10 @@ impl VapourflyApp {
             dynamic_seed: String::new(),
 
             collections: Vec::new(),
+            collections_export_path: String::new(),
+
+            setup_diagnostics: None,
+            diagnostics_export_path: String::new(),
 
             has_igdb,
             has_rawg,
@@ -560,14 +646,14 @@ impl VapourflyApp {
         });
     }
 
-    fn filtered_games(&self) -> Vec<&Game> {
-        let games = match &self.scan_result {
-            Some(scan) => &scan.games,
+    fn filtered_games(&self) -> Vec<Game> {
+        let games = match self.prepared_games(JunkMode::Default) {
+            Some(games) => games,
             None => return Vec::new(),
         };
 
         games
-            .iter()
+            .into_iter()
             .filter(|g| {
                 if self.filter_installed && !g.installed {
                     return false;
@@ -599,6 +685,126 @@ impl VapourflyApp {
     }
 
     /// Hydrate cached external metadata and annotate junk flags for workflows.
+    fn load_collections_from_cloud(&self) -> Result<Vec<SteamCollection>, String> {
+        let cloud_path = self.cloud_storage_path()?;
+        if !cloud_path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let cloud = read_cloud_storage(&cloud_path)
+            .map_err(|e| format!("Failed to read cloud storage: {e}"))?;
+        read_user_collections(&cloud).map_err(|e| format!("Failed to read collections: {e}"))
+    }
+
+    fn export_collections(&self) -> Result<(), String> {
+        if self.collections_export_path.trim().is_empty() {
+            return Err("Choose an export path before exporting.".into());
+        }
+
+        let collections = self.load_collections_from_cloud()?;
+        let json = serde_json::to_string_pretty(&collections)
+            .map_err(|e| format!("Failed to serialize collections: {e}"))?;
+        std::fs::write(self.collections_export_path.trim(), json)
+            .map_err(|e| format!("Failed to write collections export: {e}"))
+    }
+
+    fn run_setup_diagnostics(&mut self) {
+        let steam_dir = self
+            .config
+            .as_ref()
+            .map(|c| c.steam_dir.clone())
+            .or_else(VapourflyConfig::detect_steam_dir);
+
+        let mut lines = vec!["Vapourfly Setup Diagnostics".to_string()];
+
+        match steam_dir {
+            Some(dir) => {
+                lines.push(format!("Steam dir: {}", redact_path(&dir)));
+
+                let accounts = detect_accounts(&dir).unwrap_or_default();
+                let selected = select_account(&accounts, self.config.as_ref().and_then(|c| c.account.as_deref()))
+                    .ok();
+                lines.push(format!("Accounts: {} detected", accounts.len()));
+                if let Some(acc) = selected {
+                    lines.push(format!(
+                        "Selected: {} (***) [{}]",
+                        acc.persona_name,
+                        mask_steam_id(&acc.steam_id64)
+                    ));
+
+                    let cloud_path = resolve_userdata_dir(&dir, &acc.steam_id64)
+                        .join("config/cloudstorage/cloud-storage-namespace-1.json");
+                    lines.push(format!(
+                        "Cloud storage: {}",
+                        if cloud_path.exists() {
+                            "available"
+                        } else {
+                            "not found"
+                        }
+                    ));
+                } else {
+                    lines.push("Cloud storage: (no account selected)".into());
+                }
+
+                let folders = detect_library_folders(&dir).unwrap_or_default();
+                lines.push(format!("Libraries: {}", folders.len()));
+            }
+            None => {
+                lines.push("Steam dir: (not detected)".into());
+                lines.push("Hint: set Steam directory in Settings.".into());
+            }
+        }
+
+        let cache_dir = vapourfly_core::config::default_cache_dir();
+        lines.push(format!("Cache root: {}", redact_path(&cache_dir)));
+        lines.push(String::new());
+        lines.push("Credentials".into());
+        lines.push(format!(
+            "IGDB: {}",
+            if self.has_igdb {
+                "configured"
+            } else {
+                "not configured"
+            }
+        ));
+        lines.push(format!(
+            "RAWG: {}",
+            if self.has_rawg {
+                "configured"
+            } else {
+                "not configured"
+            }
+        ));
+
+        if self.fixtures_path.is_some() {
+            lines.push("Fixtures: enabled".into());
+        }
+
+        self.setup_diagnostics = Some(lines.join("\n"));
+    }
+
+    fn export_diagnostics(&self) -> Result<(), String> {
+        if self.diagnostics_export_path.trim().is_empty() {
+            return Err("Choose an export path before exporting diagnostics.".into());
+        }
+
+        let diagnostics = serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "platform": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+            "sources": {
+                "IGDB": if self.has_igdb { "configured" } else { "not configured" },
+                "RAWG": if self.has_rawg { "configured" } else { "not configured" },
+            },
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        });
+
+        let json = serde_json::to_string_pretty(&diagnostics)
+            .map_err(|e| format!("Failed to serialize diagnostics: {e}"))?;
+        std::fs::write(self.diagnostics_export_path.trim(), json)
+            .map_err(|e| format!("Failed to write diagnostics export: {e}"))
+    }
+
     fn prepared_games(&self, junk_mode: JunkMode) -> Option<Vec<Game>> {
         let scan = self.scan_result.as_ref()?;
         let mut games = scan.games.clone();
@@ -888,22 +1094,11 @@ impl eframe::App for VapourflyApp {
                 self.loading = false;
                 match result {
                     Ok(scan) => {
-                        // Load collections from scan.
-                        self.collections = scan
-                            .games
-                            .iter()
-                            .flat_map(|g| g.steam_collections.clone())
-                            .collect::<std::collections::HashSet<_>>()
-                            .into_iter()
-                            .map(|name| SteamCollection {
-                                id: name.to_lowercase().replace(' ', "-"),
-                                name,
-                                app_ids: Vec::new(),
-                                removed_app_ids: Vec::new(),
-                                is_hidden_collection: false,
-                            })
-                            .collect();
                         self.scan_result = Some(scan);
+                        match self.load_collections_from_cloud() {
+                            Ok(collections) => self.collections = collections,
+                            Err(e) => self.error = Some(e),
+                        }
                     }
                     Err(e) => self.error = Some(e.to_string()),
                 }
@@ -1206,6 +1401,7 @@ impl VapourflyApp {
             .column(egui_extras::Column::auto().at_least(80.0))
             .column(egui_extras::Column::auto().at_least(100.0))
             .column(egui_extras::Column::auto().at_least(80.0))
+            .column(egui_extras::Column::remainder().at_least(160.0))
             .header(text_height * 1.4, |mut header| {
                 header.col(|ui| {
                     ui.strong("App ID");
@@ -1221,6 +1417,9 @@ impl VapourflyApp {
                 });
                 header.col(|ui| {
                     ui.strong("Status");
+                });
+                header.col(|ui| {
+                    ui.strong("Metadata");
                 });
             })
             .body(|mut body| {
@@ -1252,6 +1451,9 @@ impl VapourflyApp {
                                 status.join(", ")
                             };
                             ui.label(status_str);
+                        });
+                        row.col(|ui| {
+                            ui.label(game_metadata_summary(game));
                         });
                     });
                 }
@@ -1774,6 +1976,24 @@ impl VapourflyApp {
         ui.label(format!("{} collections found", self.collections.len()));
         ui.separator();
 
+        ui.horizontal(|ui| {
+            ui.label("Export path:");
+            ui.text_edit_singleline(&mut self.collections_export_path);
+            if ui.button("Export Collections").clicked() {
+                match self.export_collections() {
+                    Ok(()) => {
+                        self.success_msg = Some(format!(
+                            "Exported {} collections to {}",
+                            self.collections.len(),
+                            self.collections_export_path.trim()
+                        ));
+                    }
+                    Err(e) => self.error = Some(format!("Collections export failed: {e}")),
+                }
+            }
+        });
+        ui.separator();
+
         let text_height = egui::TextStyle::Body.resolve(ui.style()).size;
         egui_extras::TableBuilder::new(ui)
             .striped(true)
@@ -2153,6 +2373,40 @@ impl VapourflyApp {
             if let Some(msg) = &self.settings_save_msg {
                 ui.label(msg);
             }
+        });
+        ui.separator();
+
+        ui.group(|ui| {
+            ui.strong("Setup Diagnostics");
+            ui.label("Check Steam paths, accounts, libraries, cloud storage, cache, and credentials.");
+            if ui.button("Run Setup Check").clicked() {
+                self.run_setup_diagnostics();
+            }
+            if let Some(report) = &self.setup_diagnostics {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(report).monospace());
+            }
+        });
+        ui.separator();
+
+        ui.group(|ui| {
+            ui.strong("Diagnostics Export");
+            ui.label("Export sanitized support data for bug reports.");
+            ui.horizontal(|ui| {
+                ui.label("Export path:");
+                ui.text_edit_singleline(&mut self.diagnostics_export_path);
+                if ui.button("Export Diagnostics").clicked() {
+                    match self.export_diagnostics() {
+                        Ok(()) => {
+                            self.success_msg = Some(format!(
+                                "Diagnostics exported to {}",
+                                self.diagnostics_export_path.trim()
+                            ));
+                        }
+                        Err(e) => self.error = Some(format!("Diagnostics export failed: {e}")),
+                    }
+                }
+            });
         });
         ui.separator();
 
@@ -2616,5 +2870,113 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("timed out waiting for write result");
+    }
+
+    #[test]
+    fn load_collections_from_fixture_cloud_storage() {
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
+        let app = VapourflyApp::new(Some(fixtures));
+        let collections = app.load_collections_from_cloud().unwrap();
+        let favorites = collections
+            .iter()
+            .find(|collection| collection.id == "favorite")
+            .expect("favorite collection");
+        assert_eq!(favorites.app_ids, vec![730, 223850]);
+    }
+
+    #[test]
+    fn export_collections_writes_json_file() {
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
+        let temp_dir = TempDir::new().unwrap();
+        let export_path = temp_dir.path().join("collections.json");
+        let mut app = VapourflyApp::new(Some(fixtures));
+        app.collections_export_path = export_path.to_string_lossy().to_string();
+
+        app.export_collections().unwrap();
+
+        let exported: Vec<SteamCollection> =
+            serde_json::from_str(&std::fs::read_to_string(&export_path).unwrap()).unwrap();
+        assert!(exported.iter().any(|collection| collection.id == "favorite"));
+    }
+
+    #[test]
+    fn setup_diagnostics_reports_fixture_mode() {
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
+        let mut app = VapourflyApp::new(Some(fixtures));
+        app.run_setup_diagnostics();
+        let report = app.setup_diagnostics.expect("diagnostics report");
+        assert!(report.contains("Vapourfly Setup Diagnostics"));
+        assert!(report.contains("Fixtures: enabled"));
+        assert!(report.contains("Cloud storage: available"));
+    }
+
+    #[test]
+    fn export_diagnostics_writes_json_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let export_path = temp_dir.path().join("diagnostics.json");
+        let mut app = VapourflyApp::new(None);
+        app.diagnostics_export_path = export_path.to_string_lossy().to_string();
+
+        app.export_diagnostics().unwrap();
+
+        let exported: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&export_path).unwrap()).unwrap();
+        assert_eq!(exported["version"], env!("CARGO_PKG_VERSION"));
+        assert!(exported["timestamp"].is_string());
+    }
+
+    #[test]
+    fn game_metadata_summary_formats_cached_fields() {
+        let game = Game {
+            app_id: 730,
+            name: "Test".into(),
+            app_type: SteamAppType::Game,
+            installed: true,
+            install_dir: None,
+            library_folder: None,
+            playtime_minutes: None,
+            playtime_2wks_minutes: None,
+            playtime_disconnected_minutes: None,
+            last_played_unix: None,
+            steam_collections: Vec::new(),
+            is_hidden: false,
+            is_junk: false,
+            rawg: None,
+            pcgw: None,
+            steam_store: None,
+            protondb: Some(ProtonDbData {
+                tier: ProtonTier::Gold,
+                confidence: None,
+                score: None,
+            }),
+            hltb: Some(HltbData {
+                main_story_seconds: Some(7_200),
+                main_extra_seconds: None,
+                completionist_seconds: None,
+                source: HltbSource::IgdbGameTimeToBeat,
+            }),
+            igdb: Some(IgdbData {
+                igdb_id: 1,
+                name: "Test".into(),
+                slug: None,
+                rating_0_100: Some(80.0),
+                total_rating_0_100: None,
+                genres: vec!["RPG".into()],
+                themes: Vec::new(),
+                keywords: Vec::new(),
+                similar_game_ids: Vec::new(),
+                steam_app_id_confirmed: true,
+                time_to_beat: None,
+            }),
+        };
+
+        let summary = game_metadata_summary(&game);
+        assert!(summary.contains("Gold"));
+        assert!(summary.contains("2h 0m"));
+        assert!(summary.contains("4.0★"));
+        assert!(summary.contains("RPG"));
     }
 }
