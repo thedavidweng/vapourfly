@@ -1389,6 +1389,7 @@ cargo run -p vapourfly-cli -- recommend --fixtures data/fixtures/steam_minimal -
 - Checksums path: target/release-artifacts/vapourfly-0.1.0-source.tar.gz.sha256
 - Release notes path: CHANGELOG.md
 - Release checklist: docs/release-candidate-checklist.md
+- Tag note: `v0.1.0` points at the final release metadata commit; the stamp commit above is the validated code commit.
 - Known limitations:
   - HLTB scraping behind feature gate (`--features hltb_scrape`)
   - GUI Junk write actions (apply to collection, add to hidden) show dry-run diff before writing; backup restore also supported

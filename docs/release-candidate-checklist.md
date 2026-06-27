@@ -5,6 +5,10 @@
 **Date**: 2026-06-26
 **Validated Code Commit**: 9123583
 
+The `v0.1.0` tag points at the final release metadata commit. The validated
+code commit is listed separately because the final tag commit may contain only
+release stamp/checklist updates after validation.
+
 ## Release Type
 
 v0.1.0 is a **source-only release**. No pre-built binaries are shipped.
