@@ -1,12 +1,12 @@
 # Vapourfly
 
-A local-first CLI tool for managing Steam game libraries like Spotify playlists.
+A local-first CLI and desktop GUI for managing Steam game libraries like Spotify playlists.
 
-Vapourfly helps you organize, categorize, and curate your Steam library from the command line. Define collections with expressive queries, bulk-rename or tag games, detect junk, get recommendations, and keep your library tidy -- all without touching Steam's UI.
+Vapourfly helps you organize, categorize, and curate your Steam library. Define collections with expressive queries, detect junk, get recommendations, and keep your library tidy -- all without touching Steam's UI.
 
 ## Status
 
-CLI-first. Early development. Expect breaking changes until v1.0.
+v0.1.0 is a source-only release. Expect breaking changes until v1.0.
 
 ## Supported Platforms
 
@@ -16,13 +16,7 @@ CLI-first. Early development. Expect breaking changes until v1.0.
 
 ## Installation
 
-### From crates.io
-
-```bash
-cargo install vapourfly
-```
-
-### From source
+### From Source
 
 ```bash
 git clone https://github.com/vapourfly/vapourfly.git
@@ -30,9 +24,13 @@ cd vapourfly
 cargo install --path crates/cli
 ```
 
-### Binary downloads
+Build the GUI from the same checkout:
 
-Pre-built binaries for macOS, Linux, and Windows will be available on the [GitHub Releases](https://github.com/vapourfly/vapourfly/releases) page. Download the archive for your platform, extract it, and place the `vapourfly` binary on your `PATH`.
+```bash
+cargo run -p vapourfly-gui --release
+```
+
+Pre-built binaries are not shipped with v0.1.0.
 
 ## First Scan
 
@@ -59,7 +57,7 @@ Vapourfly modifies your Steam configuration files. To protect your data:
 - **`--dry-run` shows a diff without writing.** Use it to preview exactly what would change.
 - **`--confirm` executes the write with an automatic backup.** A timestamped backup is created before any file is modified.
 - **Backups before writes.** Every write creates a backup named `{file}.vapourfly-backup-{timestamp}-{sha}.json` in the same directory.
-- **No Steam process interference.** Vapourfly refuses to write if Steam is detected as actively running. Close Steam first.
+- **No Steam process interference.** Vapourfly refuses to write if Steam is detected as actively running. Close Steam first, or use `--allow-steam-running` only when you understand the risk.
 - **Atomic writes.** Changes are written to a temporary file, fsynced, and renamed over the target. If anything fails after the backup is created, an automatic restore is attempted.
 
 See [docs/STEAM_FILE_SAFETY.md](docs/STEAM_FILE_SAFETY.md) for the full write target and backup strategy.

@@ -13,6 +13,7 @@ These flags are available on all commands:
 | `--config <path>` | Path to a custom config file |
 | `--verbose` | Show full paths instead of redacted names (also enables debug logging) |
 | `--offline` | Prohibit network calls; use cache only |
+| `--allow-steam-running` | Allow writes while Steam is detected as running |
 | `--help` | Print help for a command |
 | `--version` | Print the version |
 
@@ -102,7 +103,7 @@ vapourfly junk hide --dry-run
 vapourfly junk hide --confirm
 ```
 
-**Output columns (preview table):** App ID, Name, Playtime, Confidence, Classification (juck + reasons, or ok).
+**Output columns (preview table):** App ID, Name, Playtime, Confidence, Classification (junk + reasons, or ok).
 
 #### Junk Modes
 
@@ -265,5 +266,4 @@ Most commands that produce tabular output support `--format`:
 | `VAPOURFLY_IGDB_CLIENT_ID` | IGDB / Twitch client ID |
 | `VAPOURFLY_IGDB_CLIENT_SECRET` | IGDB / Twitch client secret |
 | `VAPOURFLY_RAWG_KEY` | RAWG API key |
-| `VAPOURFLY_AUTO_CONFIRM` | Set to `1` to skip confirmation prompts (not recommended) |
 | `RUST_LOG` | Override log level (default: `warn`, or `debug` with `--verbose`) |

@@ -35,24 +35,23 @@ cargo clippy -- -D warnings
 cargo fmt
 ```
 
-## Phase-Gate Workflow
+## Development Workflow
 
-Development is organized into phases. Each phase has a defined scope and must be completed before the next phase begins.
+Keep changes small, current, and directly tied to user-visible behavior or a clear internal maintenance need.
 
-- **Phase 0**: Project scaffolding, CI, documentation, test infrastructure.
-- **Phase 1**: Steam file parsing (VDF, shortcuts, collections).
-- **Phase 2**: Collection management (create, rename, delete, assign games).
-- **Phase 3**: Discovery and metadata (Steam store API, local metadata cache).
-- **Phase 4**: Advanced operations (bulk rename, tagging, import/export).
+Before opening a PR, run the checks that match the touched code:
 
-To contribute to a specific phase:
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
 
-1. Check the project board for open issues tagged with the current phase.
-2. Pick an unassigned issue and request assignment.
-3. Create a feature branch from `main` named `phase-N/short-description`.
-4. Implement, test, and open a PR against `main`.
+Run the optional HLTB feature check when touching external API or cache code:
 
-PRs for work outside the current phase will be tagged `future-phase` and deferred.
+```bash
+cargo check -p vapourfly-api --features hltb_scrape
+```
 
 ## Pull Request Guidelines
 
@@ -67,7 +66,7 @@ PRs for work outside the current phase will be tagged `future-phase` and deferre
 - Follow standard Rust conventions (`cargo fmt`, `cargo clippy`).
 - Prefer explicit types over inference in public API signatures.
 - Document public items with `///` doc comments.
-- Use `#[must_error]` on fallible functions that callers must handle.
+- Use `#[must_use]` when ignoring a returned value would be a likely bug.
 
 ## Reporting Issues
 
