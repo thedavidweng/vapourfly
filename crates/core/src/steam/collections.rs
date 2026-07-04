@@ -127,7 +127,7 @@ mod tests {
         let collections = read_user_collections(&cloud).unwrap();
 
         let fav = collections.iter().find(|c| c.id == "favorite").unwrap();
-        assert_eq!(fav.app_ids, vec![730, 223850]);
+        assert_eq!(fav.app_ids, vec![730, 427520]);
         assert!(!fav.is_hidden_collection);
     }
 

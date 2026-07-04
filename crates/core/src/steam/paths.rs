@@ -622,7 +622,7 @@ mod tests {
         assert_eq!(sorted[0].state_flags, 4);
         assert_eq!(sorted[0].library_folder, fixture_steam_dir());
 
-        assert_eq!(sorted[1].app_id, 223850);
+        assert_eq!(sorted[1].app_id, 427520);
         assert_eq!(sorted[1].name, "Factorio");
         assert_eq!(sorted[1].installdir, "Factorio");
         assert_eq!(sorted[1].state_flags, 4);

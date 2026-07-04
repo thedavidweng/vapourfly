@@ -381,7 +381,7 @@ mod tests {
     #[test]
     fn scan_factorio_installed() {
         let result = scan_library(&fixture_opts()).unwrap();
-        let factorio = result.games.iter().find(|g| g.app_id == 223850).unwrap();
+        let factorio = result.games.iter().find(|g| g.app_id == 427520).unwrap();
 
         assert!(factorio.installed);
         assert_eq!(factorio.name, "Factorio");
@@ -400,7 +400,7 @@ mod tests {
             .collect();
         assert!(installed_ids.contains(&730), "CS2 should be installed");
         assert!(
-            installed_ids.contains(&223850),
+            installed_ids.contains(&427520),
             "Factorio should be installed"
         );
     }
@@ -425,7 +425,7 @@ mod tests {
     #[test]
     fn scan_factorio_collections() {
         let result = scan_library(&fixture_opts()).unwrap();
-        let factorio = result.games.iter().find(|g| g.app_id == 223850).unwrap();
+        let factorio = result.games.iter().find(|g| g.app_id == 427520).unwrap();
 
         assert!(
             factorio
@@ -485,7 +485,7 @@ mod tests {
 
     #[test]
     fn scan_name_from_manifest() {
-        // Both 730 and 223850 have names in their manifests.
+        // Both 730 and 427520 have names in their manifests.
         let result = scan_library(&fixture_opts()).unwrap();
         assert_eq!(
             result.games.iter().find(|g| g.app_id == 730).unwrap().name,
@@ -495,7 +495,7 @@ mod tests {
             result
                 .games
                 .iter()
-                .find(|g| g.app_id == 223850)
+                .find(|g| g.app_id == 427520)
                 .unwrap()
                 .name,
             "Factorio"

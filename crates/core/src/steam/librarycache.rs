@@ -90,7 +90,7 @@ mod tests {
             cache.get(&730).map(|s| s.as_str()),
             Some("Counter-Strike 2")
         );
-        assert_eq!(cache.get(&223850).map(|s| s.as_str()), Some("Factorio"));
+        assert_eq!(cache.get(&427520).map(|s| s.as_str()), Some("Factorio"));
     }
 
     #[test]

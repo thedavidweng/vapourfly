@@ -422,7 +422,7 @@ mod tests {
                 key: "user-collections.favorite".into(),
                 timestamp: Some(1774229861),
                 value: Some(
-                    r#"{"id":"favorite","name":"Favorites","added":[730,223850],"removed":[]}"#
+                    r#"{"id":"favorite","name":"Favorites","added":[730,427520],"removed":[]}"#
                         .into(),
                 ),
                 version: Some("1880".into()),
@@ -514,14 +514,14 @@ mod tests {
     #[test]
     fn merge_hidden_additive() {
         let mut cloud = cloud_with_hidden(); // hidden has [440]
-        merge_hidden(&mut cloud, &[730, 223850], 1800000000).unwrap();
+        merge_hidden(&mut cloud, &[730, 427520], 1800000000).unwrap();
 
         let (_, entry) = cloud
             .iter()
             .find(|(k, _)| k == "user-collections.hidden")
             .unwrap();
         let cv: CollectionValue = serde_json::from_str(entry.value.as_ref().unwrap()).unwrap();
-        assert_eq!(cv.added, vec![440, 730, 223850]);
+        assert_eq!(cv.added, vec![440, 730, 427520]);
         assert_eq!(cv.name, "Hidden");
     }
 
@@ -649,7 +649,7 @@ mod tests {
             &cloud,
             vec![WriteOp::UpsertCollection {
                 id: "favorite".into(),
-                added: vec![730, 223850, 440],
+                added: vec![730, 427520, 440],
                 removed: vec![],
             }],
             path,

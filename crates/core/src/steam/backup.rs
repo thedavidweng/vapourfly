@@ -862,7 +862,7 @@ mod tests {
             &cloud,
             vec![WriteOp::UpsertCollection {
                 id: "fav".into(),
-                added: vec![730, 440, 223850],
+                added: vec![730, 440, 427520],
                 removed: vec![],
             }],
         );
@@ -877,7 +877,7 @@ mod tests {
             .unwrap();
         let cv: crate::models::CollectionValue =
             serde_json::from_str(entry.value.as_ref().unwrap()).unwrap();
-        assert_eq!(cv.added, vec![440, 730, 223850]);
+        assert_eq!(cv.added, vec![440, 730, 427520]);
 
         // Restore from the backup created during execute_write_plan.
         let backups = list_backups(&target).unwrap();

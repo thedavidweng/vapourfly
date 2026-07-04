@@ -18,7 +18,7 @@ A minimal but complete Steam directory with representative data.
 **What it tests:**
 - Parsing `loginusers.vdf` to discover the active user
 - Parsing `libraryfolders.vdf` to find library folders
-- Reading playtime data from `localconfig.vdf` (apps 730, 223850, 999)
+- Reading playtime data from `localconfig.vdf` (apps 730, 427520, 999)
 - Parsing cloud-storage collections JSON (favorites, hidden, deleted, tag-based)
 - Reading `sc-version` key from cloud storage
 - Parsing ACF app manifests for installed games
@@ -26,11 +26,11 @@ A minimal but complete Steam directory with representative data.
 
 **AppIDs present:**
 - `730` -- Counter-Strike 2 (significant playtime, in favorites + Indie tag)
-- `223850` -- Factorio (significant playtime, in favorites)
+- `427520` -- Factorio (significant playtime, in favorites)
 - `999` -- Low playtime (5 min, LastPlayed=0) -- junk/low-playtime filter candidate, also in Indie tag
 
 **Cloud storage entries:**
-- `user-collections.favorite` -- has 730 and 223850 in `added`
+- `user-collections.favorite` -- has 730 and 427520 in `added`
 - `user-collections.hidden` -- empty collection
 - `user-collections.deleted-one` -- `is_deleted: true` entry (should be skipped by parser)
 - `sc-version` -- metadata key, not a collection

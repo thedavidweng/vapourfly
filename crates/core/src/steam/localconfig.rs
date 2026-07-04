@@ -142,8 +142,8 @@ mod tests {
         assert_eq!(cs2.playtime_2wks_minutes, Some(213));
         assert_eq!(cs2.playtime_disconnected_minutes, Some(3));
 
-        // AppID 223850
-        let factorio = apps.get(&223850).unwrap();
+        // AppID 427520
+        let factorio = apps.get(&427520).unwrap();
         assert_eq!(factorio.playtime_minutes, Some(1038));
         assert_eq!(factorio.last_played_unix, Some(1700000000));
         assert_eq!(factorio.playtime_2wks_minutes, Some(0));

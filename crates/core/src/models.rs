@@ -628,7 +628,7 @@ mod tests {
                 name: "Test".into(),
                 description: "A test playlist".into(),
                 content: PlaylistContent::Manual {
-                    app_ids: vec![730, 223850],
+                    app_ids: vec![730, 427520],
                 },
             },
         };
@@ -726,16 +726,16 @@ mod tests {
         let cv = CollectionValue {
             id: "favorites".into(),
             name: "Favorites".into(),
-            added: vec![730, 223850],
+            added: vec![730, 427520],
             removed: vec![],
             extra: BTreeMap::new(),
         };
         let json = serde_json::to_string(&cv).unwrap();
-        let expected = r#"{"id":"favorites","name":"Favorites","added":[730,223850],"removed":[]}"#;
+        let expected = r#"{"id":"favorites","name":"Favorites","added":[730,427520],"removed":[]}"#;
         assert_eq!(json, expected);
         let back: CollectionValue = serde_json::from_str(&json).unwrap();
         assert_eq!(back.id, "favorites");
-        assert_eq!(back.added, vec![730, 223850]);
+        assert_eq!(back.added, vec![730, 427520]);
     }
 
     #[test]
@@ -754,7 +754,7 @@ mod tests {
                     removed: vec![],
                 },
                 WriteOp::AddToHidden {
-                    app_ids: vec![223850],
+                    app_ids: vec![427520],
                 },
             ],
             diff: WritePlanDiff::default(),

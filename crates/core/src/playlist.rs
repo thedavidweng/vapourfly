@@ -628,7 +628,7 @@ mod tests {
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("round_trip_manual.json");
 
-        let pf = make_manual_playlist("test-id", "Test Playlist", vec![730, 440, 223850]);
+        let pf = make_manual_playlist("test-id", "Test Playlist", vec![730, 440, 427520]);
         export_playlist(&pf, &path).unwrap();
 
         let imported = import_playlist(&path).unwrap();
@@ -636,7 +636,7 @@ mod tests {
         assert_eq!(imported.playlist.name, "Test Playlist");
         match &imported.playlist.content {
             PlaylistContent::Manual { app_ids } => {
-                assert_eq!(app_ids, &vec![440, 730, 223850]); // sorted
+                assert_eq!(app_ids, &vec![440, 730, 427520]); // sorted
             }
             _ => panic!("expected Manual"),
         }
@@ -683,14 +683,14 @@ mod tests {
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("sorted.json");
 
-        let pf = make_manual_playlist("sorted", "Sorted", vec![223850, 730, 440]);
+        let pf = make_manual_playlist("sorted", "Sorted", vec![427520, 730, 440]);
         export_playlist(&pf, &path).unwrap();
 
         let content = fs::read_to_string(&path).unwrap();
         let back: PlaylistFile = serde_json::from_str(&content).unwrap();
         match back.playlist.content {
             PlaylistContent::Manual { app_ids } => {
-                assert_eq!(app_ids, vec![440, 730, 223850]);
+                assert_eq!(app_ids, vec![440, 730, 427520]);
             }
             _ => panic!("expected Manual"),
         }
