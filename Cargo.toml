@@ -27,7 +27,8 @@ winreg = "0.55"
 serial_test = "3"
 eframe = "0.31"
 egui = "0.31"
-egui_extras = "0.31"
+egui_extras = { version = "0.31", features = ["http", "image"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 base64 = "0.22"
 
 [profile.release]

@@ -9,6 +9,7 @@ license.workspace = true
 eframe = { workspace = true }
 egui = { workspace = true }
 egui_extras = { workspace = true }
+image = { workspace = true }
 vapourfly-core = { path = "../core" }
 vapourfly-api = { path = "../api" }
 dirs = { workspace = true }

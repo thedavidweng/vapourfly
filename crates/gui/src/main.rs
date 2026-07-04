@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use eframe::egui;
+use egui::{Color32, RichText};
 use vapourfly_core::config::VapourflyConfig;
 use vapourfly_core::discover::{self, DiscoverOptions};
 use vapourfly_core::dynamic::{self, DynamicTemplate, DynamicTemplateOptions};
@@ -14,8 +15,8 @@ use vapourfly_core::steam::BackupInfo;
 use vapourfly_core::steam::backup::list_backups;
 use vapourfly_core::steam::scan::{ScanOptions, scan_library};
 use vapourfly_core::steam::{
-    detect_accounts, detect_library_folders, read_cloud_storage, read_user_collections,
-    redact_path, resolve_userdata_dir, select_account,
+    SteamAccount, detect_accounts, detect_library_folders, read_cloud_storage,
+    read_user_collections, redact_path, resolve_userdata_dir, select_account,
 };
 
 // ---------------------------------------------------------------------------
@@ -59,17 +60,8 @@ impl View {
         }
     }
 
-    fn icon(&self) -> &'static str {
-        match self {
-            View::Library => "🎮",
-            View::Junk => "🗑",
-            View::Recommend => "⭐",
-            View::Playlists => "📋",
-            View::Collections => "📁",
-            View::DataSources => "🔌",
-            View::Backups => "💾",
-            View::Settings => "⚙",
-        }
+    fn nav_label(&self) -> &'static str {
+        self.label()
     }
 }
 
@@ -119,6 +111,26 @@ static DRY_RUN_RESULT: Mutex<Option<Result<vapourfly_core::models::WritePlan, St
     Mutex::new(None);
 
 // ---------------------------------------------------------------------------
+// Visual system
+// ---------------------------------------------------------------------------
+
+const SURFACE: Color32 = Color32::from_rgb(244, 246, 248);
+const SURFACE_RAISED: Color32 = Color32::from_rgb(252, 250, 247);
+const SURFACE_MUTED: Color32 = Color32::from_rgb(229, 234, 239);
+const TEXT_PRIMARY: Color32 = Color32::from_rgb(31, 35, 42);
+const TEXT_SECONDARY: Color32 = Color32::from_rgb(88, 96, 107);
+const TEXT_MUTED: Color32 = Color32::from_rgb(135, 143, 153);
+const ACCENT: Color32 = Color32::from_rgb(130, 65, 176);
+const ACCENT_SOFT: Color32 = Color32::from_rgb(239, 226, 247);
+const SUCCESS: Color32 = Color32::from_rgb(45, 139, 92);
+const SUCCESS_SOFT: Color32 = Color32::from_rgb(218, 240, 229);
+const ERROR: Color32 = Color32::from_rgb(194, 69, 69);
+const POSTER_W: f32 = 132.0;
+const POSTER_H: f32 = 198.0;
+const GAME_CARD_W: f32 = 190.0;
+const GAME_CARD_H: f32 = 332.0;
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // App state
 // ---------------------------------------------------------------------------
@@ -151,6 +163,7 @@ struct VapourflyApp {
     // Recommend view
     recommend_minutes: String,
     recommend_count: String,
+    recommend_seed: String,
     recommend_deck: bool,
     recommend_installed_only: bool,
     recommend_results: Vec<Recommendation>,
@@ -167,6 +180,7 @@ struct VapourflyApp {
     playlist_last_import: Option<PlaylistFile>,
     playlist_match_report: Option<PlaylistMatchReport>,
     playlist_discover_seed: String,
+    playlist_discover_count: String,
     dynamic_template: String,
     dynamic_minutes: String,
     dynamic_mood: String,
@@ -184,6 +198,7 @@ struct VapourflyApp {
     has_igdb: bool,
     has_rawg: bool,
     source_statuses: Vec<vapourfly_api::enrichment::SourceStatus>,
+    offline_mode: bool,
 
     // Backups view
     backups: Vec<BackupInfo>,
@@ -191,6 +206,8 @@ struct VapourflyApp {
     // Settings view
     steam_dir_edit: String,
     account_edit: String,
+    detected_accounts: Vec<SteamAccount>,
+    account_list_msg: Option<String>,
     cc_edit: String,
     lang_edit: String,
     backup_retention_edit: String,
@@ -265,7 +282,7 @@ fn game_metadata_summary(game: &Game) -> String {
                 .map(|rating| rating / 20.0)
         })
     {
-        parts.push(format!("{rating:.1}★"));
+        parts.push(format!("{rating:.1}/5"));
     }
 
     if let Some(genre) = game
@@ -278,9 +295,9 @@ fn game_metadata_summary(game: &Game) -> String {
     }
 
     if parts.is_empty() {
-        "—".to_string()
+        String::new()
     } else {
-        parts.join(" · ")
+        parts.join(" | ")
     }
 }
 
@@ -366,6 +383,7 @@ impl VapourflyApp {
 
             recommend_minutes: "120".into(),
             recommend_count: "5".into(),
+            recommend_seed: String::new(),
             recommend_deck: false,
             recommend_installed_only: false,
             recommend_results: Vec::new(),
@@ -381,6 +399,7 @@ impl VapourflyApp {
             playlist_last_import: None,
             playlist_match_report: None,
             playlist_discover_seed: String::new(),
+            playlist_discover_count: "20".into(),
             dynamic_template: "deck-session".into(),
             dynamic_minutes: "90".into(),
             dynamic_mood: "Relaxing".into(),
@@ -395,11 +414,14 @@ impl VapourflyApp {
             has_igdb,
             has_rawg,
             source_statuses,
+            offline_mode: false,
 
             backups: Vec::new(),
 
             steam_dir_edit,
             account_edit,
+            detected_accounts: Vec::new(),
+            account_list_msg: None,
             cc_edit,
             lang_edit,
             backup_retention_edit,
@@ -605,6 +627,12 @@ impl VapourflyApp {
             return;
         }
 
+        if self.offline_mode {
+            self.cache_refresh_msg =
+                Some("Offline mode is on. Cache refresh requires network access.".into());
+            return;
+        }
+
         let games = match &self.scan_result {
             Some(scan) => scan.games.clone(),
             None => {
@@ -652,7 +680,7 @@ impl VapourflyApp {
             None => return Vec::new(),
         };
 
-        games
+        let mut games = games
             .into_iter()
             .filter(|g| {
                 if self.filter_installed && !g.installed {
@@ -675,7 +703,20 @@ impl VapourflyApp {
                 }
                 true
             })
-            .collect()
+            .collect::<Vec<_>>();
+
+        games.sort_by(|a, b| {
+            b.installed
+                .cmp(&a.installed)
+                .then_with(|| {
+                    b.playtime_minutes
+                        .unwrap_or(0)
+                        .cmp(&a.playtime_minutes.unwrap_or(0))
+                })
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+
+        games
     }
 
     /// Reload source cache statuses from disk.
@@ -722,8 +763,11 @@ impl VapourflyApp {
                 lines.push(format!("Steam dir: {}", redact_path(&dir)));
 
                 let accounts = detect_accounts(&dir).unwrap_or_default();
-                let selected = select_account(&accounts, self.config.as_ref().and_then(|c| c.account.as_deref()))
-                    .ok();
+                let selected = select_account(
+                    &accounts,
+                    self.config.as_ref().and_then(|c| c.account.as_deref()),
+                )
+                .ok();
                 lines.push(format!("Accounts: {} detected", accounts.len()));
                 if let Some(acc) = selected {
                     lines.push(format!(
@@ -818,6 +862,48 @@ impl VapourflyApp {
             &ManualOverrides::default(),
         );
         Some(games)
+    }
+
+    fn recommend_request_from_inputs(&self) -> Result<RecommendRequest, String> {
+        Ok(RecommendRequest {
+            available_minutes: parse_required_u32("Available minutes", &self.recommend_minutes)?,
+            count: parse_required_usize("Count", &self.recommend_count)?,
+            deck_mode: self.recommend_deck,
+            include_installed_only: self.recommend_installed_only,
+            seed: parse_optional_u64("Seed", &self.recommend_seed)?,
+            exclude_collections: vec![],
+        })
+    }
+
+    fn discover_options_from_inputs(&self) -> Result<DiscoverOptions, String> {
+        Ok(DiscoverOptions {
+            seed_app_id: parse_optional_u32("Discover seed AppID", &self.playlist_discover_seed)?,
+            count: parse_required_usize("Discover count", &self.playlist_discover_count)?,
+        })
+    }
+
+    fn refresh_detected_accounts(&mut self) {
+        let steam_dir = self
+            .config
+            .as_ref()
+            .map(|c| c.steam_dir.clone())
+            .or_else(VapourflyConfig::detect_steam_dir);
+
+        let Some(steam_dir) = steam_dir else {
+            self.error = Some("Steam directory not detected. Set it in Settings first.".into());
+            return;
+        };
+
+        match detect_accounts(&steam_dir) {
+            Ok(accounts) => {
+                let count = accounts.len();
+                self.detected_accounts = accounts;
+                self.account_list_msg = Some(format!("{count} account(s) detected."));
+            }
+            Err(e) => {
+                self.error = Some(format!("Failed to detect Steam accounts: {e}"));
+            }
+        }
     }
 
     fn store_playlist(&self, pf: &PlaylistFile) -> Result<(), String> {
@@ -1168,14 +1254,31 @@ impl eframe::App for VapourflyApp {
             .resizable(false)
             .default_width(180.0)
             .show(ctx, |ui| {
-                ui.heading("Vapourfly");
-                ui.label(format!("v{}", env!("CARGO_PKG_VERSION")));
+                ui.add_space(4.0);
+                ui.label(RichText::new("Vapourfly").size(22.0).strong());
+                ui.label(
+                    RichText::new(format!(
+                        "Steam library control, v{}",
+                        env!("CARGO_PKG_VERSION")
+                    ))
+                    .color(TEXT_SECONDARY)
+                    .size(12.0),
+                );
                 ui.separator();
 
                 for &view in View::ALL {
                     let selected = self.current_view == view;
-                    let label = format!("{} {}", view.icon(), view.label());
-                    if ui.selectable_label(selected, &label).clicked() {
+                    if ui
+                        .selectable_label(
+                            selected,
+                            RichText::new(view.nav_label()).color(if selected {
+                                TEXT_PRIMARY
+                            } else {
+                                TEXT_SECONDARY
+                            }),
+                        )
+                        .clicked()
+                    {
                         self.current_view = view;
                     }
                 }
@@ -1187,7 +1290,7 @@ impl eframe::App for VapourflyApp {
                             ui.spinner();
                             ui.label("Scanning...");
                         });
-                    } else if ui.button("🔄 Refresh").clicked() {
+                    } else if ui.button("Refresh").clicked() {
                         self.start_scan(ctx);
                     }
                     if let Some(scan) = &self.scan_result {
@@ -1203,16 +1306,16 @@ impl eframe::App for VapourflyApp {
             let mut dismiss_success = false;
             if let Some(err) = self.error.clone() {
                 let resp = ui.horizontal(|ui| {
-                    ui.colored_label(egui::Color32::RED, format!("Error: {err}"));
-                    ui.button("✕").clicked()
+                    ui.colored_label(ERROR, format!("Error: {err}"));
+                    ui.button("Dismiss").clicked()
                 });
                 dismiss_error = resp.inner;
                 ui.separator();
             }
             if let Some(msg) = self.success_msg.clone() {
                 let resp = ui.horizontal(|ui| {
-                    ui.colored_label(egui::Color32::from_rgb(50, 180, 50), format!("✓ {msg}"));
-                    ui.button("✕").clicked()
+                    ui.colored_label(SUCCESS, msg);
+                    ui.button("Dismiss").clicked()
                 });
                 dismiss_success = resp.inner;
                 ui.separator();
@@ -1225,7 +1328,7 @@ impl eframe::App for VapourflyApp {
             }
 
             match self.current_view {
-                View::Library => self.render_library(ui),
+                View::Library => self.render_library(ui, ctx),
                 View::Junk => self.render_junk(ui),
                 View::Recommend => self.render_recommend(ui),
                 View::Playlists => self.render_playlists(ui),
@@ -1347,10 +1450,10 @@ impl VapourflyApp {
                 } else {
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {
-                        if ui.button("✓ Confirm").clicked() {
+                        if ui.button("Confirm").clicked() {
                             self.execute_pending_action();
                         }
-                        if ui.button("✕ Cancel").clicked() {
+                        if ui.button("Cancel").clicked() {
                             self.show_confirm_dialog = false;
                             self.pending_action = None;
                             self.dry_run_plan = None;
@@ -1370,94 +1473,219 @@ impl VapourflyApp {
 impl VapourflyApp {
     // -- Library view -------------------------------------------------------
 
-    fn render_library(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Library");
-        ui.separator();
-
-        // Search and filters
-        ui.horizontal(|ui| {
-            ui.label("Search:");
-            ui.text_edit_singleline(&mut self.search_query);
-            ui.separator();
-            ui.checkbox(&mut self.filter_installed, "Installed");
-            ui.checkbox(&mut self.filter_unplayed, "Unplayed");
-            ui.checkbox(&mut self.filter_hidden, "Hidden");
-            ui.checkbox(&mut self.filter_junk, "Junk");
-        });
-        ui.separator();
-
+    fn render_library(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let total_games = self
+            .scan_result
+            .as_ref()
+            .map(|scan| scan.games.len())
+            .unwrap_or(0);
         let games = self.filtered_games();
-        ui.label(format!("Showing {} games", games.len()));
-        ui.separator();
+        let matching_installed = games.iter().filter(|game| game.installed).count();
+        let matching_hidden = games.iter().filter(|game| game.is_hidden).count();
+        let matching_junk = games.iter().filter(|game| game.is_junk).count();
 
-        let text_height = egui::TextStyle::Body.resolve(ui.style()).size;
+        egui::Frame::NONE
+            .fill(SURFACE_RAISED)
+            .inner_margin(egui::Margin::symmetric(18, 16))
+            .corner_radius(12)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new("Library")
+                                .size(28.0)
+                                .strong()
+                                .color(TEXT_PRIMARY),
+                        );
+                        ui.label(
+                            RichText::new(
+                                "Browse your Steam games visually, then turn that library into clean playlists and recommendations.",
+                            )
+                            .size(13.0)
+                            .color(TEXT_SECONDARY),
+                        );
+                    });
 
-        egui_extras::TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
-            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(egui_extras::Column::auto().at_least(60.0))
-            .column(egui_extras::Column::remainder().at_least(200.0))
-            .column(egui_extras::Column::auto().at_least(80.0))
-            .column(egui_extras::Column::auto().at_least(100.0))
-            .column(egui_extras::Column::auto().at_least(80.0))
-            .column(egui_extras::Column::remainder().at_least(160.0))
-            .header(text_height * 1.4, |mut header| {
-                header.col(|ui| {
-                    ui.strong("App ID");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_enabled(!self.loading, egui::Button::new("Refresh library"))
+                            .clicked()
+                        {
+                            self.start_scan(ctx);
+                        }
+                        if self.loading {
+                            ui.spinner();
+                            ui.label(RichText::new("Scanning").color(TEXT_SECONDARY));
+                        }
+                    });
                 });
-                header.col(|ui| {
-                    ui.strong("Name");
+
+                ui.add_space(14.0);
+                ui.horizontal_wrapped(|ui| {
+                    metric_pill(ui, "Matching", games.len().to_string());
+                    metric_pill(ui, "Library", total_games.to_string());
+                    metric_pill(ui, "Installed", matching_installed.to_string());
+                    metric_pill(ui, "Hidden", matching_hidden.to_string());
+                    metric_pill(ui, "Junk", matching_junk.to_string());
                 });
-                header.col(|ui| {
-                    ui.strong("Installed");
+            });
+
+        ui.add_space(12.0);
+
+        egui::Frame::NONE
+            .fill(SURFACE_RAISED)
+            .inner_margin(egui::Margin::symmetric(14, 12))
+            .corner_radius(10)
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Search").color(TEXT_SECONDARY));
+                    ui.add_sized(
+                        [320.0, 30.0],
+                        egui::TextEdit::singleline(&mut self.search_query)
+                            .hint_text("Title or AppID"),
+                    );
+                    ui.separator();
+                    filter_toggle(ui, &mut self.filter_installed, "Installed");
+                    filter_toggle(ui, &mut self.filter_unplayed, "Unplayed");
+                    filter_toggle(ui, &mut self.filter_hidden, "Hidden");
+                    filter_toggle(ui, &mut self.filter_junk, "Junk");
                 });
-                header.col(|ui| {
-                    ui.strong("Playtime");
-                });
-                header.col(|ui| {
-                    ui.strong("Status");
-                });
-                header.col(|ui| {
-                    ui.strong("Metadata");
-                });
-            })
-            .body(|mut body| {
-                for game in &games {
-                    body.row(text_height * 1.2, |mut row| {
-                        row.col(|ui| {
-                            ui.label(game.app_id.to_string());
+            });
+
+        ui.add_space(14.0);
+
+        if self.scan_result.is_none() {
+            if self.loading {
+                library_empty_state(
+                    ui,
+                    "Scanning your Steam library",
+                    "Covers and metadata will appear here as soon as the scan finishes.",
+                );
+            } else {
+                library_empty_state(
+                    ui,
+                    "No library loaded",
+                    "Refresh the library or set your Steam directory in Settings.",
+                );
+            }
+            return;
+        }
+
+        if games.is_empty() {
+            library_empty_state(
+                ui,
+                "No games match these filters",
+                "Clear search or turn off a filter to bring games back.",
+            );
+            return;
+        }
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.with_layout(
+                    egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),
+                    |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(14.0, 14.0);
+                        for game in &games {
+                            self.render_game_card(ui, game);
+                        }
+                    },
+                );
+            });
+    }
+
+    fn render_game_card(&mut self, ui: &mut egui::Ui, game: &Game) {
+        ui.allocate_ui_with_layout(
+            egui::vec2(GAME_CARD_W, GAME_CARD_H),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| {
+                ui.set_width(GAME_CARD_W);
+                ui.set_height(GAME_CARD_H);
+
+                egui::Frame::NONE
+                    .fill(SURFACE_RAISED)
+                    .stroke(egui::Stroke::new(1.0, SURFACE_MUTED))
+                    .inner_margin(egui::Margin::same(12))
+                    .corner_radius(10)
+                    .show(ui, |ui| {
+                        ui.set_width(GAME_CARD_W - 24.0);
+                        ui.set_height(GAME_CARD_H - 24.0);
+
+                        ui.horizontal(|ui| {
+                            app_id_tag(ui, game.app_id);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let (label, fill, text) = game_primary_badge(game);
+                                    status_badge(ui, label, fill, text);
+                                },
+                            );
                         });
-                        row.col(|ui| {
-                            ui.label(&game.name);
+
+                        ui.add_space(8.0);
+                        ui.vertical_centered(|ui| {
+                            ui.add(
+                                egui::Image::from_uri(steam_poster_uri(game.app_id))
+                                    .fit_to_exact_size(egui::vec2(POSTER_W, POSTER_H))
+                                    .corner_radius(8)
+                                    .bg_fill(SURFACE_MUTED)
+                                    .show_loading_spinner(true)
+                                    .alt_text(format!("{} cover", game.name)),
+                            );
                         });
-                        row.col(|ui| {
-                            ui.label(if game.installed { "✓" } else { "—" });
-                        });
-                        row.col(|ui| {
-                            ui.label(format_playtime(game.playtime_minutes.unwrap_or(0)));
-                        });
-                        row.col(|ui| {
-                            let mut status = Vec::new();
-                            if game.is_hidden {
-                                status.push("Hidden");
-                            }
-                            if game.is_junk {
-                                status.push("Junk");
-                            }
-                            let status_str = if status.is_empty() {
-                                "—".to_string()
-                            } else {
-                                status.join(", ")
-                            };
-                            ui.label(status_str);
-                        });
-                        row.col(|ui| {
-                            ui.label(game_metadata_summary(game));
+
+                        ui.add_space(10.0);
+                        ui.add_sized(
+                            [GAME_CARD_W - 24.0, 36.0],
+                            egui::Label::new(
+                                RichText::new(&game.name)
+                                    .size(15.0)
+                                    .strong()
+                                    .color(TEXT_PRIMARY),
+                            )
+                            .wrap(),
+                        );
+
+                        ui.add_sized(
+                            [GAME_CARD_W - 24.0, 30.0],
+                            egui::Label::new(
+                                RichText::new(game_card_detail(game))
+                                    .size(12.0)
+                                    .color(TEXT_SECONDARY),
+                            )
+                            .wrap(),
+                        );
+
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(format_playtime(game.playtime_minutes.unwrap_or(0)))
+                                    .size(12.0)
+                                    .color(TEXT_MUTED),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add(
+                                            egui::Button::new(
+                                                RichText::new("Recommend")
+                                                    .size(12.0)
+                                                    .color(TEXT_PRIMARY),
+                                            )
+                                            .fill(ACCENT_SOFT),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.recommend_seed = game.app_id.to_string();
+                                        self.current_view = View::Recommend;
+                                    }
+                                },
+                            );
                         });
                     });
-                }
-            });
+            },
+        );
     }
 
     // -- Junk view ----------------------------------------------------------
@@ -1485,7 +1713,7 @@ impl VapourflyApp {
         ui.separator();
 
         // Run junk detection
-        if ui.button("🔍 Run Junk Detection").clicked() {
+        if ui.button("Run Junk Detection").clicked() {
             let mode = match self.junk_mode {
                 JunkModeChoice::Default => JunkMode::Default,
                 JunkModeChoice::Strict => JunkMode::Strict,
@@ -1553,7 +1781,7 @@ impl VapourflyApp {
                             ui.label(&decision.name);
                         });
                         row.col(|ui| {
-                            ui.label(if decision.is_junk { "✓" } else { "—" });
+                            ui.label(if decision.is_junk { "Yes" } else { "No" });
                         });
                         row.col(|ui| {
                             ui.label(format!("{:.0}%", decision.confidence * 100.0));
@@ -1562,7 +1790,7 @@ impl VapourflyApp {
                             let signals: Vec<String> =
                                 decision.matched.iter().map(format_junk_signal).collect();
                             ui.label(if signals.is_empty() {
-                                "—".to_string()
+                                empty_value_label().to_string()
                             } else {
                                 signals.join(", ")
                             });
@@ -1587,7 +1815,7 @@ impl VapourflyApp {
                 let busy = self.write_loading || self.dry_run_loading;
                 let apply_enabled = !busy && !self.junk_collection_name.is_empty();
                 if ui
-                    .add_enabled(apply_enabled, egui::Button::new("📁 Apply to Collection"))
+                    .add_enabled(apply_enabled, egui::Button::new("Apply to Collection"))
                     .clicked()
                 {
                     self.start_dry_run(PendingAction::JunkApply);
@@ -1595,7 +1823,7 @@ impl VapourflyApp {
 
                 let hide_enabled = !busy;
                 if ui
-                    .add_enabled(hide_enabled, egui::Button::new("👁 Add to Hidden"))
+                    .add_enabled(hide_enabled, egui::Button::new("Add to Hidden"))
                     .clicked()
                 {
                     self.start_dry_run(PendingAction::JunkHide);
@@ -1627,24 +1855,22 @@ impl VapourflyApp {
             ui.label("Count:");
             ui.text_edit_singleline(&mut self.recommend_count);
             ui.separator();
+            ui.label("Seed:");
+            ui.text_edit_singleline(&mut self.recommend_seed);
+            ui.separator();
             ui.checkbox(&mut self.recommend_deck, "Deck mode");
             ui.checkbox(&mut self.recommend_installed_only, "Installed only");
         });
         ui.separator();
 
-        if ui.button("⭐ Get Recommendations").clicked() {
-            if let Some(games) = self.prepared_games(JunkMode::Default) {
-                let minutes: u32 = self.recommend_minutes.parse().unwrap_or(120);
-                let count: usize = self.recommend_count.parse().unwrap_or(5);
-                let request = RecommendRequest {
-                    available_minutes: minutes,
-                    count,
-                    deck_mode: self.recommend_deck,
-                    include_installed_only: self.recommend_installed_only,
-                    seed: Some(42),
-                    exclude_collections: vec!["hidden".into()],
-                };
-                self.recommend_results = recommend(&games, &request);
+        if ui.button("Get Recommendations").clicked() {
+            match self.recommend_request_from_inputs() {
+                Ok(request) => {
+                    if let Some(games) = self.prepared_games(JunkMode::Default) {
+                        self.recommend_results = recommend(&games, &request);
+                    }
+                }
+                Err(e) => self.error = Some(e),
             }
         }
 
@@ -1665,7 +1891,7 @@ impl VapourflyApp {
             ui.separator();
             let busy = self.write_loading || self.dry_run_loading;
             if ui
-                .add_enabled(!busy, egui::Button::new("📁 Save to Steam Collection"))
+                .add_enabled(!busy, egui::Button::new("Save to Steam Collection"))
                 .clicked()
             {
                 self.start_dry_run(PendingAction::RecommendCollection);
@@ -1687,7 +1913,7 @@ impl VapourflyApp {
                         ui.indent("rec_reasons", |ui| {
                             for reason in &rec.reasons {
                                 ui.label(format!(
-                                    "• {} ({:+.1})",
+                                    "- {} ({:+.1})",
                                     reason.description, reason.weight
                                 ));
                             }
@@ -1724,7 +1950,7 @@ impl VapourflyApp {
                 ui.text_edit_singleline(&mut self.playlist_edit_app_ids);
             });
             ui.label("Comma-separated Steam AppIDs for manual playlists.");
-            if ui.button("💾 Save Playlist").clicked() {
+            if ui.button("Save Playlist").clicked() {
                 let app_ids: Vec<u32> = self
                     .playlist_edit_app_ids
                     .split(',')
@@ -1805,26 +2031,26 @@ impl VapourflyApp {
             ui.horizontal(|ui| {
                 ui.label("Discover seed AppID:");
                 ui.text_edit_singleline(&mut self.playlist_discover_seed);
+                ui.label("Count:");
+                ui.text_edit_singleline(&mut self.playlist_discover_count);
                 if ui.button("Generate Discover").clicked() {
-                    if let Some(games) = self.prepared_games(JunkMode::Default) {
-                        let seed = self.playlist_discover_seed.trim().parse().ok();
-                        let pf = discover::generate_discover_playlist(
-                            &games,
-                            &DiscoverOptions {
-                                seed_app_id: seed,
-                                count: 20,
-                            },
-                        );
-                        if let Err(e) = self.store_playlist(&pf) {
-                            self.error = Some(e);
-                        } else {
-                            self.playlist_last_import = Some(pf.clone());
-                            self.match_playlist_against_library(&pf);
-                            self.success_msg = Some(format!(
-                                "Generated Discover playlist '{}'",
-                                pf.playlist.name
-                            ));
+                    match self.discover_options_from_inputs() {
+                        Ok(options) => {
+                            if let Some(games) = self.prepared_games(JunkMode::Default) {
+                                let pf = discover::generate_discover_playlist(&games, &options);
+                                if let Err(e) = self.store_playlist(&pf) {
+                                    self.error = Some(e);
+                                } else {
+                                    self.playlist_last_import = Some(pf.clone());
+                                    self.match_playlist_against_library(&pf);
+                                    self.success_msg = Some(format!(
+                                        "Generated Discover playlist '{}'",
+                                        pf.playlist.name
+                                    ));
+                                }
+                            }
                         }
+                        Err(e) => self.error = Some(e),
                     }
                 }
             });
@@ -2024,9 +2250,9 @@ impl VapourflyApp {
                         });
                         row.col(|ui| {
                             ui.label(if coll.is_hidden_collection {
-                                "✓"
+                                "Yes"
                             } else {
-                                "—"
+                                "No"
                             });
                         });
                     });
@@ -2063,9 +2289,9 @@ impl VapourflyApp {
 
         for (name, available, note) in &sources {
             ui.horizontal(|ui| {
-                let icon = if *available { "✅" } else { "❌" };
-                ui.label(format!("{icon} {name}"));
-                ui.label(format!("— {note}"));
+                let status = if *available { "Configured" } else { "Missing" };
+                ui.label(format!("{status}: {name}"));
+                ui.label(note.to_string());
             });
         }
 
@@ -2076,11 +2302,15 @@ impl VapourflyApp {
         // Cache refresh section
         ui.strong("Cache Refresh");
         ui.add_space(4.0);
+        ui.checkbox(&mut self.offline_mode, "Offline mode (cache only)");
+        if self.offline_mode {
+            ui.label("Cache refresh is disabled while offline mode is on.");
+        }
 
-        let refresh_enabled = !self.cache_refresh_loading;
+        let refresh_enabled = !self.cache_refresh_loading && !self.offline_mode;
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(refresh_enabled, egui::Button::new("🔄 Refresh All"))
+                .add_enabled(refresh_enabled, egui::Button::new("Refresh All"))
                 .clicked()
             {
                 self.start_cache_refresh(None, ctx);
@@ -2191,11 +2421,7 @@ impl VapourflyApp {
                                 ui.label(status.stale_entries.to_string());
                             });
                             row.col(|ui| {
-                                ui.label(if status.cache_dir_exists {
-                                    "✓"
-                                } else {
-                                    "—"
-                                });
+                                ui.label(if status.cache_dir_exists { "Yes" } else { "No" });
                             });
                         });
                     }
@@ -2215,7 +2441,7 @@ impl VapourflyApp {
         ui.separator();
 
         // Refresh backups list
-        if ui.button("🔄 Refresh Backups").clicked() {
+        if ui.button("Refresh Backups").clicked() {
             self.backups.clear();
             match self.cloud_storage_path() {
                 Ok(cloud_path) => {
@@ -2287,7 +2513,7 @@ impl VapourflyApp {
                         row.col(|ui| {
                             let enabled = !self.write_loading;
                             if ui
-                                .add_enabled(enabled, egui::Button::new("↩ Restore"))
+                                .add_enabled(enabled, egui::Button::new("Restore"))
                                 .clicked()
                             {
                                 self.pending_action =
@@ -2335,6 +2561,50 @@ impl VapourflyApp {
         ui.separator();
 
         ui.group(|ui| {
+            ui.strong("Detected Accounts");
+            if ui.button("Refresh Accounts").clicked() {
+                self.refresh_detected_accounts();
+            }
+            if let Some(msg) = &self.account_list_msg {
+                ui.label(msg);
+            }
+
+            if self.detected_accounts.is_empty() {
+                ui.label("No accounts loaded.");
+            } else {
+                let mut selected_account = None;
+                egui::Grid::new("detected_accounts_grid")
+                    .num_columns(5)
+                    .spacing([12.0, 4.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.strong("Persona");
+                        ui.strong("Account");
+                        ui.strong("Steam ID");
+                        ui.strong("Most recent");
+                        ui.strong("Action");
+                        ui.end_row();
+
+                        for account in &self.detected_accounts {
+                            ui.label(&account.persona_name);
+                            ui.label(&account.account_name);
+                            ui.label(mask_steam_id(&account.steam_id64));
+                            ui.label(if account.most_recent { "yes" } else { "no" });
+                            if ui.button("Use").clicked() {
+                                selected_account = Some(account.account_name.clone());
+                            }
+                            ui.end_row();
+                        }
+                    });
+
+                if let Some(account_name) = selected_account {
+                    self.account_edit = account_name;
+                }
+            }
+        });
+        ui.separator();
+
+        ui.group(|ui| {
             ui.strong("Store Locale");
             ui.horizontal(|ui| {
                 ui.label("Country code:");
@@ -2365,9 +2635,18 @@ impl VapourflyApp {
         });
         ui.separator();
 
+        ui.group(|ui| {
+            ui.strong("Network");
+            ui.checkbox(&mut self.offline_mode, "Offline mode (cache only)");
+            ui.label(
+                "Blocks cache refresh network calls. Library workflows still use cached metadata.",
+            );
+        });
+        ui.separator();
+
         // Save button
         ui.horizontal(|ui| {
-            if ui.button("💾 Save Settings").clicked() {
+            if ui.button("Save Settings").clicked() {
                 self.save_settings();
             }
             if let Some(msg) = &self.settings_save_msg {
@@ -2378,7 +2657,9 @@ impl VapourflyApp {
 
         ui.group(|ui| {
             ui.strong("Setup Diagnostics");
-            ui.label("Check Steam paths, accounts, libraries, cloud storage, cache, and credentials.");
+            ui.label(
+                "Check Steam paths, accounts, libraries, cloud storage, cache, and credentials.",
+            );
             if ui.button("Run Setup Check").clicked() {
                 self.run_setup_diagnostics();
             }
@@ -2535,9 +2816,188 @@ impl VapourflyApp {
 // Helpers
 // ---------------------------------------------------------------------------
 
+fn configure_ui(ctx: &egui::Context) {
+    let mut style = (*ctx.style()).clone();
+    style.spacing.item_spacing = egui::vec2(8.0, 7.0);
+    style.spacing.button_padding = egui::vec2(10.0, 5.0);
+    style.spacing.window_margin = egui::Margin::same(14);
+    style.spacing.indent = 14.0;
+
+    let mut visuals = egui::Visuals::light();
+    visuals.panel_fill = SURFACE;
+    visuals.window_fill = SURFACE_RAISED;
+    visuals.faint_bg_color = SURFACE_RAISED;
+    visuals.extreme_bg_color = Color32::from_rgb(238, 242, 246);
+    visuals.hyperlink_color = ACCENT;
+    visuals.selection.bg_fill = ACCENT_SOFT;
+    visuals.selection.stroke.color = TEXT_PRIMARY;
+    visuals.widgets.noninteractive.bg_fill = SURFACE;
+    visuals.widgets.noninteractive.fg_stroke.color = TEXT_SECONDARY;
+    visuals.widgets.inactive.bg_fill = SURFACE_MUTED;
+    visuals.widgets.inactive.fg_stroke.color = TEXT_SECONDARY;
+    visuals.widgets.hovered.bg_fill = Color32::from_rgb(236, 229, 242);
+    visuals.widgets.hovered.fg_stroke.color = TEXT_PRIMARY;
+    visuals.widgets.active.bg_fill = ACCENT_SOFT;
+    visuals.widgets.active.fg_stroke.color = TEXT_PRIMARY;
+    visuals.override_text_color = Some(TEXT_PRIMARY);
+    style.visuals = visuals;
+
+    ctx.set_style(style);
+}
+
+fn metric_pill(ui: &mut egui::Ui, label: &str, value: String) {
+    egui::Frame::NONE
+        .fill(SURFACE_RAISED)
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .corner_radius(8)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(label).size(12.0).color(TEXT_MUTED));
+                ui.label(RichText::new(value).size(14.0).strong().color(TEXT_PRIMARY));
+            });
+        });
+}
+
+fn filter_toggle(ui: &mut egui::Ui, value: &mut bool, label: &str) {
+    let fill = if *value { ACCENT_SOFT } else { SURFACE };
+    let stroke = if *value {
+        egui::Stroke::new(1.0, ACCENT)
+    } else {
+        egui::Stroke::new(1.0, SURFACE_MUTED)
+    };
+    let text = if *value { TEXT_PRIMARY } else { TEXT_SECONDARY };
+
+    if ui
+        .add(
+            egui::Button::new(RichText::new(label).color(text))
+                .fill(fill)
+                .stroke(stroke)
+                .corner_radius(18),
+        )
+        .clicked()
+    {
+        *value = !*value;
+    }
+}
+
+fn library_empty_state(ui: &mut egui::Ui, title: &str, body: &str) {
+    egui::Frame::NONE
+        .fill(SURFACE_RAISED)
+        .stroke(egui::Stroke::new(1.0, SURFACE_MUTED))
+        .inner_margin(egui::Margin::symmetric(24, 26))
+        .corner_radius(12)
+        .show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.label(RichText::new(title).size(18.0).strong().color(TEXT_PRIMARY));
+                ui.add_space(4.0);
+                ui.label(RichText::new(body).size(13.0).color(TEXT_SECONDARY));
+            });
+        });
+}
+
+fn app_id_tag(ui: &mut egui::Ui, app_id: u32) {
+    egui::Frame::NONE
+        .fill(SURFACE)
+        .inner_margin(egui::Margin::symmetric(8, 3))
+        .corner_radius(12)
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(app_id.to_string())
+                    .size(11.0)
+                    .strong()
+                    .color(TEXT_MUTED),
+            );
+        });
+}
+
+fn status_badge(ui: &mut egui::Ui, label: &str, fill: Color32, text: Color32) {
+    egui::Frame::NONE
+        .fill(fill)
+        .inner_margin(egui::Margin::symmetric(8, 3))
+        .corner_radius(12)
+        .show(ui, |ui| {
+            ui.label(RichText::new(label).size(11.0).strong().color(text));
+        });
+}
+
+fn game_primary_badge(game: &Game) -> (&'static str, Color32, Color32) {
+    if game.is_junk {
+        ("Junk", Color32::from_rgb(250, 229, 229), ERROR)
+    } else if game.is_hidden {
+        ("Hidden", Color32::from_rgb(232, 235, 239), TEXT_SECONDARY)
+    } else if game.installed {
+        ("Installed", SUCCESS_SOFT, SUCCESS)
+    } else {
+        ("Library", ACCENT_SOFT, ACCENT)
+    }
+}
+
+fn game_card_detail(game: &Game) -> String {
+    let metadata = game_metadata_summary(game);
+    if !metadata.is_empty() {
+        return metadata;
+    }
+
+    if !game.steam_collections.is_empty() {
+        return format!("{} collection(s)", game.steam_collections.len());
+    }
+
+    if game.installed {
+        "Ready to play".to_string()
+    } else {
+        "In your Steam library".to_string()
+    }
+}
+
+fn steam_poster_uri(app_id: u32) -> String {
+    format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{app_id}/library_600x900.jpg")
+}
+
+fn empty_value_label() -> &'static str {
+    "None"
+}
+
+fn parse_required_u32(label: &str, input: &str) -> Result<u32, String> {
+    input
+        .trim()
+        .parse()
+        .map_err(|_| format!("{label} must be a whole number."))
+}
+
+fn parse_required_usize(label: &str, input: &str) -> Result<usize, String> {
+    input
+        .trim()
+        .parse()
+        .map_err(|_| format!("{label} must be a whole number."))
+}
+
+fn parse_optional_u32(label: &str, input: &str) -> Result<Option<u32>, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    trimmed
+        .parse()
+        .map(Some)
+        .map_err(|_| format!("{label} must be a whole number."))
+}
+
+fn parse_optional_u64(label: &str, input: &str) -> Result<Option<u64>, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    trimmed
+        .parse()
+        .map(Some)
+        .map_err(|_| format!("{label} must be a whole number."))
+}
+
 fn format_playtime(minutes: u32) -> String {
     if minutes == 0 {
-        return "—".to_string();
+        return "0m".to_string();
     }
     let hours = minutes / 60;
     let mins = minutes % 60;
@@ -2575,15 +3035,19 @@ fn main() -> eframe::Result<()> {
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1024.0, 768.0])
-            .with_min_inner_size([640.0, 480.0]),
+            .with_inner_size([1280.0, 820.0])
+            .with_min_inner_size([900.0, 620.0]),
         ..Default::default()
     };
 
     eframe::run_native(
         "Vapourfly",
         native_options,
-        Box::new(|_cc| Ok(Box::new(app))),
+        Box::new(|cc| {
+            configure_ui(&cc.egui_ctx);
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+            Ok(Box::new(app))
+        }),
     )
 }
 
@@ -2596,6 +3060,30 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use tempfile::TempDir;
+
+    fn test_game(app_id: u32, name: &str) -> Game {
+        Game {
+            app_id,
+            name: name.into(),
+            app_type: SteamAppType::Game,
+            installed: false,
+            install_dir: None,
+            library_folder: None,
+            playtime_minutes: None,
+            playtime_2wks_minutes: None,
+            playtime_disconnected_minutes: None,
+            last_played_unix: None,
+            steam_collections: Vec::new(),
+            is_hidden: false,
+            is_junk: false,
+            hltb: None,
+            igdb: None,
+            rawg: None,
+            protondb: None,
+            pcgw: None,
+            steam_store: None,
+        }
+    }
 
     #[test]
     fn app_created_without_fixtures() {
@@ -2655,7 +3143,7 @@ mod tests {
 
     #[test]
     fn format_playtime_zero() {
-        assert_eq!(format_playtime(0), "—");
+        assert_eq!(format_playtime(0), "0m");
     }
 
     #[test]
@@ -2676,10 +3164,57 @@ mod tests {
     }
 
     #[test]
-    fn view_icons_exist() {
+    fn nav_labels_are_plain_text() {
         for view in View::ALL {
-            assert!(!view.icon().is_empty());
+            let label = view.nav_label();
+            assert!(
+                label.is_ascii(),
+                "{label} should not depend on emoji glyphs"
+            );
+            assert!(label.contains(view.label()));
         }
+    }
+
+    #[test]
+    fn empty_value_label_is_plain_text() {
+        assert_eq!(empty_value_label(), "None");
+        assert!(empty_value_label().is_ascii());
+    }
+
+    #[test]
+    fn steam_poster_uri_uses_library_poster_endpoint() {
+        assert_eq!(
+            steam_poster_uri(730),
+            "https://cdn.cloudflare.steamstatic.com/steam/apps/730/library_600x900.jpg"
+        );
+    }
+
+    #[test]
+    fn game_primary_badge_prioritizes_visible_state() {
+        let mut game = test_game(730, "Counter-Strike 2");
+        assert_eq!(game_primary_badge(&game).0, "Library");
+
+        game.installed = true;
+        assert_eq!(game_primary_badge(&game).0, "Installed");
+
+        game.is_hidden = true;
+        assert_eq!(game_primary_badge(&game).0, "Hidden");
+
+        game.is_junk = true;
+        assert_eq!(game_primary_badge(&game).0, "Junk");
+    }
+
+    #[test]
+    fn game_card_detail_uses_collection_or_playable_state() {
+        let mut game = test_game(730, "Counter-Strike 2");
+        assert_eq!(game_card_detail(&game), "In your Steam library");
+
+        game.installed = true;
+        assert_eq!(game_card_detail(&game), "Ready to play");
+
+        game.installed = false;
+        game.steam_collections.push("favorites".into());
+        assert_eq!(game_card_detail(&game), "1 collection(s)");
     }
 
     #[test]
@@ -2699,6 +3234,92 @@ mod tests {
         assert!(!app.backup_retention_edit.is_empty());
         assert!(!app.allow_steam_running);
         assert!(app.settings_save_msg.is_none());
+    }
+
+    #[test]
+    fn recommend_request_uses_optional_seed_input() {
+        let mut app = VapourflyApp::new(None);
+        app.recommend_minutes = "90".into();
+        app.recommend_count = "7".into();
+        app.recommend_seed = "12345".into();
+        app.recommend_deck = true;
+        app.recommend_installed_only = true;
+
+        let request = app.recommend_request_from_inputs().unwrap();
+
+        assert_eq!(request.available_minutes, 90);
+        assert_eq!(request.count, 7);
+        assert_eq!(request.seed, Some(12345));
+        assert!(request.deck_mode);
+        assert!(request.include_installed_only);
+
+        app.recommend_seed.clear();
+        assert_eq!(app.recommend_request_from_inputs().unwrap().seed, None);
+    }
+
+    #[test]
+    fn recommend_request_rejects_invalid_input() {
+        let mut app = VapourflyApp::new(None);
+        app.recommend_minutes = "soon".into();
+
+        let err = app.recommend_request_from_inputs().unwrap_err();
+
+        assert!(err.contains("Available minutes"));
+    }
+
+    #[test]
+    fn discover_options_use_count_and_seed_inputs() {
+        let mut app = VapourflyApp::new(None);
+        app.playlist_discover_seed = "367520".into();
+        app.playlist_discover_count = "12".into();
+
+        let options = app.discover_options_from_inputs().unwrap();
+
+        assert_eq!(options.seed_app_id, Some(367520));
+        assert_eq!(options.count, 12);
+
+        app.playlist_discover_seed.clear();
+        assert_eq!(
+            app.discover_options_from_inputs().unwrap().seed_app_id,
+            None
+        );
+    }
+
+    #[test]
+    fn cache_refresh_is_blocked_in_offline_mode() {
+        let mut app = VapourflyApp::new(None);
+        app.offline_mode = true;
+        app.scan_result = Some(ScanResult {
+            steam_dir: "/tmp/steam".into(),
+            account: "test".into(),
+            games: Vec::new(),
+            warnings: Vec::new(),
+        });
+
+        app.start_cache_refresh(Some("igdb".into()), &egui::Context::default());
+
+        assert!(!app.cache_refresh_loading);
+        assert_eq!(
+            app.cache_refresh_msg.as_deref(),
+            Some("Offline mode is on. Cache refresh requires network access.")
+        );
+    }
+
+    #[test]
+    fn settings_can_refresh_detected_accounts_from_fixture() {
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
+        let mut app = VapourflyApp::new(Some(fixtures));
+
+        app.refresh_detected_accounts();
+
+        assert_eq!(app.detected_accounts.len(), 1);
+        assert_eq!(
+            app.detected_accounts[0].account_name,
+            "vapourfly_fixture_user"
+        );
+        assert_eq!(app.detected_accounts[0].persona_name, "Vapourfly Fixture");
+        assert!(app.detected_accounts[0].most_recent);
     }
 
     #[test]
@@ -2819,7 +3440,7 @@ mod tests {
         match action {
             PendingAction::PlaylistSync(pf) => match pf.playlist.content {
                 PlaylistContent::Manual { app_ids } => {
-                    assert_eq!(app_ids, vec![730, 223850]);
+                    assert_eq!(app_ids, vec![730, 427520]);
                 }
                 PlaylistContent::Rules { .. } => panic!("rule playlist should be resolved"),
             },
@@ -2882,7 +3503,7 @@ mod tests {
             .iter()
             .find(|collection| collection.id == "favorite")
             .expect("favorite collection");
-        assert_eq!(favorites.app_ids, vec![730, 223850]);
+        assert_eq!(favorites.app_ids, vec![730, 427520]);
     }
 
     #[test]
@@ -2898,7 +3519,11 @@ mod tests {
 
         let exported: Vec<SteamCollection> =
             serde_json::from_str(&std::fs::read_to_string(&export_path).unwrap()).unwrap();
-        assert!(exported.iter().any(|collection| collection.id == "favorite"));
+        assert!(
+            exported
+                .iter()
+                .any(|collection| collection.id == "favorite")
+        );
     }
 
     #[test]
@@ -2976,7 +3601,7 @@ mod tests {
         let summary = game_metadata_summary(&game);
         assert!(summary.contains("Gold"));
         assert!(summary.contains("2h 0m"));
-        assert!(summary.contains("4.0★"));
+        assert!(summary.contains("4.0/5"));
         assert!(summary.contains("RPG"));
     }
 }
