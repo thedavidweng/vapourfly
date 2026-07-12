@@ -74,6 +74,10 @@ impl DiskCache {
     }
 
     /// Write a record to disk, creating parent directories as needed.
+    ///
+    /// The write is atomic: data is written to a temporary file in the same
+    /// directory and then renamed over the target. This prevents cache
+    /// corruption if the process is interrupted mid-write.
     pub fn put<T: Serialize>(&self, record: &CacheRecord<T>) -> Result<()> {
         let path = self.path_for(&record.source, &record.key);
 
@@ -91,9 +95,19 @@ impl DiskCache {
             VapourflyError::Internal(format!("failed to serialize cache record: {e}"))
         })?;
 
-        std::fs::write(&path, &json).map_err(|e| {
+        // Atomic write: write to a temp file, then rename over the target.
+        let tmp_path = path.with_extension("json.tmp");
+        std::fs::write(&tmp_path, &json).map_err(|e| {
             VapourflyError::Internal(format!(
-                "failed to write cache file {}: {e}",
+                "failed to write cache tmp file {}: {e}",
+                tmp_path.display()
+            ))
+        })?;
+        std::fs::rename(&tmp_path, &path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp_path);
+            VapourflyError::Internal(format!(
+                "failed to rename cache tmp file {} -> {}: {e}",
+                tmp_path.display(),
                 path.display()
             ))
         })?;

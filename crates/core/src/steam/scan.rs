@@ -178,13 +178,13 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
         let local = local_apps.get(&app_id);
 
         // Name: appmanifest -> librarycache -> "App {appid}"
-        let name = if !manifest.name.is_empty() {
-            manifest.name.clone()
-        } else {
+        let name = if manifest.name.is_empty() {
             library_cache
                 .get(&app_id)
                 .cloned()
                 .unwrap_or_else(|| format!("App {app_id}"))
+        } else {
+            manifest.name.clone()
         };
 
         let steam_collections = collection_map.get(&app_id).cloned().unwrap_or_default();

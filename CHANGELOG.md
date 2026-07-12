@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+#### CLI
+
+- `vapourfly settings show [--format json]` — display resolved Vapourfly configuration and the config file path.
+- `vapourfly settings set <field> <value>` — write a config field to `config.toml` (steam_dir, account, cc, lang, backup_retention_count).
+- `vapourfly settings unset <field>` — remove a config field from `config.toml`.
+- `vapourfly playlist create-rules --id --name --description --rules <file>` — create and store a rule-based playlist from a JSON rules array or a full playlist file.
+- `vapourfly playlist match` and `vapourfly playlist import` now print the completion price line (with a hint when no Steam Store price is cached).
+
+#### GUI
+
+- Playlists view: added a Rules JSON text area for creating rule-based playlists directly in the GUI.
+- Match report: completion price is now formatted as a currency string (e.g. `USD 7.99`) instead of raw cents, with a hint when no price data is cached.
+
+#### Core
+
+- `vapourfly_core::config::ConfigField` enum and `set_config_field` / `unset_config_field` functions for programmatic config editing.
+- `vapourfly_core::models::Money::format()` method for rendering prices as major-unit currency strings.
+
 ## [0.1.0] - 2026-06-26
 
 Initial release of Vapourfly — a local-first CLI/GUI tool for managing Steam game libraries.

@@ -63,7 +63,7 @@ pub struct EnrichmentOptions {
 impl Default for EnrichmentOptions {
     fn default() -> Self {
         Self {
-            sources: ALL_SOURCES.iter().map(|s| s.to_string()).collect(),
+            sources: ALL_SOURCES.iter().map(|s| (*s).to_string()).collect(),
             offline: false,
             force: false,
         }
@@ -206,7 +206,9 @@ fn enrich_source(
                             stale: false,
                             etag: None,
                         };
-                        let _ = cache.put(&record);
+                        if let Err(e) = cache.put(&record) {
+                            tracing::warn!(error = %e, "failed to cache {}/{} record", record.source, record.key);
+                        }
                         game.protondb = Some(data);
                         stats.entries_refreshed += 1;
                         stats.last_success = Some(chrono::Utc::now());
@@ -252,7 +254,9 @@ fn enrich_source(
                             stale: false,
                             etag: None,
                         };
-                        let _ = cache.put(&record);
+                        if let Err(e) = cache.put(&record) {
+                            tracing::warn!(error = %e, "failed to cache {}/{} record", record.source, record.key);
+                        }
                         game.pcgw = Some(data);
                         stats.entries_refreshed += 1;
                         stats.last_success = Some(chrono::Utc::now());
@@ -297,7 +301,9 @@ fn enrich_source(
                             stale: false,
                             etag: None,
                         };
-                        let _ = cache.put(&record);
+                        if let Err(e) = cache.put(&record) {
+                            tracing::warn!(error = %e, "failed to cache {}/{} record", record.source, record.key);
+                        }
                         game.hltb = Some(data);
                         stats.entries_refreshed += 1;
                         stats.last_success = Some(chrono::Utc::now());
@@ -352,7 +358,9 @@ fn enrich_source(
                             stale: false,
                             etag: None,
                         };
-                        let _ = cache.put(&record);
+                        if let Err(e) = cache.put(&record) {
+                            tracing::warn!(error = %e, "failed to cache {}/{} record", record.source, record.key);
+                        }
                         game.rawg = Some(data);
                         stats.entries_refreshed += 1;
                         stats.last_success = Some(chrono::Utc::now());
@@ -455,7 +463,9 @@ fn enrich_igdb(
                     stale: false,
                     etag: None,
                 };
-                let _ = cache.put(&record);
+                if let Err(e) = cache.put(&record) {
+                    tracing::warn!(error = %e, "failed to cache {}/{} record", record.source, record.key);
+                }
                 game.igdb = Some(data);
                 stats.entries_refreshed += 1;
                 stats.last_success = Some(chrono::Utc::now());
@@ -525,7 +535,9 @@ fn enrich_steam_store(
                     stale: false,
                     etag: None,
                 };
-                let _ = cache.put(&record);
+                if let Err(e) = cache.put(&record) {
+                    tracing::warn!(error = %e, "failed to cache {}/{} record", record.source, record.key);
+                }
                 game.steam_store = Some(data);
                 stats.entries_refreshed += 1;
                 stats.last_success = Some(chrono::Utc::now());

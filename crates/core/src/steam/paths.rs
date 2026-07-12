@@ -255,43 +255,6 @@ pub fn detect_library_folders(steam_dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(folders)
 }
 
-/// Select the best account from a list.
-///
-/// Priority: preferred (by name/id) > most_recent > single account > error
-pub fn select_account<'a>(
-    accounts: &'a [SteamAccount],
-    preferred: Option<&str>,
-) -> Result<&'a SteamAccount> {
-    if accounts.is_empty() {
-        return Err(VapourflyError::InvalidInput("no accounts found".into()));
-    }
-
-    // 1. Try preferred
-    if let Some(pref) = preferred {
-        if let Some(acc) = accounts
-            .iter()
-            .find(|a| a.account_name == pref || a.steam_id64 == pref || a.persona_name == pref)
-        {
-            return Ok(acc);
-        }
-    }
-
-    // 2. Try most_recent
-    if let Some(acc) = accounts.iter().find(|a| a.most_recent) {
-        return Ok(acc);
-    }
-
-    // 3. Single account
-    if accounts.len() == 1 {
-        return Ok(&accounts[0]);
-    }
-
-    // 4. Ambiguous
-    Err(VapourflyError::AmbiguousAccount {
-        count: accounts.len(),
-    })
-}
-
 // ---------------------------------------------------------------------------
 // Path redaction
 // ---------------------------------------------------------------------------

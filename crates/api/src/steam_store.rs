@@ -107,24 +107,19 @@ impl SteamStoreClient {
                 .unwrap_or_default(),
             release_date: data.release_date.as_ref().and_then(|r| r.date.clone()),
             metacritic_score: data.metacritic.as_ref().map(|m| m.score),
-            platforms: data
-                .platforms
-                .as_ref()
-                .map(|p| SteamStorePlatforms {
-                    windows: p.windows,
-                    mac: p.mac,
-                    linux: p.linux,
-                })
-                .unwrap_or(SteamStorePlatforms {
+            platforms: data.platforms.as_ref().map_or(
+                SteamStorePlatforms {
                     windows: false,
                     mac: false,
                     linux: false,
-                }),
-            coming_soon: data
-                .release_date
-                .as_ref()
-                .map(|r| r.coming_soon)
-                .unwrap_or(false),
+                },
+                |p| SteamStorePlatforms {
+                    windows: p.windows,
+                    mac: p.mac,
+                    linux: p.linux,
+                },
+            ),
+            coming_soon: data.release_date.as_ref().is_some_and(|r| r.coming_soon),
             price_overview: data.price_overview.as_ref().map(|p| PriceOverview {
                 currency: p.currency.clone(),
                 initial_price_cents: p.initial,

@@ -53,7 +53,14 @@ pub fn read_user_collections(cloud: &CloudStorageFile) -> Result<Vec<SteamCollec
         // Parse collection value
         let cv: CollectionValue = match serde_json::from_str(value_str) {
             Ok(v) => v,
-            Err(_) => continue, // skip unparseable
+            Err(e) => {
+                tracing::warn!(
+                    key = %outer_key,
+                    error = %e,
+                    "skipping unparseable collection entry"
+                );
+                continue;
+            }
         };
 
         // Compute effective AppIDs = added - removed
@@ -64,7 +71,7 @@ pub fn read_user_collections(cloud: &CloudStorageFile) -> Result<Vec<SteamCollec
             .copied()
             .filter(|id| !removed_set.contains(id))
             .collect();
-        app_ids.sort();
+        app_ids.sort_unstable();
         app_ids.dedup();
 
         let is_hidden = cv.id == "hidden" || outer_key == "user-collections.hidden";

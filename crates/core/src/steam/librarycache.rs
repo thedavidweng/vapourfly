@@ -54,7 +54,10 @@ fn parse_librarycache_json(content: &str) -> Result<HashMap<u32, String>> {
 
     let entries: Vec<CacheEntry> = match serde_json::from_str(content) {
         Ok(v) => v,
-        Err(_) => return Ok(HashMap::new()),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to parse librarycache JSON, returning empty map");
+            return Ok(HashMap::new());
+        }
     };
 
     let mut map = HashMap::new();

@@ -69,7 +69,7 @@ document covers the interactive flows that require a running GUI.
 ### 5. Playlists
 
 1. Navigate to Playlists view via the left sidebar.
-2. Fill Create / Edit Playlist with an ID, name, description, and comma-separated AppIDs.
+2. Fill Create / Edit Playlist with an ID, name, description, and comma-separated AppIDs. Leave the Rules JSON field empty.
 3. Click "Save Playlist" and verify a match report appears.
 4. Click "Copy Share Code" and verify a `VF1:` code is shown.
 5. Paste the code into Share code and click "Import Code"; verify the same playlist is loaded.
@@ -80,6 +80,9 @@ document covers the interactive flows that require a running GUI.
 10. Set Discover seed AppID and Count, click "Generate Discover", and verify a Discover playlist is created with the requested count when enough candidates exist.
 11. Clear Discover seed AppID, rerun generation, and verify the taste-based Discover playlist still works.
 12. Compile `deck-session`, `finish-it`, `mood`, and `playlist-radio` templates and verify each produces a playlist or rule summary without errors.
+13. Clear the edit fields, enter a new ID and name, and paste a JSON rules array (e.g. `[{"op":"Installed"},{"op":"NotHidden"}]`) into the Rules JSON field. Click "Save Playlist" and verify a rule-based playlist is saved and the match report appears.
+14. Enter invalid JSON in the Rules JSON field and click "Save Playlist"; verify an error is shown and no playlist is saved.
+15. Verify the match report shows "Completion price:" with a formatted price when Steam Store cache data exists, or a hint to run `cache refresh --source steam-store` when no price data is cached.
 
 ### 6. Collections
 

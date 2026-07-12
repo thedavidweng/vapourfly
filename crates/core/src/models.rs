@@ -4,7 +4,7 @@
 //! All public JSON-facing structs implement `Serialize`/`Deserialize` with
 //! deterministic key ordering where practical.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -549,6 +549,19 @@ pub struct Money {
     pub currency: String,
 }
 
+impl Money {
+    /// Format this amount as a human-readable price string.
+    ///
+    /// The major unit is derived from cents (divided by 100 with two decimal
+    /// places). The currency code is prefixed, e.g. `"USD 7.99"`. This is a
+    /// deliberately neutral format — the GUI and CLI both use it for display.
+    pub fn format(&self) -> String {
+        let major = self.amount_cents / 100;
+        let minor = self.amount_cents % 100;
+        format!("{} {}.{:02}", self.currency, major, minor)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Scan result
 // ---------------------------------------------------------------------------
@@ -568,12 +581,90 @@ pub struct ScanWarning {
 }
 
 // ---------------------------------------------------------------------------
+// Shared Game helpers
+// ---------------------------------------------------------------------------
+
+impl Game {
+    /// Return lowercase keywords (genres, themes, tags) for similarity matching.
+    ///
+    /// Prefers IGDB keywords/themes/genres; falls back to RAWG tags/genres when
+    /// IGDB data is absent. The result is sorted and deduplicated.
+    pub fn keywords_lower(&self) -> Vec<String> {
+        let mut kws: Vec<String> = Vec::new();
+        if let Some(igdb) = &self.igdb {
+            kws.extend(igdb.keywords.iter().map(|s| s.to_lowercase()));
+            kws.extend(igdb.themes.iter().map(|s| s.to_lowercase()));
+            kws.extend(igdb.genres.iter().map(|s| s.to_lowercase()));
+        }
+        if kws.is_empty() {
+            if let Some(rawg) = &self.rawg {
+                kws.extend(rawg.tags.iter().map(|s| s.to_lowercase()));
+                kws.extend(rawg.genres.iter().map(|s| s.to_lowercase()));
+            }
+        }
+        kws.sort();
+        kws.dedup();
+        kws
+    }
+
+    /// Return the effective rating on a 0–5 scale and its source.
+    ///
+    /// Priority: `overrides` > RAWG (native 0–5) > IGDB (0–100, converted).
+    /// Returns `None` when no rating data is available.
+    pub fn effective_rating(
+        &self,
+        overrides: Option<&HashMap<u32, f32>>,
+    ) -> Option<(f32, RatingSource)> {
+        if let Some(overrides) = overrides {
+            if let Some(&rating) = overrides.get(&self.app_id) {
+                return Some((rating, RatingSource::ManualOverride));
+            }
+        }
+        if let Some(rawg) = &self.rawg {
+            if let Some(r) = rawg.rating_0_5 {
+                return Some((r, RatingSource::Rawg));
+            }
+        }
+        if let Some(igdb) = &self.igdb {
+            if let Some(r) = igdb.rating_0_100 {
+                return Some((r / 20.0, RatingSource::Igdb));
+            }
+            if let Some(r) = igdb.total_rating_0_100 {
+                return Some((r / 20.0, RatingSource::Igdb));
+            }
+        }
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn money_format_renders_cents_as_major_unit() {
+        let free = Money {
+            amount_cents: 0,
+            currency: "USD".into(),
+        };
+        assert_eq!(free.format(), "USD 0.00");
+
+        let priced = Money {
+            amount_cents: 799,
+            currency: "USD".into(),
+        };
+        assert_eq!(priced.format(), "USD 7.99");
+
+        let large = Money {
+            amount_cents: 59999,
+            currency: "EUR".into(),
+        };
+        assert_eq!(large.format(), "EUR 599.99");
+    }
 
     #[test]
     fn game_round_trip() {

@@ -363,6 +363,7 @@ pub fn restore_backup(backup_path: &Path, target_path: &Path) -> Result<()> {
 
 /// List all backups for the file at `target_path`, sorted by creation time
 /// descending (most recent first).
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
 pub fn list_backups(target_path: &Path) -> Result<Vec<BackupInfo>> {
     let target_name = target_path
         .file_name()
@@ -467,6 +468,7 @@ pub fn prune_old_backups(target_path: &Path, keep_count: u32) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
 mod tests {
     use super::*;
     use crate::models::{CloudEntry, CloudStorageFile, WriteOp};

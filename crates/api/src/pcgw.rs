@@ -127,8 +127,7 @@ impl PcgwClient {
                     .cargoquery
                     .first()
                     .and_then(|entry| entry.title.controller_support.as_deref())
-                    .map(parse_controller_support)
-                    .unwrap_or(ControllerSupport::Unknown)
+                    .map_or(ControllerSupport::Unknown, parse_controller_support)
             } else {
                 ControllerSupport::Unknown
             }

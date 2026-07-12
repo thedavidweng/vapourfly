@@ -266,20 +266,7 @@ pub fn export_playlist(playlist: &PlaylistFile, path: &Path) -> Result<()> {
 ///
 /// Priority: RAWG (native 0-5) > IGDB (0-100, converted).
 fn effective_rating(game: &Game) -> Option<f32> {
-    if let Some(rawg) = &game.rawg {
-        if let Some(r) = rawg.rating_0_5 {
-            return Some(r);
-        }
-    }
-    if let Some(igdb) = &game.igdb {
-        if let Some(r) = igdb.rating_0_100 {
-            return Some(r / 20.0);
-        }
-        if let Some(r) = igdb.total_rating_0_100 {
-            return Some(r / 20.0);
-        }
-    }
-    None
+    game.effective_rating(None).map(|(r, _)| r)
 }
 
 /// Evaluate a single leaf or compound rule against a game.
@@ -493,7 +480,7 @@ pub fn match_playlist(playlist: &PlaylistFile, games: &[Game]) -> Result<Playlis
                 if let Some(store) = &game.steam_store {
                     if !store.is_free {
                         if let Some(price) = &store.price_overview {
-                            total_cents += price.final_price_cents as u64;
+                            total_cents += u64::from(price.final_price_cents);
                             if currency.is_none() {
                                 currency = Some(price.currency.clone());
                             }

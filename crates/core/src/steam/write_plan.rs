@@ -123,7 +123,7 @@ pub fn upsert_collection(
 
     // Deduplicate and sort AppIDs
     let mut app_ids = app_ids;
-    app_ids.sort();
+    app_ids.sort_unstable();
     app_ids.dedup();
 
     // Build the value JSON — removed is always [] for full-set writes
@@ -187,7 +187,7 @@ pub fn merge_hidden(
 
     // Merge — additive only, never remove
     merged.extend_from_slice(new_app_ids);
-    merged.sort();
+    merged.sort_unstable();
     merged.dedup();
 
     // Build value
@@ -323,11 +323,11 @@ fn compute_diff(
         }
     }
 
-    diff.app_ids_added.sort();
+    diff.app_ids_added.sort_unstable();
     diff.app_ids_added.dedup();
-    diff.app_ids_removed.sort();
+    diff.app_ids_removed.sort_unstable();
     diff.app_ids_removed.dedup();
-    diff.hidden_app_ids_added.sort();
+    diff.hidden_app_ids_added.sort_unstable();
     diff.hidden_app_ids_added.dedup();
 
     // Count unchanged and skipped-deleted entries
@@ -395,10 +395,12 @@ fn hex_sha256(data: &[u8]) -> String {
 // Minimal hex encode (avoids pulling in the `hex` crate)
 mod hex {
     pub fn encode(bytes: impl IntoIterator<Item = u8>) -> String {
-        bytes
-            .into_iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
+        let mut s = String::with_capacity(64);
+        for b in bytes {
+            use std::fmt::Write as _;
+            let _ = write!(s, "{b:02x}");
+        }
+        s
     }
 }
 

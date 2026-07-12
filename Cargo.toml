@@ -36,3 +36,54 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+
+[workspace.lints.rust]
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+# Enable pedantic as warnings, then allow specific lints that are too noisy
+# for this codebase or are stylistic preferences.
+pedantic = { level = "warn", priority = -1 }
+must_use = { level = "warn", priority = -1 }
+
+# Allow: these produce false positives or are too noisy for test-heavy code.
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+doc_markdown = "allow"
+too_many_lines = "allow"
+module_name_repetitions = "allow"
+needless_pass_by_value = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+must_use_unit = "allow"
+return_self_not_must_use = "allow"
+similar_names = "allow"
+manual_let_else = "allow"
+single_match_else = "allow"
+unnested_or_patterns = "allow"
+match_same_arms = "allow"
+wildcard_enum_match_arm = "allow"
+redundant_closure_for_method_calls = "allow"
+unreadable_literal = "allow"
+used_underscore_binding = "allow"
+struct_excessive_bools = "allow"
+unnecessary_wraps = "allow"
+items_after_statements = "allow"
+unused_self = "allow"
+format_push_string = "allow"
+wildcard_imports = "allow"
+redundant_clone = "allow"
+fn_to_numeric_cast = "allow"
+assigning_clones = "allow"
+ptr_arg = "allow"
+float_cmp = "allow"
+match_wildcard_for_single_variants = "allow"
+
+
+
+
+
+

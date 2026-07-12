@@ -14,8 +14,10 @@ fn main() {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+        .map_or_else(
+            || "unknown".to_string(),
+            |o| String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        );
 
     println!("cargo:rustc-env=VF_GIT_HASH={git_hash}");
     println!("cargo:rustc-env=VF_BUILD_DATE={build_date}");

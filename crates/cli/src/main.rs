@@ -26,13 +26,14 @@ fn long_version() -> &'static str {
         .as_str()
 }
 
+use vapourfly_core::config::{self, ConfigField, VapourflyConfig};
 use vapourfly_core::discover::{self, DiscoverOptions};
 use vapourfly_core::dynamic::{self, DynamicTemplate, DynamicTemplateOptions};
 use vapourfly_core::junk::{JunkPreviewResult, ManualOverrides, apply_junk_flags, evaluate_junk};
 use vapourfly_core::models::{
-    JunkMode, JunkRules, JunkSignal, PlaylistContent, PlaylistFile, RecommendRequest, ScanResult,
-    VAPOURFLY_JUNK_PREVIEW_SCHEMA, VAPOURFLY_PLAYLIST_SCHEMA, VAPOURFLY_RECOMMENDATIONS_SCHEMA,
-    VAPOURFLY_SCAN_SCHEMA, WriteOp,
+    JunkMode, JunkRules, JunkSignal, PlaylistContent, PlaylistFile, PlaylistRule, RecommendRequest,
+    ScanResult, VAPOURFLY_JUNK_PREVIEW_SCHEMA, VAPOURFLY_PLAYLIST_SCHEMA,
+    VAPOURFLY_RECOMMENDATIONS_SCHEMA, VAPOURFLY_SCAN_SCHEMA, WriteOp,
 };
 use vapourfly_core::playlist;
 use vapourfly_core::recommend;
@@ -225,6 +226,12 @@ enum Commands {
         #[command(subcommand)]
         action: DiagnosticsAction,
     },
+
+    /// Show or edit Vapourfly settings stored in config.toml.
+    Settings {
+        #[command(subcommand)]
+        action: SettingsAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -333,6 +340,26 @@ enum PlaylistAction {
         app_ids: Vec<u32>,
     },
 
+    /// Create and store a rule-based playlist from a JSON rules file.
+    CreateRules {
+        /// Playlist ID.
+        #[arg(long)]
+        id: String,
+
+        /// Playlist display name.
+        #[arg(long)]
+        name: String,
+
+        /// Optional description.
+        #[arg(long, default_value = "")]
+        description: String,
+
+        /// Path to a JSON file containing the rules array (the value of
+        /// `content.value.rules` in a Vapourfly playlist file).
+        #[arg(long)]
+        rules: PathBuf,
+    },
+
     /// Import a playlist from a JSON file or share code.
     Import {
         /// Path to the playlist file.
@@ -435,6 +462,14 @@ enum BackupAction {
     Restore {
         /// Path to the backup file.
         file: PathBuf,
+
+        /// Preview the restore without writing.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Confirm and execute the restore.
+        #[arg(long)]
+        confirm: bool,
     },
 }
 
@@ -448,10 +483,50 @@ enum DiagnosticsAction {
     },
 }
 
+#[derive(Subcommand)]
+enum SettingsAction {
+    /// Show the resolved Vapourfly configuration and the config file path.
+    Show {
+        /// Output format.
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+
+    /// Set a config field in config.toml.
+    Set {
+        /// Field key: steam_dir, account, cc, lang, backup_retention_count.
+        key: String,
+
+        /// Value to store.
+        value: String,
+    },
+
+    /// Remove a config field from config.toml.
+    Unset {
+        /// Field key: steam_dir, account, cc, lang, backup_retention_count.
+        key: String,
+    },
+}
+
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 enum OutputFormat {
     Table,
     Json,
+}
+
+/// Bundled arguments for `cmd_recommend` so the function stays under clippy's
+/// argument-count threshold.
+#[derive(Clone, Copy, Debug)]
+struct RecommendArgs {
+    minutes: u32,
+    count: usize,
+    deck: bool,
+    installed_only: bool,
+    seed: Option<u64>,
+    to_collection: bool,
+    dry_run: bool,
+    confirm: bool,
+    format: OutputFormat,
 }
 
 // ---------------------------------------------------------------------------
@@ -519,15 +594,17 @@ fn main() {
             format,
         } => cmd_recommend(
             &cli,
-            *minutes,
-            *count,
-            *deck,
-            *installed_only,
-            *seed,
-            *to_collection,
-            *dry_run,
-            *confirm,
-            *format,
+            RecommendArgs {
+                minutes: *minutes,
+                count: *count,
+                deck: *deck,
+                installed_only: *installed_only,
+                seed: *seed,
+                to_collection: *to_collection,
+                dry_run: *dry_run,
+                confirm: *confirm,
+                format: *format,
+            },
         ),
         Commands::Playlist { action } => match action {
             PlaylistAction::Create {
@@ -540,6 +617,17 @@ fn main() {
                 name.clone(),
                 description.clone(),
                 app_ids.clone(),
+            ),
+            PlaylistAction::CreateRules {
+                id,
+                name,
+                description,
+                rules,
+            } => cmd_playlist_create_rules(
+                id.clone(),
+                name.clone(),
+                description.clone(),
+                rules.clone(),
             ),
             PlaylistAction::Import { path, code } => {
                 cmd_playlist_import(&cli, path.clone(), code.clone())
@@ -570,10 +658,19 @@ fn main() {
         },
         Commands::Backup { action } => match action {
             BackupAction::List { format } => cmd_backup_list(&cli, *format),
-            BackupAction::Restore { file } => cmd_backup_restore(&cli, file.clone()),
+            BackupAction::Restore {
+                file,
+                dry_run,
+                confirm,
+            } => cmd_backup_restore(&cli, file.clone(), *dry_run, *confirm),
         },
         Commands::Diagnostics { action } => match action {
             DiagnosticsAction::Export { out } => cmd_diagnostics_export(&cli, out.clone()),
+        },
+        Commands::Settings { action } => match action {
+            SettingsAction::Show { format } => cmd_settings_show(&cli, *format),
+            SettingsAction::Set { key, value } => cmd_settings_set(key.clone(), value.clone()),
+            SettingsAction::Unset { key } => cmd_settings_unset(key.clone()),
         },
     };
 
@@ -639,7 +736,7 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 
             // Cloud storage
             if let Some(acc) = selected {
-                let cloud_path = steam::resolve_userdata_dir(&dir, &acc.steam_id64)
+                let cloud_path = steam::resolve_userdata_dir(dir, &acc.steam_id64)
                     .join("config/cloudstorage/cloud-storage-namespace-1.json");
                 if cloud_path.exists() {
                     println!("Cloud storage: available");
@@ -750,7 +847,7 @@ fn cmd_scan(
         let options = vapourfly_api::enrichment::EnrichmentOptions {
             sources: vapourfly_api::enrichment::ALL_SOURCES
                 .iter()
-                .map(|s| s.to_string())
+                .map(|s| (*s).to_string())
                 .collect(),
             offline: cli.offline,
             force: false,
@@ -857,8 +954,7 @@ fn cmd_collections_list(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let hidden_count = collections
         .iter()
         .find(|c| c.is_hidden_collection)
-        .map(|c| c.app_ids.len())
-        .unwrap_or(0);
+        .map_or(0, |c| c.app_ids.len());
 
     println!("{:<30} {:<10} {:<10}", "Name", "ID", "Apps");
     println!("{}", "-".repeat(55));
@@ -990,15 +1086,14 @@ fn cmd_junk_preview(
         OutputFormat::Table => {
             println!(
                 "{:<10} {:<32} {:>10} {:>10}  Classification",
-                "App ID", "Name", "Playtime", "Confidence"
+                "AppID", "Name", "Playtime", "Confidence"
             );
             println!("{}", "-".repeat(86));
 
             for (game, decision) in scan_result.games.iter().zip(decisions.iter()) {
                 let playtime = game
                     .playtime_minutes
-                    .map(|m| format!("{m} min"))
-                    .unwrap_or_else(|| "N/A".into());
+                    .map_or_else(|| "N/A".into(), |m| format!("{m} min"));
 
                 let confidence = format!("{}%", (decision.confidence * 100.0) as u32);
 
@@ -1060,7 +1155,7 @@ fn cmd_junk_apply(
         .filter(|g| g.is_junk)
         .map(|g| g.app_id)
         .collect();
-    junk_app_ids.sort();
+    junk_app_ids.sort_unstable();
     junk_app_ids.dedup();
 
     if junk_app_ids.is_empty() {
@@ -1127,7 +1222,7 @@ fn cmd_junk_hide(
         .filter(|g| g.is_junk)
         .map(|g| g.app_id)
         .collect();
-    junk_app_ids.sort();
+    junk_app_ids.sort_unstable();
     junk_app_ids.dedup();
 
     if junk_app_ids.is_empty() {
@@ -1174,18 +1269,19 @@ fn cmd_junk_hide(
 
 const RECOMMEND_COLLECTION_ID: &str = "vapourfly-picks";
 
-fn cmd_recommend(
-    cli: &Cli,
-    minutes: u32,
-    count: usize,
-    deck: bool,
-    installed_only: bool,
-    seed: Option<u64>,
-    to_collection: bool,
-    dry_run: bool,
-    confirm: bool,
-    format: OutputFormat,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let RecommendArgs {
+        minutes,
+        count,
+        deck,
+        installed_only,
+        seed,
+        to_collection,
+        dry_run,
+        confirm,
+        format,
+    } = args;
+
     if to_collection {
         validate_write_flags(dry_run, confirm)?;
     }
@@ -1252,7 +1348,7 @@ fn cmd_recommend(
 
     match format {
         OutputFormat::Table => {
-            println!("{:<10} {:<40} {:>8}  Reasons", "App ID", "Name", "Score");
+            println!("{:<10} {:<40} {:>8}  Reasons", "AppID", "Name", "Score");
             println!("{}", "-".repeat(86));
             for rec in &recommendations {
                 let reasons: Vec<String> = rec.reasons.iter().map(|r| r.code.clone()).collect();
@@ -1312,6 +1408,56 @@ fn cmd_playlist_create(
     Ok(())
 }
 
+fn cmd_playlist_create_rules(
+    id: String,
+    name: String,
+    description: String,
+    rules_path: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let contents = std::fs::read_to_string(&rules_path)
+        .map_err(|_| format!("could not read rules file: {}", rules_path.display()))?;
+
+    // Accept either a bare rules array `[...]` or a full playlist file
+    // (which contains `content.value.rules`).
+    let rules: Vec<PlaylistRule> = if contents.trim_start().starts_with('[') {
+        serde_json::from_str(&contents)
+            .map_err(|e| format!("rules file is not a valid JSON array of rules: {e}"))?
+    } else {
+        let pf: PlaylistFile = serde_json::from_str(&contents)
+            .map_err(|e| format!("rules file is neither a rules array nor a playlist file: {e}"))?;
+        match pf.playlist.content {
+            PlaylistContent::Rules { rules } => rules,
+            PlaylistContent::Manual { .. } => {
+                return Err("rules file is a manual playlist, not a rule-based playlist".into());
+            }
+        }
+    };
+
+    if rules.is_empty() {
+        return Err("rules file contains no rules".into());
+    }
+
+    let pf = PlaylistFile {
+        vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
+        created_by: "user".into(),
+        playlist: vapourfly_core::models::Playlist {
+            id,
+            name,
+            description,
+            content: PlaylistContent::Rules { rules },
+        },
+    };
+
+    store_playlist(&pf)?;
+    println!("Created rule-based playlist: {}", pf.playlist.name);
+    println!("  ID: {}", pf.playlist.id);
+    match &pf.playlist.content {
+        PlaylistContent::Rules { rules } => println!("  Rules: {}", rules.len()),
+        PlaylistContent::Manual { .. } => {}
+    }
+    Ok(())
+}
+
 fn cmd_playlist_import(
     cli: &Cli,
     path: Option<PathBuf>,
@@ -1353,6 +1499,12 @@ fn cmd_playlist_import(
     println!("  Unplayed: {}", report.unplayed.len());
     println!("  Hidden:   {}", report.hidden.len());
     println!("  Junk:     {}", report.junk.len());
+    match &report.completion_price {
+        Some(price) => println!("  Completion price: {}", price.format()),
+        None => println!(
+            "  Completion price: (no Steam Store price cached; run 'vapourfly cache refresh --source steam-store')"
+        ),
+    }
     println!();
     println!("Stored to {}", stored_path.display());
     Ok(())
@@ -1433,6 +1585,12 @@ fn cmd_playlist_match(
             println!("  Unplayed: {}", report.unplayed.len());
             println!("  Hidden:   {}", report.hidden.len());
             println!("  Junk:     {}", report.junk.len());
+            match &report.completion_price {
+                Some(price) => println!("  Completion price: {}", price.format()),
+                None => println!(
+                    "  Completion price: (no Steam Store price cached; run 'vapourfly cache refresh --source steam-store')"
+                ),
+            }
         }
         OutputFormat::Json => {
             let output = serde_json::json!({
@@ -1535,17 +1693,16 @@ fn cmd_sync_collection(
 fn cmd_cache_refresh(cli: &Cli, source: String) -> Result<(), Box<dyn std::error::Error>> {
     let valid_sources = cache_refresh_valid_sources();
     if !valid_sources.contains(&source.as_str()) {
-        eprintln!(
+        return Err(format!(
             "Invalid source '{}'. Must be one of: {}",
             source,
             valid_sources.join(", ")
-        );
-        process::exit(1);
+        )
+        .into());
     }
 
     if cli.offline {
-        eprintln!("Cannot refresh cache in offline mode.");
-        process::exit(2);
+        return Err("Cannot refresh cache in offline mode.".into());
     }
 
     let steam_dir = cli.resolve_steam_dir()?;
@@ -1560,7 +1717,7 @@ fn cmd_cache_refresh(cli: &Cli, source: String) -> Result<(), Box<dyn std::error
     let sources = if source == "all" {
         vapourfly_api::enrichment::ALL_SOURCES
             .iter()
-            .map(|s| s.to_string())
+            .map(|s| (*s).to_string())
             .collect()
     } else {
         vec![source.clone()]
@@ -1629,10 +1786,10 @@ fn cmd_sources_status(_cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn st
                     }
                     _ => "not required",
                 };
-                let last = s
-                    .last_success
-                    .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-                    .unwrap_or_else(|| "n/a".into());
+                let last = s.last_success.map_or_else(
+                    || "n/a".into(),
+                    |dt| dt.format("%Y-%m-%d %H:%M").to_string(),
+                );
                 let cached = if s.cache_dir_exists { "yes" } else { "no" };
                 println!(
                     "{:<15} {:<15} {:<15} {:<8} {:<8} {:<10}",
@@ -1723,8 +1880,34 @@ fn cmd_backup_list(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-fn cmd_backup_restore(cli: &Cli, file: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_backup_restore(
+    cli: &Cli,
+    file: PathBuf,
+    dry_run: bool,
+    confirm: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    validate_write_flags(dry_run, confirm)?;
     let cloud_path = cli.cloud_storage_path()?;
+
+    if dry_run {
+        // Preview: show what would be restored without writing.
+        let backup_bytes = std::fs::read(&file)
+            .map_err(|e| format!("failed to read backup file {}: {e}", file.display()))?;
+        let current_bytes = std::fs::read(&cloud_path).unwrap_or_default();
+        let backup_hash = steam::compute_sha256(&backup_bytes);
+        let current_hash = steam::compute_sha256(&current_bytes);
+        println!("Dry run: restore backup");
+        println!("  Backup:  {}", file.display());
+        println!("  Target:  {}", cloud_path.display());
+        println!("  Backup SHA-256:   {backup_hash}");
+        println!("  Current SHA-256:  {current_hash}");
+        if backup_hash == current_hash {
+            println!("  (backup and current target are identical — no change)");
+        }
+        println!();
+        println!("Dry run complete. No changes made.");
+        return Ok(());
+    }
 
     steam::check_write_safety(&cloud_path, cli.allow_steam_running)?;
     steam::restore_backup(&file, &cloud_path)?;
@@ -1753,6 +1936,127 @@ fn cmd_diagnostics_export(_cli: &Cli, out: PathBuf) -> Result<(), Box<dyn std::e
     let json = serde_json::to_string_pretty(&diagnostics)?;
     std::fs::write(&out, json)?;
     println!("Diagnostics exported to {}", out.display());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Settings command
+// ---------------------------------------------------------------------------
+
+fn cmd_settings_show(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error::Error>> {
+    let overrides = config::CliOverrides {
+        steam_dir: cli.steam_dir.clone(),
+        account: cli.account.clone(),
+    };
+    let cfg = VapourflyConfig::from_cli_and_env(overrides)?;
+    let config_path = config::config_file_path();
+
+    match format {
+        OutputFormat::Table => {
+            println!("Vapourfly Settings");
+            println!("==================");
+            if let Some(path) = &config_path {
+                println!("Config file:    {}", path.display());
+            } else {
+                println!("Config file:    (platform config dir not available)");
+            }
+            println!();
+            println!("{:<22} {}", "Steam dir:", cfg.steam_dir.display());
+            println!(
+                "{:<22} {}",
+                "Account:",
+                cfg.account.as_deref().unwrap_or("(auto)"),
+            );
+            println!("{:<22} {}", "Store country code:", cfg.cc);
+            println!("{:<22} {}", "Store language:", cfg.lang);
+            println!("{:<22} {}", "Backup retention:", cfg.backup_retention_count,);
+            println!();
+            println!("Credentials");
+            println!("-----------");
+            println!(
+                "{:<22} {}",
+                "IGDB:",
+                if cfg.has_igdb_credentials {
+                    "configured"
+                } else {
+                    "not configured"
+                },
+            );
+            println!(
+                "{:<22} {}",
+                "RAWG:",
+                if cfg.has_rawg_credentials {
+                    "configured"
+                } else {
+                    "not configured"
+                },
+            );
+            println!();
+            println!("Settable fields: steam_dir, account, cc, lang, backup_retention_count");
+            println!("Use: vapourfly settings set <field> <value>");
+            println!("     vapourfly settings unset <field>");
+        }
+        OutputFormat::Json => {
+            let json = serde_json::json!({
+                "config_file": config_path.map(|p| p.display().to_string()),
+                "steam_dir": cfg.steam_dir.display().to_string(),
+                "account": cfg.account,
+                "cc": cfg.cc,
+                "lang": cfg.lang,
+                "backup_retention_count": cfg.backup_retention_count,
+                "has_igdb_credentials": cfg.has_igdb_credentials,
+                "has_rawg_credentials": cfg.has_rawg_credentials,
+            });
+            println!("{}", serde_json::to_string_pretty(&json)?);
+        }
+    }
+    Ok(())
+}
+
+fn cmd_settings_set(key: String, value: String) -> Result<(), Box<dyn std::error::Error>> {
+    let field = ConfigField::from_key(&key).ok_or_else(|| {
+        format!(
+            "unknown field '{key}'. Valid fields: {}",
+            ConfigField::all()
+                .iter()
+                .map(|f| f.as_key())
+                .collect::<Vec<_>>()
+                .join(", "),
+        )
+    })?;
+
+    let normalised = field
+        .normalise(&value)
+        .map_err(|e| format!("invalid value for {key}: {e}"))?;
+    config::set_config_field(field, &normalised)?;
+
+    let path = config::config_file_path();
+    println!("Set {key} = {normalised}");
+    if let Some(path) = path {
+        println!("  Written to {}", path.display());
+    }
+    Ok(())
+}
+
+fn cmd_settings_unset(key: String) -> Result<(), Box<dyn std::error::Error>> {
+    let field = ConfigField::from_key(&key).ok_or_else(|| {
+        format!(
+            "unknown field '{key}'. Valid fields: {}",
+            ConfigField::all()
+                .iter()
+                .map(|f| f.as_key())
+                .collect::<Vec<_>>()
+                .join(", "),
+        )
+    })?;
+
+    config::unset_config_field(field)?;
+
+    let path = config::config_file_path();
+    println!("Unset {key}");
+    if let Some(path) = path {
+        println!("  Written to {}", path.display());
+    }
     Ok(())
 }
 
@@ -1789,12 +2093,10 @@ fn load_stored_playlist(id: &str) -> Result<PlaylistFile, Box<dyn std::error::Er
 /// Validate that exactly one of `--dry-run` / `--confirm` is set.
 fn validate_write_flags(dry_run: bool, confirm: bool) -> Result<(), Box<dyn std::error::Error>> {
     if !dry_run && !confirm {
-        eprintln!("Error: must specify either --dry-run or --confirm");
-        process::exit(1);
+        return Err("must specify either --dry-run or --confirm".into());
     }
     if dry_run && confirm {
-        eprintln!("Error: cannot specify both --dry-run and --confirm");
-        process::exit(1);
+        return Err("cannot specify both --dry-run and --confirm".into());
     }
     Ok(())
 }
@@ -1853,5 +2155,75 @@ mod tests {
             assert!(valid_sources.contains(source), "missing source: {source}");
         }
         assert!(valid_sources.contains(&"all"));
+    }
+
+    #[test]
+    fn settings_set_rejects_unknown_field() {
+        let result = cmd_settings_set("unknown_field".into(), "value".into());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("unknown field"), "got: {msg}");
+    }
+
+    #[test]
+    fn settings_unset_rejects_unknown_field() {
+        let result = cmd_settings_unset("unknown_field".into());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("unknown field"), "got: {msg}");
+    }
+
+    #[test]
+    fn settings_set_rejects_invalid_backup_retention() {
+        let result = cmd_settings_set("backup_retention_count".into(), "not-a-number".into());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn playlist_create_rules_reads_bare_rules_array() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let rules_path = tmp.path().join("rules.json");
+        std::fs::write(&rules_path, r#"[{"op":"Installed"},{"op":"NotHidden"}]"#).unwrap();
+
+        // We can't call cmd_playlist_create_rules directly because it writes
+        // to the real playlist store. Instead, verify the parsing logic by
+        // checking that the rules file is valid JSON.
+        let contents = std::fs::read_to_string(&rules_path).unwrap();
+        let rules: Vec<PlaylistRule> = serde_json::from_str(&contents).unwrap();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0], PlaylistRule::Installed);
+        assert_eq!(rules[1], PlaylistRule::NotHidden);
+    }
+
+    #[test]
+    fn playlist_create_rules_reads_full_playlist_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let rules_path = tmp.path().join("playlist.json");
+        std::fs::write(
+            &rules_path,
+            r#"{
+                "vapourfly_schema": "vapourfly.playlist.v1",
+                "created_by": "user",
+                "playlist": {
+                    "id": "test",
+                    "name": "Test",
+                    "description": "",
+                    "content": {
+                        "type": "Rules",
+                        "value": {
+                            "rules": [{"op": "Installed"}]
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let contents = std::fs::read_to_string(&rules_path).unwrap();
+        let pf: PlaylistFile = serde_json::from_str(&contents).unwrap();
+        match pf.playlist.content {
+            PlaylistContent::Rules { rules } => assert_eq!(rules.len(), 1),
+            PlaylistContent::Manual { .. } => panic!("expected rule-based playlist"),
+        }
     }
 }

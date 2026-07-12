@@ -47,7 +47,7 @@ impl View {
         View::Settings,
     ];
 
-    fn label(&self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
             View::Library => "Library",
             View::Junk => "Junk",
@@ -60,8 +60,21 @@ impl View {
         }
     }
 
-    fn nav_label(&self) -> &'static str {
+    fn nav_label(self) -> &'static str {
         self.label()
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            View::Library => "\u{1F3AE}",
+            View::Junk => "\u{1F9F9}",
+            View::Recommend => "\u{1F3AF}",
+            View::Playlists => "\u{1F3B5}",
+            View::Collections => "\u{1F4C2}",
+            View::DataSources => "\u{1F310}",
+            View::Backups => "\u{1F4BE}",
+            View::Settings => "\u{2699}",
+        }
     }
 }
 
@@ -90,7 +103,7 @@ enum JunkModeChoice {
 }
 
 impl JunkModeChoice {
-    fn label(&self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
             Self::Default => "Default",
             Self::Strict => "Strict",
@@ -111,24 +124,68 @@ static DRY_RUN_RESULT: Mutex<Option<Result<vapourfly_core::models::WritePlan, St
     Mutex::new(None);
 
 // ---------------------------------------------------------------------------
-// Visual system
+// Visual system — design tokens
 // ---------------------------------------------------------------------------
 
-const SURFACE: Color32 = Color32::from_rgb(244, 246, 248);
-const SURFACE_RAISED: Color32 = Color32::from_rgb(252, 250, 247);
-const SURFACE_MUTED: Color32 = Color32::from_rgb(229, 234, 239);
-const TEXT_PRIMARY: Color32 = Color32::from_rgb(31, 35, 42);
-const TEXT_SECONDARY: Color32 = Color32::from_rgb(88, 96, 107);
-const TEXT_MUTED: Color32 = Color32::from_rgb(135, 143, 153);
-const ACCENT: Color32 = Color32::from_rgb(130, 65, 176);
-const ACCENT_SOFT: Color32 = Color32::from_rgb(239, 226, 247);
-const SUCCESS: Color32 = Color32::from_rgb(45, 139, 92);
-const SUCCESS_SOFT: Color32 = Color32::from_rgb(218, 240, 229);
-const ERROR: Color32 = Color32::from_rgb(194, 69, 69);
+// Color palette: warm-tinted neutrals with a deep violet accent.
+
+const SURFACE: Color32 = Color32::from_rgb(243, 244, 247);
+const SURFACE_RAISED: Color32 = Color32::from_rgb(252, 250, 248);
+const SURFACE_MUTED: Color32 = Color32::from_rgb(228, 231, 237);
+const SURFACE_SUNKEN: Color32 = Color32::from_rgb(235, 237, 242);
+const BORDER: Color32 = Color32::from_rgb(214, 219, 226);
+const BORDER_SOFT: Color32 = Color32::from_rgb(224, 228, 234);
+
+const TEXT_PRIMARY: Color32 = Color32::from_rgb(28, 31, 38);
+const TEXT_SECONDARY: Color32 = Color32::from_rgb(82, 89, 99);
+const TEXT_MUTED: Color32 = Color32::from_rgb(132, 140, 150);
+const TEXT_INVERSE: Color32 = Color32::from_rgb(252, 250, 248);
+
+const ACCENT: Color32 = Color32::from_rgb(122, 63, 168);
+const ACCENT_SOFT: Color32 = Color32::from_rgb(237, 224, 246);
+const ACCENT_TEXT: Color32 = Color32::from_rgb(88, 42, 132);
+
+const SUCCESS: Color32 = Color32::from_rgb(38, 127, 82);
+const SUCCESS_SOFT: Color32 = Color32::from_rgb(216, 238, 228);
+const ERROR: Color32 = Color32::from_rgb(186, 62, 62);
+const ERROR_SOFT: Color32 = Color32::from_rgb(250, 228, 228);
+const WARNING: Color32 = Color32::from_rgb(168, 116, 37);
+
+// Type scale (8px grid aligned, 1.25 ratio between steps)
+
+const TS_XS: f32 = 11.0;
+const TS_SM: f32 = 12.0;
+const TS_BODY: f32 = 13.5;
+const TS_MD: f32 = 15.0;
+const TS_LG: f32 = 18.0;
+const TS_XL: f32 = 22.0;
+const TS_2XL: f32 = 28.0;
+
+// Spacing scale (4px grid) — f32 for layout, cast to i8 for Margin
+
+const SP_1: f32 = 4.0;
+const SP_2: f32 = 8.0;
+const SP_3: f32 = 12.0;
+const SP_4: f32 = 16.0;
+const SP_6: f32 = 24.0;
+
+// Layout constants
+
+const SIDEBAR_WIDTH: f32 = 208.0;
+const CORNER_SM: f32 = 6.0;
+const CORNER_MD: f32 = 10.0;
+const CORNER_LG: f32 = 14.0;
+const CORNER_PILL: f32 = 20.0;
+
 const POSTER_W: f32 = 132.0;
 const POSTER_H: f32 = 198.0;
 const GAME_CARD_W: f32 = 190.0;
 const GAME_CARD_H: f32 = 332.0;
+
+/// Cast f32 spacing to i8 for egui::Margin.
+const fn m(v: f32) -> i8 {
+    v as i8
+}
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -312,6 +369,200 @@ fn manual_playlist_app_ids_csv(pf: &PlaylistFile) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Reusable UI helpers (design-token based)
+// ---------------------------------------------------------------------------
+
+fn view_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
+    ui.vertical(|ui| {
+        ui.label(
+            RichText::new(title)
+                .size(TS_2XL)
+                .strong()
+                .color(TEXT_PRIMARY),
+        );
+        ui.add_space(SP_1);
+        ui.label(RichText::new(subtitle).size(TS_BODY).color(TEXT_SECONDARY));
+    });
+    ui.add_space(SP_3);
+}
+
+fn view_header_with_actions(
+    ui: &mut egui::Ui,
+    title: &str,
+    subtitle: &str,
+    actions: impl FnOnce(&mut egui::Ui),
+) {
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.label(
+                RichText::new(title)
+                    .size(TS_2XL)
+                    .strong()
+                    .color(TEXT_PRIMARY),
+            );
+            ui.add_space(SP_1);
+            ui.label(RichText::new(subtitle).size(TS_BODY).color(TEXT_SECONDARY));
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            actions(ui);
+        });
+    });
+    ui.add_space(SP_3);
+}
+
+fn section_card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::NONE
+        .fill(SURFACE_RAISED)
+        .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+        .inner_margin(egui::Margin::same(m(SP_4)))
+        .corner_radius(CORNER_MD)
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(title)
+                    .size(TS_MD)
+                    .strong()
+                    .color(TEXT_PRIMARY),
+            );
+            ui.add_space(SP_2);
+            body(ui);
+        });
+    ui.add_space(SP_3);
+}
+
+fn error_banner(ui: &mut egui::Ui, msg: &str) {
+    egui::Frame::NONE
+        .fill(ERROR_SOFT)
+        .stroke(egui::Stroke::new(1.0, ERROR))
+        .inner_margin(egui::Margin::symmetric(m(SP_3), m(SP_2)))
+        .corner_radius(CORNER_SM)
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(format!("\u{26A0} {msg}"))
+                    .size(TS_BODY)
+                    .color(ERROR),
+            );
+        });
+}
+
+fn success_banner(ui: &mut egui::Ui, msg: &str) {
+    egui::Frame::NONE
+        .fill(SUCCESS_SOFT)
+        .stroke(egui::Stroke::new(1.0, SUCCESS))
+        .inner_margin(egui::Margin::symmetric(m(SP_3), m(SP_2)))
+        .corner_radius(CORNER_SM)
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(format!("\u{2713} {msg}"))
+                    .size(TS_BODY)
+                    .color(SUCCESS),
+            );
+        });
+}
+
+fn metric_pill(ui: &mut egui::Ui, label: &str, value: String) {
+    egui::Frame::NONE
+        .fill(SURFACE_SUNKEN)
+        .inner_margin(egui::Margin::symmetric(m(SP_3), m(SP_1)))
+        .corner_radius(CORNER_PILL)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(label).size(TS_XS).color(TEXT_MUTED));
+                ui.label(
+                    RichText::new(value)
+                        .size(TS_SM)
+                        .strong()
+                        .color(TEXT_PRIMARY),
+                );
+            });
+        });
+}
+
+fn stat_inline(ui: &mut egui::Ui, label: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).size(TS_SM).color(TEXT_MUTED));
+        ui.label(RichText::new(value).size(TS_BODY).color(TEXT_PRIMARY));
+    });
+}
+
+fn filter_toggle(ui: &mut egui::Ui, state: &mut bool, label: &str) {
+    let btn = egui::Button::new(RichText::new(label).size(TS_SM).color(if *state {
+        TEXT_INVERSE
+    } else {
+        TEXT_SECONDARY
+    }))
+    .fill(if *state { ACCENT } else { SURFACE })
+    .stroke(if *state {
+        egui::Stroke::NONE
+    } else {
+        egui::Stroke::new(1.0, BORDER_SOFT)
+    })
+    .corner_radius(CORNER_PILL);
+    if ui.add(btn).clicked() {
+        *state = !*state;
+    }
+}
+
+fn empty_state(ui: &mut egui::Ui, icon: &str, title: &str, subtitle: &str) {
+    ui.add_space(SP_6);
+    ui.vertical_centered(|ui| {
+        ui.label(RichText::new(icon).size(48.0).color(TEXT_MUTED));
+        ui.add_space(SP_2);
+        ui.label(
+            RichText::new(title)
+                .size(TS_LG)
+                .strong()
+                .color(TEXT_PRIMARY),
+        );
+        ui.add_space(SP_1);
+        ui.label(RichText::new(subtitle).size(TS_BODY).color(TEXT_SECONDARY));
+    });
+    ui.add_space(SP_6);
+}
+
+fn game_image(ui: &mut egui::Ui, app_id: u32, name: &str) {
+    ui.add(
+        egui::Image::from_uri(steam_poster_uri(app_id))
+            .fit_to_exact_size(egui::vec2(POSTER_W, POSTER_H))
+            .corner_radius(CORNER_SM)
+            .bg_fill(SURFACE_SUNKEN)
+            .show_loading_spinner(true)
+            .alt_text(format!("{name} cover")),
+    );
+}
+
+fn app_id_tag(ui: &mut egui::Ui, app_id: u32) {
+    egui::Frame::NONE
+        .fill(SURFACE_SUNKEN)
+        .inner_margin(egui::Margin::symmetric(m(SP_2), m(SP_1)))
+        .corner_radius(CORNER_SM)
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(app_id.to_string())
+                    .size(TS_XS)
+                    .color(TEXT_MUTED)
+                    .monospace(),
+            );
+        });
+}
+
+fn status_badge(ui: &mut egui::Ui, label: &str, fill: Color32, text: Color32) {
+    egui::Frame::NONE
+        .fill(fill)
+        .inner_margin(egui::Margin::symmetric(m(SP_2), m(SP_1)))
+        .corner_radius(CORNER_PILL)
+        .show(ui, |ui| {
+            ui.label(RichText::new(label).size(TS_XS).strong().color(text));
+        });
+}
+
+fn form_field(ui: &mut egui::Ui, label: &str, field: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).size(TS_BODY).color(TEXT_SECONDARY));
+        field(ui);
+    });
+}
+
 impl VapourflyApp {
     fn new(fixtures_path: Option<PathBuf>) -> Self {
         // Load configuration
@@ -333,28 +584,19 @@ impl VapourflyApp {
 
         let cc_edit = config
             .as_ref()
-            .map(|c| c.cc.clone())
-            .unwrap_or_else(|| "US".into());
+            .map_or_else(|| "US".into(), |c| c.cc.clone());
 
         let lang_edit = config
             .as_ref()
-            .map(|c| c.lang.clone())
-            .unwrap_or_else(|| "english".into());
+            .map_or_else(|| "english".into(), |c| c.lang.clone());
 
         let backup_retention_edit = config
             .as_ref()
-            .map(|c| c.backup_retention_count.to_string())
-            .unwrap_or_else(|| "5".into());
+            .map_or_else(|| "5".into(), |c| c.backup_retention_count.to_string());
 
-        let has_igdb = config
-            .as_ref()
-            .map(|c| c.has_igdb_credentials)
-            .unwrap_or(false);
+        let has_igdb = config.as_ref().is_some_and(|c| c.has_igdb_credentials);
 
-        let has_rawg = config
-            .as_ref()
-            .map(|c| c.has_rawg_credentials)
-            .unwrap_or(false);
+        let has_rawg = config.as_ref().is_some_and(|c| c.has_rawg_credentials);
 
         // Load source cache statuses
         let cache_root = vapourfly_core::config::default_cache_dir();
@@ -527,11 +769,11 @@ impl VapourflyApp {
                     allow_steam_running,
                 )
                 .map_err(|e| format!("Safety check failed: {e}"))
-                .and_then(|_| {
+                .and_then(|()| {
                     vapourfly_core::steam::backup::execute_write_plan(&plan, 5)
                         .map_err(|e| format!("Write failed: {e}"))
                 })
-                .map(|_| format!("Write complete. Backup: {}", plan.backup_path.display()));
+                .map(|()| format!("Write complete. Backup: {}", plan.backup_path.display()));
 
                 WRITE_RESULT.lock().unwrap().replace(result);
             });
@@ -656,7 +898,7 @@ impl VapourflyApp {
                 Some(s) => vec![s],
                 None => vapourfly_api::enrichment::ALL_SOURCES
                     .iter()
-                    .map(|s| s.to_string())
+                    .map(|s| (*s).to_string())
                     .collect(),
             };
 
@@ -992,7 +1234,7 @@ fn generate_dry_run_plan(
                 .filter(|d| d.is_junk)
                 .map(|d| d.app_id)
                 .collect();
-            junk_app_ids.sort();
+            junk_app_ids.sort_unstable();
             junk_app_ids.dedup();
             if junk_app_ids.is_empty() {
                 return Err("No junk candidates found.".into());
@@ -1009,7 +1251,7 @@ fn generate_dry_run_plan(
                 .filter(|d| d.is_junk)
                 .map(|d| d.app_id)
                 .collect();
-            junk_app_ids.sort();
+            junk_app_ids.sort_unstable();
             junk_app_ids.dedup();
             if junk_app_ids.is_empty() {
                 return Err("No junk candidates found.".into());
@@ -1071,7 +1313,7 @@ fn execute_junk_apply(
         .filter(|d| d.is_junk)
         .map(|d| d.app_id)
         .collect();
-    junk_app_ids.sort();
+    junk_app_ids.sort_unstable();
     junk_app_ids.dedup();
 
     if junk_app_ids.is_empty() {
@@ -1116,7 +1358,7 @@ fn execute_junk_hide(
         .filter(|d| d.is_junk)
         .map(|d| d.app_id)
         .collect();
-    junk_app_ids.sort();
+    junk_app_ids.sort_unstable();
     junk_app_ids.dedup();
 
     if junk_app_ids.is_empty() {
@@ -1252,92 +1494,174 @@ impl eframe::App for VapourflyApp {
         // -- Left panel: navigation -----------------------------------------
         egui::SidePanel::left("nav_panel")
             .resizable(false)
-            .default_width(180.0)
+            .default_width(SIDEBAR_WIDTH)
+            .frame(
+                egui::Frame::NONE
+                    .fill(SURFACE_RAISED)
+                    .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                    .inner_margin(egui::Margin::same(m(SP_3))),
+            )
             .show(ctx, |ui| {
-                ui.add_space(4.0);
-                ui.label(RichText::new("Vapourfly").size(22.0).strong());
+                // Brand header
+                ui.add_space(SP_2);
                 ui.label(
-                    RichText::new(format!(
-                        "Steam library control, v{}",
-                        env!("CARGO_PKG_VERSION")
-                    ))
-                    .color(TEXT_SECONDARY)
-                    .size(12.0),
+                    RichText::new("Vapourfly")
+                        .size(TS_XL)
+                        .strong()
+                        .color(TEXT_PRIMARY),
                 );
-                ui.separator();
+                ui.add_space(SP_1);
+                ui.label(
+                    RichText::new("Steam library curator")
+                        .size(TS_SM)
+                        .color(TEXT_MUTED),
+                );
+                ui.add_space(SP_4);
 
+                // Navigation items
                 for &view in View::ALL {
                     let selected = self.current_view == view;
-                    if ui
-                        .selectable_label(
-                            selected,
-                            RichText::new(view.nav_label()).color(if selected {
-                                TEXT_PRIMARY
-                            } else {
-                                TEXT_SECONDARY
-                            }),
-                        )
-                        .clicked()
-                    {
+                    let icon = view.icon();
+                    let label = view.nav_label();
+                    let text_color = if selected {
+                        TEXT_INVERSE
+                    } else {
+                        TEXT_SECONDARY
+                    };
+                    let fill = if selected {
+                        ACCENT
+                    } else {
+                        Color32::TRANSPARENT
+                    };
+
+                    let btn = egui::Button::new(
+                        RichText::new(format!("{icon}  {label}"))
+                            .size(TS_BODY)
+                            .color(text_color),
+                    )
+                    .fill(fill)
+                    .stroke(egui::Stroke::NONE)
+                    .corner_radius(CORNER_SM)
+                    .min_size(egui::vec2(
+                        SIDEBAR_WIDTH - f32::from(m(SP_3)) * 2.0 - SP_3,
+                        0.0,
+                    ));
+                    if ui.add(btn).clicked() {
                         self.current_view = view;
                     }
+                    ui.add_space(SP_2);
                 }
 
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.separator();
+                    ui.label(
+                        RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                            .size(TS_XS)
+                            .color(TEXT_MUTED),
+                    );
+                    ui.add_space(SP_2);
                     if self.loading {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("Scanning...");
+                            ui.label(RichText::new("Scanning").size(TS_SM).color(TEXT_MUTED));
                         });
-                    } else if ui.button("Refresh").clicked() {
+                    } else if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Refresh").size(TS_SM).color(TEXT_SECONDARY),
+                            )
+                            .fill(SURFACE)
+                            .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                            .corner_radius(CORNER_SM),
+                        )
+                        .clicked()
+                    {
                         self.start_scan(ctx);
                     }
                     if let Some(scan) = &self.scan_result {
-                        ui.label(format!("{} games", scan.games.len()));
+                        ui.label(
+                            RichText::new(format!("{} games", scan.games.len()))
+                                .size(TS_XS)
+                                .color(TEXT_MUTED),
+                        );
                     }
                 });
             });
 
         // -- Central panel: current view ------------------------------------
-        egui::CentralPanel::default().show(ctx, |ui| {
-            // Error and success banners (clone to avoid borrow issues)
-            let mut dismiss_error = false;
-            let mut dismiss_success = false;
-            if let Some(err) = self.error.clone() {
-                let resp = ui.horizontal(|ui| {
-                    ui.colored_label(ERROR, format!("Error: {err}"));
-                    ui.button("Dismiss").clicked()
-                });
-                dismiss_error = resp.inner;
-                ui.separator();
-            }
-            if let Some(msg) = self.success_msg.clone() {
-                let resp = ui.horizontal(|ui| {
-                    ui.colored_label(SUCCESS, msg);
-                    ui.button("Dismiss").clicked()
-                });
-                dismiss_success = resp.inner;
-                ui.separator();
-            }
-            if dismiss_error {
-                self.error = None;
-            }
-            if dismiss_success {
-                self.success_msg = None;
-            }
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::NONE
+                    .fill(SURFACE)
+                    .inner_margin(egui::Margin::same(m(SP_4))),
+            )
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        // Error and success banners (clone to avoid borrow issues)
+                        let mut dismiss_error = false;
+                        let mut dismiss_success = false;
+                        if let Some(err) = self.error.clone() {
+                            ui.horizontal(|ui| {
+                                error_banner(ui, &format!("Error: {err}"));
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new("Dismiss")
+                                                .size(TS_SM)
+                                                .color(TEXT_SECONDARY),
+                                        )
+                                        .fill(SURFACE)
+                                        .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                                        .corner_radius(CORNER_SM),
+                                    )
+                                    .clicked()
+                                {
+                                    dismiss_error = true;
+                                }
+                            });
+                            ui.add_space(SP_2);
+                        }
+                        if let Some(msg) = self.success_msg.clone() {
+                            ui.horizontal(|ui| {
+                                success_banner(ui, &msg);
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new("Dismiss")
+                                                .size(TS_SM)
+                                                .color(TEXT_SECONDARY),
+                                        )
+                                        .fill(SURFACE)
+                                        .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                                        .corner_radius(CORNER_SM),
+                                    )
+                                    .clicked()
+                                {
+                                    dismiss_success = true;
+                                }
+                            });
+                            ui.add_space(SP_2);
+                        }
+                        if dismiss_error {
+                            self.error = None;
+                        }
+                        if dismiss_success {
+                            self.success_msg = None;
+                        }
 
-            match self.current_view {
-                View::Library => self.render_library(ui, ctx),
-                View::Junk => self.render_junk(ui),
-                View::Recommend => self.render_recommend(ui),
-                View::Playlists => self.render_playlists(ui),
-                View::Collections => self.render_collections(ui),
-                View::DataSources => self.render_data_sources(ui, ctx),
-                View::Backups => self.render_backups(ui),
-                View::Settings => self.render_settings(ui),
-            }
-        });
+                        match self.current_view {
+                            View::Library => self.render_library(ui, ctx),
+                            View::Junk => self.render_junk(ui),
+                            View::Recommend => self.render_recommend(ui),
+                            View::Playlists => self.render_playlists(ui),
+                            View::Collections => self.render_collections(ui),
+                            View::DataSources => self.render_data_sources(ui, ctx),
+                            View::Backups => self.render_backups(ui),
+                            View::Settings => self.render_settings(ui),
+                        }
+                    });
+            });
 
         // Kick off initial scan on first frame.
         if self.scan_result.is_none() && !self.loading && self.error.is_none() {
@@ -1366,66 +1690,139 @@ impl VapourflyApp {
             .collapsible(false)
             .resizable(true)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .frame(
+                egui::Frame::NONE
+                    .fill(SURFACE_RAISED)
+                    .stroke(egui::Stroke::new(1.0, BORDER))
+                    .corner_radius(CORNER_LG)
+                    .inner_margin(egui::Margin::same(m(SP_4))),
+            )
             .show(ctx, |ui| {
+                ui.label(
+                    RichText::new("Confirm Action")
+                        .size(TS_XL)
+                        .strong()
+                        .color(TEXT_PRIMARY),
+                );
+                ui.add_space(SP_3);
+
                 // -- Dry-run diff (junk apply / hide) --------------------------
                 if let Some(plan) = &self.dry_run_plan {
                     let diff = &plan.diff;
 
-                    ui.heading("Dry-Run Diff");
-                    ui.label(format!(
-                        "Target: {}",
-                        plan.target_path.display()
-                    ));
-                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("Dry-Run Diff")
+                            .size(TS_MD)
+                            .strong()
+                            .color(TEXT_PRIMARY),
+                    );
+                    ui.label(
+                        RichText::new(format!("Target: {}", plan.target_path.display()))
+                            .size(TS_BODY)
+                            .color(TEXT_SECONDARY),
+                    );
+                    ui.add_space(SP_1);
 
                     egui::Grid::new("dry_run_diff_grid")
                         .num_columns(2)
-                        .spacing([12.0, 4.0])
+                        .spacing([SP_3, SP_1])
                         .show(ui, |ui| {
                             if !diff.collections_changed.is_empty() {
-                                ui.label("Collections changed:");
+                                ui.label(
+                                    RichText::new("Collections changed:")
+                                        .size(TS_SM)
+                                        .color(TEXT_MUTED),
+                                );
                                 let names: Vec<&str> = diff
                                     .collections_changed
                                     .iter()
                                     .map(|c| c.id.as_str())
                                     .collect();
-                                ui.label(names.join(", "));
+                                ui.label(
+                                    RichText::new(names.join(", "))
+                                        .size(TS_BODY)
+                                        .color(TEXT_PRIMARY),
+                                );
                                 ui.end_row();
                             }
 
                             if !diff.app_ids_added.is_empty() {
-                                ui.label("AppIDs added:");
-                                ui.label(format!("{} games", diff.app_ids_added.len()));
+                                ui.label(
+                                    RichText::new("AppIDs added:")
+                                        .size(TS_SM)
+                                        .color(TEXT_MUTED),
+                                );
+                                ui.label(
+                                    RichText::new(format!("{} games", diff.app_ids_added.len()))
+                                        .size(TS_BODY)
+                                        .color(TEXT_PRIMARY),
+                                );
                                 ui.end_row();
                             }
 
                             if !diff.app_ids_removed.is_empty() {
-                                ui.label("AppIDs removed:");
-                                ui.label(format!("{} games", diff.app_ids_removed.len()));
+                                ui.label(
+                                    RichText::new("AppIDs removed:")
+                                        .size(TS_SM)
+                                        .color(TEXT_MUTED),
+                                );
+                                ui.label(
+                                    RichText::new(format!("{} games", diff.app_ids_removed.len()))
+                                        .size(TS_BODY)
+                                        .color(TEXT_PRIMARY),
+                                );
                                 ui.end_row();
                             }
 
                             if !diff.hidden_app_ids_added.is_empty() {
-                                ui.label("Hidden AppIDs added:");
-                                ui.label(format!("{} games", diff.hidden_app_ids_added.len()));
+                                ui.label(
+                                    RichText::new("Hidden AppIDs added:")
+                                        .size(TS_SM)
+                                        .color(TEXT_MUTED),
+                                );
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} games",
+                                        diff.hidden_app_ids_added.len()
+                                    ))
+                                    .size(TS_BODY)
+                                    .color(TEXT_PRIMARY),
+                                );
                                 ui.end_row();
                             }
 
-                            ui.label("Unchanged entries:");
-                            ui.label(diff.unchanged_count.to_string());
+                            ui.label(
+                                RichText::new("Unchanged entries:")
+                                    .size(TS_SM)
+                                    .color(TEXT_MUTED),
+                            );
+                            ui.label(
+                                RichText::new(diff.unchanged_count.to_string())
+                                    .size(TS_BODY)
+                                    .color(TEXT_PRIMARY),
+                            );
                             ui.end_row();
 
                             if diff.skipped_deleted_count > 0 {
-                                ui.label("Skipped deleted:");
-                                ui.label(diff.skipped_deleted_count.to_string());
+                                ui.label(
+                                    RichText::new("Skipped deleted:")
+                                        .size(TS_SM)
+                                        .color(TEXT_MUTED),
+                                );
+                                ui.label(
+                                    RichText::new(diff.skipped_deleted_count.to_string())
+                                        .size(TS_BODY)
+                                        .color(TEXT_PRIMARY),
+                                );
                                 ui.end_row();
                             }
                         });
 
-                    ui.add_space(4.0);
-                    ui.colored_label(
-                        egui::Color32::from_rgb(200, 150, 50),
-                        "A safety backup will be created before writing.",
+                    ui.add_space(SP_2);
+                    ui.label(
+                        RichText::new("\u{26A0} A safety backup will be created before writing.")
+                            .size(TS_BODY)
+                            .color(WARNING),
                     );
                 }
                 // -- Backup restore (no dry-run diff) --------------------------
@@ -1434,26 +1831,58 @@ impl VapourflyApp {
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default();
-                    ui.label(format!("Restore backup '{filename}'?"));
-                    ui.colored_label(
-                        egui::Color32::from_rgb(200, 150, 50),
-                        "This will overwrite your current cloud storage. A safety backup will be created first.",
+                    ui.label(
+                        RichText::new(format!("Restore backup '{filename}'?"))
+                            .size(TS_BODY)
+                            .color(TEXT_PRIMARY),
+                    );
+                    ui.add_space(SP_2);
+                    ui.label(
+                        RichText::new(
+                            "\u{26A0} This will overwrite your current cloud storage. A safety backup will be created first.",
+                        )
+                        .size(TS_BODY)
+                        .color(WARNING),
                     );
                 }
 
                 if self.write_loading {
-                    ui.add_space(8.0);
+                    ui.add_space(SP_2);
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label("Writing...");
+                        ui.label(RichText::new("Writing").size(TS_BODY).color(TEXT_SECONDARY));
                     });
                 } else {
-                    ui.add_space(12.0);
+                    ui.add_space(SP_3);
                     ui.horizontal(|ui| {
-                        if ui.button("Confirm").clicked() {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("Confirm")
+                                        .size(TS_BODY)
+                                        .color(TEXT_INVERSE),
+                                )
+                                .fill(ACCENT)
+                                .stroke(egui::Stroke::NONE)
+                                .corner_radius(CORNER_SM),
+                            )
+                            .clicked()
+                        {
                             self.execute_pending_action();
                         }
-                        if ui.button("Cancel").clicked() {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("Cancel")
+                                        .size(TS_BODY)
+                                        .color(TEXT_PRIMARY),
+                                )
+                                .fill(SURFACE)
+                                .stroke(egui::Stroke::new(1.0, BORDER))
+                                .corner_radius(CORNER_SM),
+                            )
+                            .clicked()
+                        {
                             self.show_confirm_dialog = false;
                             self.pending_action = None;
                             self.dry_run_plan = None;
@@ -1474,96 +1903,79 @@ impl VapourflyApp {
     // -- Library view -------------------------------------------------------
 
     fn render_library(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let total_games = self
-            .scan_result
-            .as_ref()
-            .map(|scan| scan.games.len())
-            .unwrap_or(0);
+        let total_games = self.scan_result.as_ref().map_or(0, |scan| scan.games.len());
         let games = self.filtered_games();
         let matching_installed = games.iter().filter(|game| game.installed).count();
         let matching_hidden = games.iter().filter(|game| game.is_hidden).count();
         let matching_junk = games.iter().filter(|game| game.is_junk).count();
 
-        egui::Frame::NONE
-            .fill(SURFACE_RAISED)
-            .inner_margin(egui::Margin::symmetric(18, 16))
-            .corner_radius(12)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new("Library")
-                                .size(28.0)
-                                .strong()
-                                .color(TEXT_PRIMARY),
-                        );
-                        ui.label(
-                            RichText::new(
-                                "Browse your Steam games visually, then turn that library into clean playlists and recommendations.",
-                            )
-                            .size(13.0)
-                            .color(TEXT_SECONDARY),
-                        );
-                    });
+        view_header_with_actions(
+            ui,
+            "Library",
+            "Browse your Steam games visually, then turn that library into clean playlists and recommendations.",
+            |ui| {
+                if ui
+                    .add_enabled(
+                        !self.loading,
+                        egui::Button::new(
+                            RichText::new("Refresh library")
+                                .size(TS_SM)
+                                .color(TEXT_INVERSE),
+                        )
+                        .fill(ACCENT)
+                        .stroke(egui::Stroke::NONE)
+                        .corner_radius(CORNER_SM),
+                    )
+                    .clicked()
+                {
+                    self.start_scan(ctx);
+                }
+                if self.loading {
+                    ui.spinner();
+                    ui.label(RichText::new("Scanning").size(TS_SM).color(TEXT_SECONDARY));
+                }
+            },
+        );
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add_enabled(!self.loading, egui::Button::new("Refresh library"))
-                            .clicked()
-                        {
-                            self.start_scan(ctx);
-                        }
-                        if self.loading {
-                            ui.spinner();
-                            ui.label(RichText::new("Scanning").color(TEXT_SECONDARY));
-                        }
-                    });
-                });
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+            metric_pill(ui, "Matching", games.len().to_string());
+            metric_pill(ui, "Library", total_games.to_string());
+            metric_pill(ui, "Installed", matching_installed.to_string());
+            metric_pill(ui, "Hidden", matching_hidden.to_string());
+            metric_pill(ui, "Junk", matching_junk.to_string());
+        });
 
-                ui.add_space(14.0);
-                ui.horizontal_wrapped(|ui| {
-                    metric_pill(ui, "Matching", games.len().to_string());
-                    metric_pill(ui, "Library", total_games.to_string());
-                    metric_pill(ui, "Installed", matching_installed.to_string());
-                    metric_pill(ui, "Hidden", matching_hidden.to_string());
-                    metric_pill(ui, "Junk", matching_junk.to_string());
-                });
+        ui.add_space(SP_3);
+
+        section_card(ui, "Search & Filter", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                ui.label(RichText::new("Search").size(TS_SM).color(TEXT_SECONDARY));
+                ui.add_sized(
+                    [320.0, 30.0],
+                    egui::TextEdit::singleline(&mut self.search_query).hint_text("Title or AppID"),
+                );
+                ui.separator();
+                filter_toggle(ui, &mut self.filter_installed, "Installed");
+                filter_toggle(ui, &mut self.filter_unplayed, "Unplayed");
+                filter_toggle(ui, &mut self.filter_hidden, "Hidden");
+                filter_toggle(ui, &mut self.filter_junk, "Junk");
             });
-
-        ui.add_space(12.0);
-
-        egui::Frame::NONE
-            .fill(SURFACE_RAISED)
-            .inner_margin(egui::Margin::symmetric(14, 12))
-            .corner_radius(10)
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("Search").color(TEXT_SECONDARY));
-                    ui.add_sized(
-                        [320.0, 30.0],
-                        egui::TextEdit::singleline(&mut self.search_query)
-                            .hint_text("Title or AppID"),
-                    );
-                    ui.separator();
-                    filter_toggle(ui, &mut self.filter_installed, "Installed");
-                    filter_toggle(ui, &mut self.filter_unplayed, "Unplayed");
-                    filter_toggle(ui, &mut self.filter_hidden, "Hidden");
-                    filter_toggle(ui, &mut self.filter_junk, "Junk");
-                });
-            });
-
-        ui.add_space(14.0);
+        });
 
         if self.scan_result.is_none() {
             if self.loading {
-                library_empty_state(
+                empty_state(
                     ui,
+                    "\u{23F3}",
                     "Scanning your Steam library",
                     "Covers and metadata will appear here as soon as the scan finishes.",
                 );
             } else {
-                library_empty_state(
+                empty_state(
                     ui,
+                    "\u{1F3AE}",
                     "No library loaded",
                     "Refresh the library or set your Steam directory in Settings.",
                 );
@@ -1572,27 +1984,24 @@ impl VapourflyApp {
         }
 
         if games.is_empty() {
-            library_empty_state(
+            empty_state(
                 ui,
+                "\u{1F50D}",
                 "No games match these filters",
                 "Clear search or turn off a filter to bring games back.",
             );
             return;
         }
 
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.with_layout(
-                    egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),
-                    |ui| {
-                        ui.spacing_mut().item_spacing = egui::vec2(14.0, 14.0);
-                        for game in &games {
-                            self.render_game_card(ui, game);
-                        }
-                    },
-                );
-            });
+        ui.with_layout(
+            egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),
+            |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_3);
+                for game in &games {
+                    self.render_game_card(ui, game);
+                }
+            },
+        );
     }
 
     fn render_game_card(&mut self, ui: &mut egui::Ui, game: &Game) {
@@ -1605,12 +2014,12 @@ impl VapourflyApp {
 
                 egui::Frame::NONE
                     .fill(SURFACE_RAISED)
-                    .stroke(egui::Stroke::new(1.0, SURFACE_MUTED))
-                    .inner_margin(egui::Margin::same(12))
-                    .corner_radius(10)
+                    .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                    .inner_margin(egui::Margin::same(m(SP_3)))
+                    .corner_radius(CORNER_MD)
                     .show(ui, |ui| {
-                        ui.set_width(GAME_CARD_W - 24.0);
-                        ui.set_height(GAME_CARD_H - 24.0);
+                        ui.set_width(GAME_CARD_W - f32::from(m(SP_3)) * 2.0);
+                        ui.set_height(GAME_CARD_H - f32::from(m(SP_3)) * 2.0);
 
                         ui.horizontal(|ui| {
                             app_id_tag(ui, game.app_id);
@@ -1623,24 +2032,17 @@ impl VapourflyApp {
                             );
                         });
 
-                        ui.add_space(8.0);
+                        ui.add_space(SP_2);
                         ui.vertical_centered(|ui| {
-                            ui.add(
-                                egui::Image::from_uri(steam_poster_uri(game.app_id))
-                                    .fit_to_exact_size(egui::vec2(POSTER_W, POSTER_H))
-                                    .corner_radius(8)
-                                    .bg_fill(SURFACE_MUTED)
-                                    .show_loading_spinner(true)
-                                    .alt_text(format!("{} cover", game.name)),
-                            );
+                            game_image(ui, game.app_id, &game.name);
                         });
 
-                        ui.add_space(10.0);
+                        ui.add_space(SP_2);
                         ui.add_sized(
-                            [GAME_CARD_W - 24.0, 36.0],
+                            [GAME_CARD_W - f32::from(m(SP_3)) * 2.0, 36.0],
                             egui::Label::new(
                                 RichText::new(&game.name)
-                                    .size(15.0)
+                                    .size(TS_MD)
                                     .strong()
                                     .color(TEXT_PRIMARY),
                             )
@@ -1648,10 +2050,10 @@ impl VapourflyApp {
                         );
 
                         ui.add_sized(
-                            [GAME_CARD_W - 24.0, 30.0],
+                            [GAME_CARD_W - f32::from(m(SP_3)) * 2.0, 30.0],
                             egui::Label::new(
                                 RichText::new(game_card_detail(game))
-                                    .size(12.0)
+                                    .size(TS_SM)
                                     .color(TEXT_SECONDARY),
                             )
                             .wrap(),
@@ -1660,7 +2062,7 @@ impl VapourflyApp {
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new(format_playtime(game.playtime_minutes.unwrap_or(0)))
-                                    .size(12.0)
+                                    .size(TS_SM)
                                     .color(TEXT_MUTED),
                             );
                             ui.with_layout(
@@ -1670,10 +2072,12 @@ impl VapourflyApp {
                                         .add(
                                             egui::Button::new(
                                                 RichText::new("Recommend")
-                                                    .size(12.0)
-                                                    .color(TEXT_PRIMARY),
+                                                    .size(TS_SM)
+                                                    .color(ACCENT_TEXT),
                                             )
-                                            .fill(ACCENT_SOFT),
+                                            .fill(ACCENT_SOFT)
+                                            .stroke(egui::Stroke::NONE)
+                                            .corner_radius(CORNER_SM),
                                         )
                                         .clicked()
                                     {
@@ -1691,60 +2095,93 @@ impl VapourflyApp {
     // -- Junk view ----------------------------------------------------------
 
     fn render_junk(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Junk Detection");
-        ui.separator();
+        view_header(
+            ui,
+            "Junk Detection",
+            "Identify games you'll never play and file them away for a cleaner library.",
+        );
 
-        // Mode selector
-        ui.horizontal(|ui| {
-            ui.label("Mode:");
-            for mode in &[
-                JunkModeChoice::Default,
-                JunkModeChoice::Strict,
-                JunkModeChoice::Aggressive,
-            ] {
-                if ui
-                    .selectable_label(self.junk_mode == *mode, mode.label())
-                    .clicked()
-                {
-                    self.junk_mode = *mode;
+        section_card(ui, "Detection Mode", |ui| {
+            // Mode selector
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Mode:").size(TS_SM).color(TEXT_SECONDARY));
+                for mode in &[
+                    JunkModeChoice::Default,
+                    JunkModeChoice::Strict,
+                    JunkModeChoice::Aggressive,
+                ] {
+                    let selected = self.junk_mode == *mode;
+                    let btn = egui::Button::new(RichText::new(mode.label()).size(TS_SM).color(
+                        if selected {
+                            TEXT_INVERSE
+                        } else {
+                            TEXT_SECONDARY
+                        },
+                    ))
+                    .fill(if selected { ACCENT } else { SURFACE })
+                    .stroke(if selected {
+                        egui::Stroke::NONE
+                    } else {
+                        egui::Stroke::new(1.0, BORDER_SOFT)
+                    })
+                    .corner_radius(CORNER_SM);
+                    if ui.add(btn).clicked() {
+                        self.junk_mode = *mode;
+                    }
                 }
-            }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Run Junk Detection")
+                                    .size(TS_SM)
+                                    .color(TEXT_INVERSE),
+                            )
+                            .fill(ACCENT)
+                            .stroke(egui::Stroke::NONE)
+                            .corner_radius(CORNER_SM),
+                        )
+                        .clicked()
+                    {
+                        let mode = match self.junk_mode {
+                            JunkModeChoice::Default => JunkMode::Default,
+                            JunkModeChoice::Strict => JunkMode::Strict,
+                            JunkModeChoice::Aggressive => JunkMode::Aggressive,
+                        };
+                        if let Some(games) = self.prepared_games(mode.clone()) {
+                            self.junk_results = evaluate_junk(
+                                &games,
+                                &JunkRules::default(),
+                                &mode,
+                                &ManualOverrides::default(),
+                            );
+                            self.junk_selected.clear();
+                        }
+                    }
+                });
+            });
         });
-        ui.separator();
-
-        // Run junk detection
-        if ui.button("Run Junk Detection").clicked() {
-            let mode = match self.junk_mode {
-                JunkModeChoice::Default => JunkMode::Default,
-                JunkModeChoice::Strict => JunkMode::Strict,
-                JunkModeChoice::Aggressive => JunkMode::Aggressive,
-            };
-            if let Some(games) = self.prepared_games(mode.clone()) {
-                self.junk_results = evaluate_junk(
-                    &games,
-                    &JunkRules::default(),
-                    &mode,
-                    &ManualOverrides::default(),
-                );
-                self.junk_selected.clear();
-            }
-        }
 
         if self.junk_results.is_empty() {
-            ui.label("No junk detection results yet. Click 'Run Junk Detection' to scan.");
+            empty_state(
+                ui,
+                "\u{1F9F9}",
+                "No junk detection results yet",
+                "Click 'Run Junk Detection' to scan your library for junk candidates.",
+            );
             return;
         }
 
         let junk_count = self.junk_results.iter().filter(|d| d.is_junk).count();
-        ui.label(format!(
-            "Found {} junk candidates out of {} games evaluated",
-            junk_count,
-            self.junk_results.len()
-        ));
-        ui.separator();
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+            metric_pill(ui, "Junk", junk_count.to_string());
+            metric_pill(ui, "Evaluated", self.junk_results.len().to_string());
+        });
+        ui.add_space(SP_3);
 
         // Results table
-        let text_height = egui::TextStyle::Body.resolve(ui.style()).size;
+        let text_height = TS_BODY;
         egui_extras::TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
@@ -1756,44 +2193,89 @@ impl VapourflyApp {
             .column(egui_extras::Column::remainder().at_least(200.0))
             .header(text_height * 1.4, |mut header| {
                 header.col(|ui| {
-                    ui.strong("ID");
+                    ui.label(
+                        RichText::new("ID")
+                            .size(TS_SM)
+                            .strong()
+                            .color(TEXT_SECONDARY),
+                    );
                 });
                 header.col(|ui| {
-                    ui.strong("Name");
+                    ui.label(
+                        RichText::new("Name")
+                            .size(TS_SM)
+                            .strong()
+                            .color(TEXT_SECONDARY),
+                    );
                 });
                 header.col(|ui| {
-                    ui.strong("Junk?");
+                    ui.label(
+                        RichText::new("Junk?")
+                            .size(TS_SM)
+                            .strong()
+                            .color(TEXT_SECONDARY),
+                    );
                 });
                 header.col(|ui| {
-                    ui.strong("Confidence");
+                    ui.label(
+                        RichText::new("Confidence")
+                            .size(TS_SM)
+                            .strong()
+                            .color(TEXT_SECONDARY),
+                    );
                 });
                 header.col(|ui| {
-                    ui.strong("Signals");
+                    ui.label(
+                        RichText::new("Signals")
+                            .size(TS_SM)
+                            .strong()
+                            .color(TEXT_SECONDARY),
+                    );
                 });
             })
             .body(|mut body| {
                 for decision in &self.junk_results {
                     body.row(text_height * 1.2, |mut row| {
                         row.col(|ui| {
-                            ui.label(decision.app_id.to_string());
+                            ui.label(
+                                RichText::new(decision.app_id.to_string())
+                                    .size(TS_BODY)
+                                    .color(TEXT_PRIMARY),
+                            );
                         });
                         row.col(|ui| {
-                            ui.label(&decision.name);
+                            ui.label(
+                                RichText::new(&decision.name)
+                                    .size(TS_BODY)
+                                    .color(TEXT_PRIMARY),
+                            );
                         });
                         row.col(|ui| {
-                            ui.label(if decision.is_junk { "Yes" } else { "No" });
+                            if decision.is_junk {
+                                status_badge(ui, "Yes", ERROR_SOFT, ERROR);
+                            } else {
+                                status_badge(ui, "No", SURFACE_SUNKEN, TEXT_MUTED);
+                            }
                         });
                         row.col(|ui| {
-                            ui.label(format!("{:.0}%", decision.confidence * 100.0));
+                            ui.label(
+                                RichText::new(format!("{:.0}%", decision.confidence * 100.0))
+                                    .size(TS_BODY)
+                                    .color(TEXT_PRIMARY),
+                            );
                         });
                         row.col(|ui| {
                             let signals: Vec<String> =
                                 decision.matched.iter().map(format_junk_signal).collect();
-                            ui.label(if signals.is_empty() {
-                                empty_value_label().to_string()
-                            } else {
-                                signals.join(", ")
-                            });
+                            ui.label(
+                                RichText::new(if signals.is_empty() {
+                                    empty_value_label().to_string()
+                                } else {
+                                    signals.join(", ")
+                                })
+                                .size(TS_BODY)
+                                .color(TEXT_SECONDARY),
+                            );
                         });
                     });
                 }
@@ -1801,42 +2283,67 @@ impl VapourflyApp {
 
         // Write actions
         if junk_count > 0 {
-            ui.separator();
-            ui.strong("Actions");
-            ui.add_space(4.0);
+            ui.add_space(SP_3);
+            section_card(ui, "Actions", |ui| {
+                form_field(ui, "Collection name:", |ui| {
+                    ui.add_sized(
+                        [200.0, 20.0],
+                        egui::TextEdit::singleline(&mut self.junk_collection_name),
+                    );
+                });
+                ui.add_space(SP_2);
 
-            ui.horizontal(|ui| {
-                ui.label("Collection name:");
-                ui.text_edit_singleline(&mut self.junk_collection_name);
-            });
-            ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let busy = self.write_loading || self.dry_run_loading;
+                    let apply_enabled = !busy && !self.junk_collection_name.is_empty();
+                    if ui
+                        .add_enabled(
+                            apply_enabled,
+                            egui::Button::new(
+                                RichText::new("Apply to Collection")
+                                    .size(TS_SM)
+                                    .color(TEXT_INVERSE),
+                            )
+                            .fill(ACCENT)
+                            .stroke(egui::Stroke::NONE)
+                            .corner_radius(CORNER_SM),
+                        )
+                        .clicked()
+                    {
+                        self.start_dry_run(PendingAction::JunkApply);
+                    }
 
-            ui.horizontal(|ui| {
-                let busy = self.write_loading || self.dry_run_loading;
-                let apply_enabled = !busy && !self.junk_collection_name.is_empty();
-                if ui
-                    .add_enabled(apply_enabled, egui::Button::new("Apply to Collection"))
-                    .clicked()
-                {
-                    self.start_dry_run(PendingAction::JunkApply);
-                }
+                    let hide_enabled = !busy;
+                    if ui
+                        .add_enabled(
+                            hide_enabled,
+                            egui::Button::new(
+                                RichText::new("Add to Hidden")
+                                    .size(TS_SM)
+                                    .color(TEXT_PRIMARY),
+                            )
+                            .fill(SURFACE)
+                            .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                            .corner_radius(CORNER_SM),
+                        )
+                        .clicked()
+                    {
+                        self.start_dry_run(PendingAction::JunkHide);
+                    }
 
-                let hide_enabled = !busy;
-                if ui
-                    .add_enabled(hide_enabled, egui::Button::new("Add to Hidden"))
-                    .clicked()
-                {
-                    self.start_dry_run(PendingAction::JunkHide);
-                }
-
-                if self.write_loading {
-                    ui.spinner();
-                    ui.label("Writing...");
-                }
-                if self.dry_run_loading {
-                    ui.spinner();
-                    ui.label("Preparing diff...");
-                }
+                    if self.write_loading {
+                        ui.spinner();
+                        ui.label(RichText::new("Writing").size(TS_SM).color(TEXT_SECONDARY));
+                    }
+                    if self.dry_run_loading {
+                        ui.spinner();
+                        ui.label(
+                            RichText::new("Preparing diff")
+                                .size(TS_SM)
+                                .color(TEXT_SECONDARY),
+                        );
+                    }
+                });
             });
         }
     }
@@ -1844,113 +2351,188 @@ impl VapourflyApp {
     // -- Recommend view -----------------------------------------------------
 
     fn render_recommend(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Recommendations");
-        ui.separator();
+        view_header(
+            ui,
+            "Recommendations",
+            "Get personalized game picks based on your available time and preferences.",
+        );
 
-        // Controls
-        ui.horizontal(|ui| {
-            ui.label("Available minutes:");
-            ui.text_edit_singleline(&mut self.recommend_minutes);
-            ui.separator();
-            ui.label("Count:");
-            ui.text_edit_singleline(&mut self.recommend_count);
-            ui.separator();
-            ui.label("Seed:");
-            ui.text_edit_singleline(&mut self.recommend_seed);
-            ui.separator();
-            ui.checkbox(&mut self.recommend_deck, "Deck mode");
-            ui.checkbox(&mut self.recommend_installed_only, "Installed only");
-        });
-        ui.separator();
-
-        if ui.button("Get Recommendations").clicked() {
-            match self.recommend_request_from_inputs() {
-                Ok(request) => {
-                    if let Some(games) = self.prepared_games(JunkMode::Default) {
-                        self.recommend_results = recommend(&games, &request);
+        section_card(ui, "Controls", |ui| {
+            // Controls
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_1);
+                ui.label(
+                    RichText::new("Available minutes:")
+                        .size(TS_SM)
+                        .color(TEXT_SECONDARY),
+                );
+                ui.add_sized(
+                    [80.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.recommend_minutes),
+                );
+                ui.separator();
+                ui.label(RichText::new("Count:").size(TS_SM).color(TEXT_SECONDARY));
+                ui.add_sized(
+                    [60.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.recommend_count),
+                );
+                ui.separator();
+                ui.label(RichText::new("Seed:").size(TS_SM).color(TEXT_SECONDARY));
+                ui.add_sized(
+                    [80.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.recommend_seed),
+                );
+                ui.separator();
+                ui.checkbox(&mut self.recommend_deck, "Deck mode");
+                ui.checkbox(&mut self.recommend_installed_only, "Installed only");
+            });
+            ui.add_space(SP_2);
+            if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new("Get Recommendations")
+                            .size(TS_SM)
+                            .color(TEXT_INVERSE),
+                    )
+                    .fill(ACCENT)
+                    .stroke(egui::Stroke::NONE)
+                    .corner_radius(CORNER_SM),
+                )
+                .clicked()
+            {
+                match self.recommend_request_from_inputs() {
+                    Ok(request) => {
+                        if let Some(games) = self.prepared_games(JunkMode::Default) {
+                            self.recommend_results = recommend(&games, &request);
+                        }
                     }
+                    Err(e) => self.error = Some(e),
                 }
-                Err(e) => self.error = Some(e),
             }
-        }
+        });
 
         if self.recommend_results.is_empty() {
-            ui.label(
-                "No recommendations yet. Set your available time and click 'Get Recommendations'.",
+            empty_state(
+                ui,
+                "\u{1F3AF}",
+                "No recommendations yet",
+                "Set your available time and click 'Get Recommendations'.",
             );
             return;
         }
 
-        ui.label(format!(
-            "Top {} recommendations:",
-            self.recommend_results.len()
-        ));
-        ui.separator();
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+            metric_pill(ui, "Results", self.recommend_results.len().to_string());
+        });
 
-        if !self.recommend_results.is_empty() {
-            ui.separator();
-            let busy = self.write_loading || self.dry_run_loading;
-            if ui
-                .add_enabled(!busy, egui::Button::new("Save to Steam Collection"))
-                .clicked()
-            {
-                self.start_dry_run(PendingAction::RecommendCollection);
-            }
+        ui.add_space(SP_3);
+
+        let busy = self.write_loading || self.dry_run_loading;
+        if ui
+            .add_enabled(
+                !busy,
+                egui::Button::new(
+                    RichText::new("Save to Steam Collection")
+                        .size(TS_SM)
+                        .color(TEXT_INVERSE),
+                )
+                .fill(ACCENT)
+                .stroke(egui::Stroke::NONE)
+                .corner_radius(CORNER_SM),
+            )
+            .clicked()
+        {
+            self.start_dry_run(PendingAction::RecommendCollection);
         }
+        ui.add_space(SP_2);
 
         // Recommendation cards
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for rec in &self.recommend_results {
-                ui.group(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.strong(&rec.name);
-                        ui.label(format!("(AppID: {})", rec.app_id));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(format!("Score: {:.2}", rec.score));
-                        });
+        for rec in &self.recommend_results {
+            section_card(ui, &rec.name, |ui| {
+                ui.horizontal(|ui| {
+                    app_id_tag(ui, rec.app_id);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(format!("Score: {:.2}", rec.score))
+                                .size(TS_SM)
+                                .strong()
+                                .color(ACCENT_TEXT),
+                        );
                     });
-                    if !rec.reasons.is_empty() {
-                        ui.indent("rec_reasons", |ui| {
-                            for reason in &rec.reasons {
-                                ui.label(format!(
+                });
+                if !rec.reasons.is_empty() {
+                    ui.add_space(SP_1);
+                    ui.indent("rec_reasons", |ui| {
+                        for reason in &rec.reasons {
+                            ui.label(
+                                RichText::new(format!(
                                     "- {} ({:+.1})",
                                     reason.description, reason.weight
-                                ));
-                            }
-                        });
-                    }
-                });
-                ui.add_space(4.0);
-            }
-        });
+                                ))
+                                .size(TS_SM)
+                                .color(TEXT_SECONDARY),
+                            );
+                        }
+                    });
+                }
+            });
+        }
     }
 
     // -- Playlists view -----------------------------------------------------
 
     fn render_playlists(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Playlists");
-        ui.separator();
+        view_header(
+            ui,
+            "Playlists",
+            "Create, import, and sync curated game playlists to your Steam collections.",
+        );
 
-        ui.group(|ui| {
-            ui.strong("Create / Edit Playlist");
-            ui.horizontal(|ui| {
-                ui.label("ID:");
-                ui.text_edit_singleline(&mut self.playlist_edit_id);
+        section_card(ui, "Create / Edit Playlist", |ui| {
+            form_field(ui, "ID:", |ui| {
+                ui.add_sized(
+                    [200.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.playlist_edit_id),
+                );
             });
-            ui.horizontal(|ui| {
-                ui.label("Name:");
-                ui.text_edit_singleline(&mut self.playlist_edit_name);
+            form_field(ui, "Name:", |ui| {
+                ui.add_sized(
+                    [200.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.playlist_edit_name),
+                );
             });
-            ui.horizontal(|ui| {
-                ui.label("Description:");
-                ui.text_edit_singleline(&mut self.playlist_edit_description);
+            form_field(ui, "Description:", |ui| {
+                ui.add_sized(
+                    [300.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.playlist_edit_description),
+                );
             });
-            ui.horizontal(|ui| {
-                ui.label("App IDs:");
-                ui.text_edit_singleline(&mut self.playlist_edit_app_ids);
+            form_field(ui, "App IDs:", |ui| {
+                ui.add_sized(
+                    [300.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.playlist_edit_app_ids),
+                );
             });
-            ui.label("Comma-separated Steam AppIDs for manual playlists.");
-            if ui.button("Save Playlist").clicked() {
+            ui.label(
+                RichText::new("Comma-separated Steam AppIDs for manual playlists.")
+                    .size(TS_SM)
+                    .color(TEXT_MUTED),
+            );
+            ui.add_space(SP_2);
+            if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new("Save Playlist")
+                            .size(TS_SM)
+                            .color(TEXT_INVERSE),
+                    )
+                    .fill(ACCENT)
+                    .stroke(egui::Stroke::NONE)
+                    .corner_radius(CORNER_SM),
+                )
+                .clicked()
+            {
                 let app_ids: Vec<u32> = self
                     .playlist_edit_app_ids
                     .split(',')
@@ -1976,14 +2558,25 @@ impl VapourflyApp {
                 }
             }
         });
-        ui.separator();
 
-        ui.group(|ui| {
-            ui.strong("Import Playlist");
-            ui.horizontal(|ui| {
-                ui.label("Path:");
-                ui.text_edit_singleline(&mut self.playlist_import_path);
-                if ui.button("Import File").clicked() && !self.playlist_import_path.is_empty() {
+        section_card(ui, "Import Playlist", |ui| {
+            form_field(ui, "Path:", |ui| {
+                ui.add_sized(
+                    [300.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.playlist_import_path),
+                );
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("Import File").size(TS_SM).color(TEXT_PRIMARY),
+                        )
+                        .fill(SURFACE)
+                        .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                        .corner_radius(CORNER_SM),
+                    )
+                    .clicked()
+                    && !self.playlist_import_path.is_empty()
+                {
                     match playlist::import_playlist(Path::new(&self.playlist_import_path)) {
                         Ok(pf) => {
                             if let Err(e) = self.store_playlist(&pf) {
@@ -2001,10 +2594,22 @@ impl VapourflyApp {
                     }
                 }
             });
-            ui.horizontal(|ui| {
-                ui.label("Share code:");
-                ui.text_edit_singleline(&mut self.playlist_share_code_input);
-                if ui.button("Import Code").clicked() && !self.playlist_share_code_input.is_empty()
+            form_field(ui, "Share code:", |ui| {
+                ui.add_sized(
+                    [300.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.playlist_share_code_input),
+                );
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("Import Code").size(TS_SM).color(TEXT_PRIMARY),
+                        )
+                        .fill(SURFACE)
+                        .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                        .corner_radius(CORNER_SM),
+                    )
+                    .clicked()
+                    && !self.playlist_share_code_input.is_empty()
                 {
                     match share_code::decode_share_code(&self.playlist_share_code_input) {
                         Ok(pf) => {
@@ -2024,16 +2629,37 @@ impl VapourflyApp {
                 }
             });
         });
-        ui.separator();
 
-        ui.group(|ui| {
-            ui.strong("Discover & Dynamic Templates");
+        section_card(ui, "Discover & Dynamic Templates", |ui| {
             ui.horizontal(|ui| {
-                ui.label("Discover seed AppID:");
-                ui.text_edit_singleline(&mut self.playlist_discover_seed);
-                ui.label("Count:");
-                ui.text_edit_singleline(&mut self.playlist_discover_count);
-                if ui.button("Generate Discover").clicked() {
+                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_1);
+                ui.label(
+                    RichText::new("Discover seed AppID:")
+                        .size(TS_SM)
+                        .color(TEXT_SECONDARY),
+                );
+                ui.add_sized(
+                    [80.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.playlist_discover_seed),
+                );
+                ui.label(RichText::new("Count:").size(TS_SM).color(TEXT_SECONDARY));
+                ui.add_sized(
+                    [60.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.playlist_discover_count),
+                );
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("Generate Discover")
+                                .size(TS_SM)
+                                .color(TEXT_INVERSE),
+                        )
+                        .fill(ACCENT)
+                        .stroke(egui::Stroke::NONE)
+                        .corner_radius(CORNER_SM),
+                    )
+                    .clicked()
+                {
                     match self.discover_options_from_inputs() {
                         Ok(options) => {
                             if let Some(games) = self.prepared_games(JunkMode::Default) {
@@ -2054,19 +2680,52 @@ impl VapourflyApp {
                     }
                 }
             });
+            ui.add_space(SP_2);
             ui.horizontal(|ui| {
-                ui.label("Template:");
-                ui.text_edit_singleline(&mut self.dynamic_template);
-                ui.label("Minutes:");
-                ui.text_edit_singleline(&mut self.dynamic_minutes);
+                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_1);
+                ui.label(RichText::new("Template:").size(TS_SM).color(TEXT_SECONDARY));
+                ui.add_sized(
+                    [120.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.dynamic_template),
+                );
+                ui.label(RichText::new("Minutes:").size(TS_SM).color(TEXT_SECONDARY));
+                ui.add_sized(
+                    [60.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.dynamic_minutes),
+                );
             });
+            ui.add_space(SP_2);
             ui.horizontal(|ui| {
-                ui.label("Mood/tag:");
-                ui.text_edit_singleline(&mut self.dynamic_mood);
-                ui.label("Seed AppID:");
-                ui.text_edit_singleline(&mut self.dynamic_seed);
+                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_1);
+                ui.label(RichText::new("Mood/tag:").size(TS_SM).color(TEXT_SECONDARY));
+                ui.add_sized(
+                    [100.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.dynamic_mood),
+                );
+                ui.label(
+                    RichText::new("Seed AppID:")
+                        .size(TS_SM)
+                        .color(TEXT_SECONDARY),
+                );
+                ui.add_sized(
+                    [80.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.dynamic_seed),
+                );
             });
-            if ui.button("Compile Dynamic Template").clicked() {
+            ui.add_space(SP_2);
+            if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new("Compile Dynamic Template")
+                            .size(TS_SM)
+                            .color(TEXT_INVERSE),
+                    )
+                    .fill(ACCENT)
+                    .stroke(egui::Stroke::NONE)
+                    .corner_radius(CORNER_SM),
+                )
+                .clicked()
+            {
                 if let Some(template) = DynamicTemplate::parse(&self.dynamic_template) {
                     if let Some(games) = self.prepared_games(JunkMode::Default) {
                         let pf = dynamic::compile_dynamic_template(
@@ -2096,26 +2755,45 @@ impl VapourflyApp {
                 }
             }
         });
-        ui.separator();
 
         // Show imported playlist info
         if let Some(pf) = self.playlist_last_import.clone() {
-            ui.group(|ui| {
-                ui.strong(format!("Playlist: {}", pf.playlist.name));
-                ui.label(format!("ID: {}", pf.playlist.id));
-                ui.label(format!("Description: {}", pf.playlist.description));
-                ui.label(format!("Schema: {}", pf.vapourfly_schema));
+            section_card(ui, &format!("Playlist: {}", pf.playlist.name), |ui| {
+                stat_inline(ui, "ID:", &pf.playlist.id);
+                stat_inline(ui, "Description:", &pf.playlist.description);
+                stat_inline(ui, "Schema:", &pf.vapourfly_schema);
 
                 match &pf.playlist.content {
                     PlaylistContent::Manual { app_ids } => {
-                        ui.label(format!("Manual playlist with {} AppIDs", app_ids.len()));
+                        stat_inline(
+                            ui,
+                            "Type:",
+                            &format!("Manual playlist with {} AppIDs", app_ids.len()),
+                        );
                     }
                     PlaylistContent::Rules { rules } => {
-                        ui.label(format!("Rule-based playlist with {} rules", rules.len()));
+                        stat_inline(
+                            ui,
+                            "Type:",
+                            &format!("Rule-based playlist with {} rules", rules.len()),
+                        );
                     }
                 }
 
-                if ui.button("Copy Share Code").clicked() {
+                ui.add_space(SP_2);
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("Copy Share Code")
+                                .size(TS_SM)
+                                .color(TEXT_PRIMARY),
+                        )
+                        .fill(SURFACE)
+                        .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                        .corner_radius(CORNER_SM),
+                    )
+                    .clicked()
+                {
                     match share_code::encode_share_code(&pf) {
                         Ok(code) => {
                             self.playlist_share_code_output = Some(code.clone());
@@ -2126,14 +2804,33 @@ impl VapourflyApp {
                     }
                 }
                 if let Some(code) = &self.playlist_share_code_output {
-                    ui.label(format!("Share code: {code}"));
+                    ui.label(
+                        RichText::new(format!("Share code: {code}"))
+                            .size(TS_SM)
+                            .color(TEXT_MUTED)
+                            .monospace(),
+                    );
                 }
 
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label("Export path:");
-                    ui.text_edit_singleline(&mut self.playlist_export_path);
-                    if ui.button("Export Playlist").clicked() {
+                ui.add_space(SP_2);
+                form_field(ui, "Export path:", |ui| {
+                    ui.add_sized(
+                        [250.0, 20.0],
+                        egui::TextEdit::singleline(&mut self.playlist_export_path),
+                    );
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Export Playlist")
+                                    .size(TS_SM)
+                                    .color(TEXT_PRIMARY),
+                            )
+                            .fill(SURFACE)
+                            .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                            .corner_radius(CORNER_SM),
+                        )
+                        .clicked()
+                    {
                         match self.export_loaded_playlist() {
                             Ok(()) => {
                                 self.success_msg = Some(format!(
@@ -2147,9 +2844,20 @@ impl VapourflyApp {
                     }
                 });
 
+                ui.add_space(SP_2);
                 let busy = self.write_loading || self.dry_run_loading;
                 if ui
-                    .add_enabled(!busy, egui::Button::new("Sync to Steam Collection"))
+                    .add_enabled(
+                        !busy,
+                        egui::Button::new(
+                            RichText::new("Sync to Steam Collection")
+                                .size(TS_SM)
+                                .color(TEXT_INVERSE),
+                        )
+                        .fill(ACCENT)
+                        .stroke(egui::Stroke::NONE)
+                        .corner_radius(CORNER_SM),
+                    )
                     .clicked()
                 {
                     self.start_dry_run(PendingAction::PlaylistSync(pf.clone()));
@@ -2157,33 +2865,39 @@ impl VapourflyApp {
                 if self.dry_run_loading {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label("Preparing diff...");
+                        ui.label(
+                            RichText::new("Preparing diff")
+                                .size(TS_SM)
+                                .color(TEXT_SECONDARY),
+                        );
                     });
                 }
             });
-            ui.separator();
         }
 
         // Match report
         if let Some(report) = &self.playlist_match_report {
-            ui.group(|ui| {
-                ui.strong("Match Report");
-                ui.horizontal(|ui| {
-                    ui.label(format!("Owned: {}", report.owned.len()));
-                    ui.label(format!("Missing: {}", report.missing.len()));
-                    ui.label(format!("Played: {}", report.played.len()));
-                    ui.label(format!("Unplayed: {}", report.unplayed.len()));
+            section_card(ui, "Match Report", |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                    metric_pill(ui, "Owned", report.owned.len().to_string());
+                    metric_pill(ui, "Missing", report.missing.len().to_string());
+                    metric_pill(ui, "Played", report.played.len().to_string());
+                    metric_pill(ui, "Unplayed", report.unplayed.len().to_string());
+                    metric_pill(ui, "Hidden", report.hidden.len().to_string());
+                    metric_pill(ui, "Junk", report.junk.len().to_string());
                 });
-                ui.horizontal(|ui| {
-                    ui.label(format!("Hidden: {}", report.hidden.len()));
-                    ui.label(format!("Junk: {}", report.junk.len()));
-                    if let Some(price) = &report.completion_price {
-                        ui.label(format!(
+                if let Some(price) = &report.completion_price {
+                    ui.add_space(SP_2);
+                    ui.label(
+                        RichText::new(format!(
                             "Completion price: {} {}",
                             price.currency, price.amount_cents
-                        ));
-                    }
-                });
+                        ))
+                        .size(TS_BODY)
+                        .color(TEXT_SECONDARY),
+                    );
+                }
             });
         }
     }
@@ -2191,36 +2905,62 @@ impl VapourflyApp {
     // -- Collections view ---------------------------------------------------
 
     fn render_collections(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Collections");
-        ui.separator();
+        view_header(
+            ui,
+            "Collections",
+            "View and export your Steam cloud storage collections.",
+        );
 
         if self.collections.is_empty() {
-            ui.label("No collections found. Run a scan first.");
+            empty_state(
+                ui,
+                "\u{1F4C2}",
+                "No collections found",
+                "Run a scan first to load your Steam collections.",
+            );
             return;
         }
 
-        ui.label(format!("{} collections found", self.collections.len()));
-        ui.separator();
-
-        ui.horizontal(|ui| {
-            ui.label("Export path:");
-            ui.text_edit_singleline(&mut self.collections_export_path);
-            if ui.button("Export Collections").clicked() {
-                match self.export_collections() {
-                    Ok(()) => {
-                        self.success_msg = Some(format!(
-                            "Exported {} collections to {}",
-                            self.collections.len(),
-                            self.collections_export_path.trim()
-                        ));
-                    }
-                    Err(e) => self.error = Some(format!("Collections export failed: {e}")),
-                }
-            }
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+            metric_pill(ui, "Collections", self.collections.len().to_string());
         });
-        ui.separator();
+        ui.add_space(SP_3);
 
-        let text_height = egui::TextStyle::Body.resolve(ui.style()).size;
+        section_card(ui, "Export", |ui| {
+            form_field(ui, "Export path:", |ui| {
+                ui.add_sized(
+                    [300.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.collections_export_path),
+                );
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("Export Collections")
+                                .size(TS_SM)
+                                .color(TEXT_INVERSE),
+                        )
+                        .fill(ACCENT)
+                        .stroke(egui::Stroke::NONE)
+                        .corner_radius(CORNER_SM),
+                    )
+                    .clicked()
+                {
+                    match self.export_collections() {
+                        Ok(()) => {
+                            self.success_msg = Some(format!(
+                                "Exported {} collections to {}",
+                                self.collections.len(),
+                                self.collections_export_path.trim()
+                            ));
+                        }
+                        Err(e) => self.error = Some(format!("Collections export failed: {e}")),
+                    }
+                }
+            });
+        });
+
+        let text_height = TS_BODY;
         egui_extras::TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
@@ -2230,30 +2970,49 @@ impl VapourflyApp {
             .column(egui_extras::Column::auto().at_least(100.0))
             .header(text_height * 1.4, |mut header| {
                 header.col(|ui| {
-                    ui.strong("Name");
+                    ui.label(
+                        RichText::new("Name")
+                            .size(TS_SM)
+                            .strong()
+                            .color(TEXT_SECONDARY),
+                    );
                 });
                 header.col(|ui| {
-                    ui.strong("Games");
+                    ui.label(
+                        RichText::new("Games")
+                            .size(TS_SM)
+                            .strong()
+                            .color(TEXT_SECONDARY),
+                    );
                 });
                 header.col(|ui| {
-                    ui.strong("Hidden?");
+                    ui.label(
+                        RichText::new("Hidden?")
+                            .size(TS_SM)
+                            .strong()
+                            .color(TEXT_SECONDARY),
+                    );
                 });
             })
             .body(|mut body| {
                 for coll in &self.collections {
                     body.row(text_height * 1.2, |mut row| {
                         row.col(|ui| {
-                            ui.label(&coll.name);
+                            ui.label(RichText::new(&coll.name).size(TS_BODY).color(TEXT_PRIMARY));
                         });
                         row.col(|ui| {
-                            ui.label(coll.app_ids.len().to_string());
+                            ui.label(
+                                RichText::new(coll.app_ids.len().to_string())
+                                    .size(TS_BODY)
+                                    .color(TEXT_PRIMARY),
+                            );
                         });
                         row.col(|ui| {
-                            ui.label(if coll.is_hidden_collection {
-                                "Yes"
+                            if coll.is_hidden_collection {
+                                status_badge(ui, "Yes", SURFACE_MUTED, TEXT_SECONDARY);
                             } else {
-                                "No"
-                            });
+                                status_badge(ui, "No", SURFACE_SUNKEN, TEXT_MUTED);
+                            }
                         });
                     });
                 }
@@ -2263,214 +3022,321 @@ impl VapourflyApp {
     // -- Data Sources view --------------------------------------------------
 
     fn render_data_sources(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.heading("Data Sources");
-        ui.separator();
+        view_header(
+            ui,
+            "Data Sources",
+            "Manage enrichment API credentials, cache refresh, and offline mode.",
+        );
 
         // Source credentials
-        ui.strong("API Credentials");
-        ui.add_space(4.0);
+        section_card(ui, "API Credentials", |ui| {
+            let sources = [
+                (
+                    "IGDB (Twitch OAuth)",
+                    self.has_igdb,
+                    "VAPOURFLY_IGDB_CLIENT_ID + VAPOURFLY_IGDB_CLIENT_SECRET",
+                ),
+                ("RAWG", self.has_rawg, "VAPOURFLY_RAWG_KEY"),
+                ("ProtonDB", true, "No credentials needed"),
+                ("PCGamingWiki", true, "No credentials needed"),
+                ("Steam Store", true, "No credentials needed"),
+                (
+                    "HLTB",
+                    false,
+                    "Feature gate: hltb_scrape (compile with --features hltb_scrape)",
+                ),
+            ];
 
-        let sources = [
-            (
-                "IGDB (Twitch OAuth)",
-                self.has_igdb,
-                "VAPOURFLY_IGDB_CLIENT_ID + VAPOURFLY_IGDB_CLIENT_SECRET",
-            ),
-            ("RAWG", self.has_rawg, "VAPOURFLY_RAWG_KEY"),
-            ("ProtonDB", true, "No credentials needed"),
-            ("PCGamingWiki", true, "No credentials needed"),
-            ("Steam Store", true, "No credentials needed"),
-            (
-                "HLTB",
-                false,
-                "Feature gate: hltb_scrape (compile with --features hltb_scrape)",
-            ),
-        ];
+            for (name, available, note) in &sources {
+                ui.horizontal(|ui| {
+                    if *available {
+                        status_badge(ui, "Configured", SUCCESS_SOFT, SUCCESS);
+                    } else {
+                        status_badge(ui, "Missing", ERROR_SOFT, ERROR);
+                    }
+                    ui.label(RichText::new(*name).size(TS_BODY).color(TEXT_PRIMARY));
+                    ui.add_space(SP_2);
+                    ui.label(RichText::new(*note).size(TS_SM).color(TEXT_MUTED));
+                });
+            }
 
-        for (name, available, note) in &sources {
-            ui.horizontal(|ui| {
-                let status = if *available { "Configured" } else { "Missing" };
-                ui.label(format!("{status}: {name}"));
-                ui.label(note.to_string());
-            });
-        }
-
-        ui.separator();
-        ui.label("Set credentials via environment variables before launching Vapourfly.");
-        ui.separator();
+            ui.add_space(SP_2);
+            ui.label(
+                RichText::new(
+                    "Set credentials via environment variables before launching Vapourfly.",
+                )
+                .size(TS_SM)
+                .color(TEXT_SECONDARY),
+            );
+        });
 
         // Cache refresh section
-        ui.strong("Cache Refresh");
-        ui.add_space(4.0);
-        ui.checkbox(&mut self.offline_mode, "Offline mode (cache only)");
-        if self.offline_mode {
-            ui.label("Cache refresh is disabled while offline mode is on.");
-        }
+        section_card(ui, "Cache Refresh", |ui| {
+            ui.checkbox(&mut self.offline_mode, "Offline mode (cache only)");
+            if self.offline_mode {
+                ui.label(
+                    RichText::new("Cache refresh is disabled while offline mode is on.")
+                        .size(TS_SM)
+                        .color(TEXT_MUTED),
+                );
+            }
 
-        let refresh_enabled = !self.cache_refresh_loading && !self.offline_mode;
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(refresh_enabled, egui::Button::new("Refresh All"))
-                .clicked()
-            {
-                self.start_cache_refresh(None, ctx);
-            }
-            if ui
-                .add_enabled(refresh_enabled, egui::Button::new("ProtonDB"))
-                .clicked()
-            {
-                self.start_cache_refresh(Some("protondb".into()), ctx);
-            }
-            if ui
-                .add_enabled(refresh_enabled, egui::Button::new("PCGW"))
-                .clicked()
-            {
-                self.start_cache_refresh(Some("pcgw".into()), ctx);
-            }
-            if ui
-                .add_enabled(refresh_enabled, egui::Button::new("HLTB"))
-                .clicked()
-            {
-                self.start_cache_refresh(Some("hltb".into()), ctx);
-            }
-            if ui
-                .add_enabled(refresh_enabled, egui::Button::new("Steam Store"))
-                .clicked()
-            {
-                self.start_cache_refresh(Some("steam-store".into()), ctx);
-            }
-            if self.has_igdb
-                && ui
-                    .add_enabled(refresh_enabled, egui::Button::new("IGDB"))
+            ui.add_space(SP_2);
+            let refresh_enabled = !self.cache_refresh_loading && !self.offline_mode;
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                let primary_btn = |label: &str| {
+                    egui::Button::new(RichText::new(label).size(TS_SM).color(TEXT_INVERSE))
+                        .fill(ACCENT)
+                        .stroke(egui::Stroke::NONE)
+                        .corner_radius(CORNER_SM)
+                };
+                let secondary_btn = |label: &str| {
+                    egui::Button::new(RichText::new(label).size(TS_SM).color(TEXT_PRIMARY))
+                        .fill(SURFACE)
+                        .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                        .corner_radius(CORNER_SM)
+                };
+                if ui
+                    .add_enabled(refresh_enabled, primary_btn("Refresh All"))
                     .clicked()
-            {
-                self.start_cache_refresh(Some("igdb".into()), ctx);
-            }
-            if self.has_rawg
-                && ui
-                    .add_enabled(refresh_enabled, egui::Button::new("RAWG"))
+                {
+                    self.start_cache_refresh(None, ctx);
+                }
+                if ui
+                    .add_enabled(refresh_enabled, secondary_btn("ProtonDB"))
                     .clicked()
-            {
-                self.start_cache_refresh(Some("rawg".into()), ctx);
+                {
+                    self.start_cache_refresh(Some("protondb".into()), ctx);
+                }
+                if ui
+                    .add_enabled(refresh_enabled, secondary_btn("PCGW"))
+                    .clicked()
+                {
+                    self.start_cache_refresh(Some("pcgw".into()), ctx);
+                }
+                if ui
+                    .add_enabled(refresh_enabled, secondary_btn("HLTB"))
+                    .clicked()
+                {
+                    self.start_cache_refresh(Some("hltb".into()), ctx);
+                }
+                if ui
+                    .add_enabled(refresh_enabled, secondary_btn("Steam Store"))
+                    .clicked()
+                {
+                    self.start_cache_refresh(Some("steam-store".into()), ctx);
+                }
+                if self.has_igdb
+                    && ui
+                        .add_enabled(refresh_enabled, secondary_btn("IGDB"))
+                        .clicked()
+                {
+                    self.start_cache_refresh(Some("igdb".into()), ctx);
+                }
+                if self.has_rawg
+                    && ui
+                        .add_enabled(refresh_enabled, secondary_btn("RAWG"))
+                        .clicked()
+                {
+                    self.start_cache_refresh(Some("rawg".into()), ctx);
+                }
+            });
+
+            if self.cache_refresh_loading {
+                ui.add_space(SP_2);
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(
+                        RichText::new("Refreshing cache")
+                            .size(TS_SM)
+                            .color(TEXT_SECONDARY),
+                    );
+                });
+            }
+            if let Some(msg) = &self.cache_refresh_msg {
+                ui.add_space(SP_2);
+                ui.label(RichText::new(msg).size(TS_SM).color(TEXT_SECONDARY));
             }
         });
 
-        if self.cache_refresh_loading {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label("Refreshing cache...");
-            });
-        }
-        if let Some(msg) = &self.cache_refresh_msg {
-            ui.label(msg);
-        }
-
-        ui.separator();
-
         // Source cache status
-        ui.strong("Source Cache Status");
-        ui.add_space(4.0);
-
-        if self.source_statuses.is_empty() {
-            ui.label("No cache data found. Run a scan and refresh to populate cache.");
-        } else {
-            let text_height = egui::TextStyle::Body.resolve(ui.style()).size;
-            egui_extras::TableBuilder::new(ui)
-                .striped(true)
-                .resizable(true)
-                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(egui_extras::Column::auto().at_least(100.0))
-                .column(egui_extras::Column::auto().at_least(100.0))
-                .column(egui_extras::Column::auto().at_least(80.0))
-                .column(egui_extras::Column::auto().at_least(60.0))
-                .column(egui_extras::Column::auto().at_least(60.0))
-                .header(text_height * 1.4, |mut header| {
-                    header.col(|ui| {
-                        ui.strong("Source");
-                    });
-                    header.col(|ui| {
-                        ui.strong("Last Success");
-                    });
-                    header.col(|ui| {
-                        ui.strong("Entries");
-                    });
-                    header.col(|ui| {
-                        ui.strong("Stale");
-                    });
-                    header.col(|ui| {
-                        ui.strong("Cached");
-                    });
-                })
-                .body(|mut body| {
-                    for status in &self.source_statuses {
-                        body.row(text_height * 1.2, |mut row| {
-                            row.col(|ui| {
-                                ui.label(&status.name);
-                            });
-                            row.col(|ui| {
-                                let last = status
-                                    .last_success
-                                    .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-                                    .unwrap_or_else(|| "n/a".into());
-                                ui.label(last);
-                            });
-                            row.col(|ui| {
-                                ui.label(status.cache_entries.to_string());
-                            });
-                            row.col(|ui| {
-                                ui.label(status.stale_entries.to_string());
-                            });
-                            row.col(|ui| {
-                                ui.label(if status.cache_dir_exists { "Yes" } else { "No" });
-                            });
+        section_card(ui, "Source Cache Status", |ui| {
+            if self.source_statuses.is_empty() {
+                ui.label(
+                    RichText::new("No cache data found. Run a scan and refresh to populate cache.")
+                        .size(TS_BODY)
+                        .color(TEXT_SECONDARY),
+                );
+            } else {
+                let text_height = TS_BODY;
+                egui_extras::TableBuilder::new(ui)
+                    .striped(true)
+                    .resizable(true)
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .column(egui_extras::Column::auto().at_least(100.0))
+                    .column(egui_extras::Column::auto().at_least(100.0))
+                    .column(egui_extras::Column::auto().at_least(80.0))
+                    .column(egui_extras::Column::auto().at_least(60.0))
+                    .column(egui_extras::Column::auto().at_least(60.0))
+                    .header(text_height * 1.4, |mut header| {
+                        header.col(|ui| {
+                            ui.label(
+                                RichText::new("Source")
+                                    .size(TS_SM)
+                                    .strong()
+                                    .color(TEXT_SECONDARY),
+                            );
                         });
-                    }
-                });
-        }
+                        header.col(|ui| {
+                            ui.label(
+                                RichText::new("Last Success")
+                                    .size(TS_SM)
+                                    .strong()
+                                    .color(TEXT_SECONDARY),
+                            );
+                        });
+                        header.col(|ui| {
+                            ui.label(
+                                RichText::new("Entries")
+                                    .size(TS_SM)
+                                    .strong()
+                                    .color(TEXT_SECONDARY),
+                            );
+                        });
+                        header.col(|ui| {
+                            ui.label(
+                                RichText::new("Stale")
+                                    .size(TS_SM)
+                                    .strong()
+                                    .color(TEXT_SECONDARY),
+                            );
+                        });
+                        header.col(|ui| {
+                            ui.label(
+                                RichText::new("Cached")
+                                    .size(TS_SM)
+                                    .strong()
+                                    .color(TEXT_SECONDARY),
+                            );
+                        });
+                    })
+                    .body(|mut body| {
+                        for status in &self.source_statuses {
+                            body.row(text_height * 1.2, |mut row| {
+                                row.col(|ui| {
+                                    ui.label(
+                                        RichText::new(&status.name)
+                                            .size(TS_BODY)
+                                            .color(TEXT_PRIMARY),
+                                    );
+                                });
+                                row.col(|ui| {
+                                    let last = status.last_success.map_or_else(
+                                        || "n/a".into(),
+                                        |dt| dt.format("%Y-%m-%d %H:%M").to_string(),
+                                    );
+                                    ui.label(RichText::new(last).size(TS_BODY).color(TEXT_PRIMARY));
+                                });
+                                row.col(|ui| {
+                                    ui.label(
+                                        RichText::new(status.cache_entries.to_string())
+                                            .size(TS_BODY)
+                                            .color(TEXT_PRIMARY),
+                                    );
+                                });
+                                row.col(|ui| {
+                                    ui.label(
+                                        RichText::new(status.stale_entries.to_string())
+                                            .size(TS_BODY)
+                                            .color(TEXT_PRIMARY),
+                                    );
+                                });
+                                row.col(|ui| {
+                                    if status.cache_dir_exists {
+                                        status_badge(ui, "Yes", SUCCESS_SOFT, SUCCESS);
+                                    } else {
+                                        status_badge(ui, "No", SURFACE_SUNKEN, TEXT_MUTED);
+                                    }
+                                });
+                            });
+                        }
+                    });
+            }
+        });
 
         // Offline mode
-        ui.separator();
-        ui.strong("Offline Mode");
-        ui.label("Use `--offline` CLI flag to prohibit network calls and use cached data only.");
+        section_card(ui, "Offline Mode", |ui| {
+            ui.label(
+                RichText::new(
+                    "Use `--offline` CLI flag to prohibit network calls and use cached data only.",
+                )
+                .size(TS_BODY)
+                .color(TEXT_SECONDARY),
+            );
+        });
     }
 
     // -- Backups view -------------------------------------------------------
 
     fn render_backups(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Backups");
-        ui.separator();
-
-        // Refresh backups list
-        if ui.button("Refresh Backups").clicked() {
-            self.backups.clear();
-            match self.cloud_storage_path() {
-                Ok(cloud_path) => {
-                    if cloud_path.exists() {
-                        match list_backups(&cloud_path) {
-                            Ok(backups) => {
-                                self.backups = backups;
+        view_header_with_actions(
+            ui,
+            "Backups",
+            "Browse and restore safety backups of your Steam cloud storage.",
+            |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("Refresh Backups")
+                                .size(TS_SM)
+                                .color(TEXT_INVERSE),
+                        )
+                        .fill(ACCENT)
+                        .stroke(egui::Stroke::NONE)
+                        .corner_radius(CORNER_SM),
+                    )
+                    .clicked()
+                {
+                    self.backups.clear();
+                    match self.cloud_storage_path() {
+                        Ok(cloud_path) => {
+                            if cloud_path.exists() {
+                                match list_backups(&cloud_path) {
+                                    Ok(backups) => {
+                                        self.backups = backups;
+                                    }
+                                    Err(e) => {
+                                        self.error = Some(format!("Failed to list backups: {e}"));
+                                    }
+                                }
                             }
-                            Err(e) => {
-                                self.error = Some(format!("Failed to list backups: {e}"));
-                            }
+                        }
+                        Err(e) => {
+                            self.error = Some(e);
                         }
                     }
                 }
-                Err(e) => {
-                    self.error = Some(e);
-                }
-            }
-        }
+            },
+        );
 
         if self.backups.is_empty() {
-            ui.label("No backups found. Click 'Refresh Backups' to scan.");
+            empty_state(
+                ui,
+                "\u{1F4BE}",
+                "No backups found",
+                "Click 'Refresh Backups' to scan for available backups.",
+            );
             return;
         }
 
-        ui.label(format!("{} backups found", self.backups.len()));
-        ui.separator();
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+            metric_pill(ui, "Backups", self.backups.len().to_string());
+        });
+        ui.add_space(SP_3);
 
-        let text_height = egui::TextStyle::Body.resolve(ui.style()).size;
+        let text_height = TS_BODY;
         egui_extras::TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
@@ -2481,16 +3347,36 @@ impl VapourflyApp {
             .column(egui_extras::Column::auto().at_least(80.0))
             .header(text_height * 1.4, |mut header| {
                 header.col(|ui| {
-                    ui.strong("Filename");
+                    ui.label(
+                        RichText::new("Filename")
+                            .size(TS_SM)
+                            .strong()
+                            .color(TEXT_SECONDARY),
+                    );
                 });
                 header.col(|ui| {
-                    ui.strong("Created");
+                    ui.label(
+                        RichText::new("Created")
+                            .size(TS_SM)
+                            .strong()
+                            .color(TEXT_SECONDARY),
+                    );
                 });
                 header.col(|ui| {
-                    ui.strong("SHA256");
+                    ui.label(
+                        RichText::new("SHA256")
+                            .size(TS_SM)
+                            .strong()
+                            .color(TEXT_SECONDARY),
+                    );
                 });
                 header.col(|ui| {
-                    ui.strong("Action");
+                    ui.label(
+                        RichText::new("Action")
+                            .size(TS_SM)
+                            .strong()
+                            .color(TEXT_SECONDARY),
+                    );
                 });
             })
             .body(|mut body| {
@@ -2502,18 +3388,37 @@ impl VapourflyApp {
                         .unwrap_or_default();
                     body.row(text_height * 1.2, |mut row| {
                         row.col(|ui| {
-                            ui.label(&filename);
+                            ui.label(RichText::new(&filename).size(TS_BODY).color(TEXT_PRIMARY));
                         });
                         row.col(|ui| {
-                            ui.label(backup.created_at.format("%Y-%m-%d %H:%M:%S").to_string());
+                            ui.label(
+                                RichText::new(
+                                    backup.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+                                )
+                                .size(TS_BODY)
+                                .color(TEXT_PRIMARY),
+                            );
                         });
                         row.col(|ui| {
-                            ui.label(&backup.sha256[..8]);
+                            ui.label(
+                                RichText::new(&backup.sha256[..8])
+                                    .size(TS_BODY)
+                                    .color(TEXT_MUTED)
+                                    .monospace(),
+                            );
                         });
                         row.col(|ui| {
                             let enabled = !self.write_loading;
                             if ui
-                                .add_enabled(enabled, egui::Button::new("Restore"))
+                                .add_enabled(
+                                    enabled,
+                                    egui::Button::new(
+                                        RichText::new("Restore").size(TS_SM).color(TEXT_PRIMARY),
+                                    )
+                                    .fill(SURFACE)
+                                    .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                                    .corner_radius(CORNER_SM),
+                                )
                                 .clicked()
                             {
                                 self.pending_action =
@@ -2526,10 +3431,10 @@ impl VapourflyApp {
             });
 
         if self.write_loading {
-            ui.add_space(4.0);
+            ui.add_space(SP_2);
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label("Restoring...");
+                ui.label(RichText::new("Restoring").size(TS_SM).color(TEXT_SECONDARY));
             });
         }
     }
@@ -2537,60 +3442,140 @@ impl VapourflyApp {
     // -- Settings view ------------------------------------------------------
 
     fn render_settings(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Settings");
-        ui.separator();
+        view_header(
+            ui,
+            "Settings",
+            "Configure Steam directory, accounts, locale, and write safety.",
+        );
 
-        ui.group(|ui| {
-            ui.strong("Steam Directory");
-            ui.horizontal(|ui| {
-                ui.label("Path:");
-                ui.text_edit_singleline(&mut self.steam_dir_edit);
+        section_card(ui, "Steam Directory", |ui| {
+            form_field(ui, "Path:", |ui| {
+                ui.add_sized(
+                    [300.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.steam_dir_edit),
+                );
             });
-            ui.label("Leave empty for auto-detection.");
+            ui.label(
+                RichText::new("Leave empty for auto-detection.")
+                    .size(TS_SM)
+                    .color(TEXT_MUTED),
+            );
         });
-        ui.separator();
 
-        ui.group(|ui| {
-            ui.strong("Account Override");
-            ui.horizontal(|ui| {
-                ui.label("Account:");
-                ui.text_edit_singleline(&mut self.account_edit);
+        section_card(ui, "Account Override", |ui| {
+            form_field(ui, "Account:", |ui| {
+                ui.add_sized(
+                    [200.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.account_edit),
+                );
             });
-            ui.label("Leave empty for auto-selection (most recent).");
+            ui.label(
+                RichText::new("Leave empty for auto-selection (most recent).")
+                    .size(TS_SM)
+                    .color(TEXT_MUTED),
+            );
         });
-        ui.separator();
 
-        ui.group(|ui| {
-            ui.strong("Detected Accounts");
-            if ui.button("Refresh Accounts").clicked() {
-                self.refresh_detected_accounts();
-            }
+        section_card(ui, "Detected Accounts", |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("Refresh Accounts")
+                                .size(TS_SM)
+                                .color(TEXT_PRIMARY),
+                        )
+                        .fill(SURFACE)
+                        .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                        .corner_radius(CORNER_SM),
+                    )
+                    .clicked()
+                {
+                    self.refresh_detected_accounts();
+                }
+            });
             if let Some(msg) = &self.account_list_msg {
-                ui.label(msg);
+                ui.label(RichText::new(msg).size(TS_SM).color(TEXT_SECONDARY));
             }
 
             if self.detected_accounts.is_empty() {
-                ui.label("No accounts loaded.");
+                ui.label(
+                    RichText::new("No accounts loaded.")
+                        .size(TS_BODY)
+                        .color(TEXT_SECONDARY),
+                );
             } else {
                 let mut selected_account = None;
                 egui::Grid::new("detected_accounts_grid")
                     .num_columns(5)
-                    .spacing([12.0, 4.0])
+                    .spacing([SP_3, SP_1])
                     .striped(true)
                     .show(ui, |ui| {
-                        ui.strong("Persona");
-                        ui.strong("Account");
-                        ui.strong("Steam ID");
-                        ui.strong("Most recent");
-                        ui.strong("Action");
+                        ui.label(
+                            RichText::new("Persona")
+                                .size(TS_SM)
+                                .strong()
+                                .color(TEXT_SECONDARY),
+                        );
+                        ui.label(
+                            RichText::new("Account")
+                                .size(TS_SM)
+                                .strong()
+                                .color(TEXT_SECONDARY),
+                        );
+                        ui.label(
+                            RichText::new("Steam ID")
+                                .size(TS_SM)
+                                .strong()
+                                .color(TEXT_SECONDARY),
+                        );
+                        ui.label(
+                            RichText::new("Most recent")
+                                .size(TS_SM)
+                                .strong()
+                                .color(TEXT_SECONDARY),
+                        );
+                        ui.label(
+                            RichText::new("Action")
+                                .size(TS_SM)
+                                .strong()
+                                .color(TEXT_SECONDARY),
+                        );
                         ui.end_row();
 
                         for account in &self.detected_accounts {
-                            ui.label(&account.persona_name);
-                            ui.label(&account.account_name);
-                            ui.label(mask_steam_id(&account.steam_id64));
-                            ui.label(if account.most_recent { "yes" } else { "no" });
-                            if ui.button("Use").clicked() {
+                            ui.label(
+                                RichText::new(&account.persona_name)
+                                    .size(TS_BODY)
+                                    .color(TEXT_PRIMARY),
+                            );
+                            ui.label(
+                                RichText::new(&account.account_name)
+                                    .size(TS_BODY)
+                                    .color(TEXT_PRIMARY),
+                            );
+                            ui.label(
+                                RichText::new(mask_steam_id(&account.steam_id64))
+                                    .size(TS_BODY)
+                                    .color(TEXT_MUTED)
+                                    .monospace(),
+                            );
+                            if account.most_recent {
+                                status_badge(ui, "yes", SUCCESS_SOFT, SUCCESS);
+                            } else {
+                                status_badge(ui, "no", SURFACE_SUNKEN, TEXT_MUTED);
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Use").size(TS_SM).color(TEXT_PRIMARY),
+                                    )
+                                    .fill(SURFACE)
+                                    .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                                    .corner_radius(CORNER_SM),
+                                )
+                                .clicked()
+                            {
                                 selected_account = Some(account.account_name.clone());
                             }
                             ui.end_row();
@@ -2602,81 +3587,145 @@ impl VapourflyApp {
                 }
             }
         });
-        ui.separator();
 
-        ui.group(|ui| {
-            ui.strong("Store Locale");
+        section_card(ui, "Store Locale", |ui| {
             ui.horizontal(|ui| {
-                ui.label("Country code:");
-                ui.text_edit_singleline(&mut self.cc_edit);
-                ui.label("Language:");
-                ui.text_edit_singleline(&mut self.lang_edit);
+                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_1);
+                ui.label(
+                    RichText::new("Country code:")
+                        .size(TS_SM)
+                        .color(TEXT_SECONDARY),
+                );
+                ui.add_sized([60.0, 20.0], egui::TextEdit::singleline(&mut self.cc_edit));
+                ui.label(RichText::new("Language:").size(TS_SM).color(TEXT_SECONDARY));
+                ui.add_sized(
+                    [120.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.lang_edit),
+                );
             });
         });
-        ui.separator();
 
-        ui.group(|ui| {
-            ui.strong("Backup Retention");
-            ui.horizontal(|ui| {
-                ui.label("Keep backups:");
-                ui.text_edit_singleline(&mut self.backup_retention_edit);
+        section_card(ui, "Backup Retention", |ui| {
+            form_field(ui, "Keep backups:", |ui| {
+                ui.add_sized(
+                    [60.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.backup_retention_edit),
+                );
             });
-            ui.label("Number of rolling backups to keep for modified files.");
+            ui.label(
+                RichText::new("Number of rolling backups to keep for modified files.")
+                    .size(TS_SM)
+                    .color(TEXT_MUTED),
+            );
         });
-        ui.separator();
 
-        ui.group(|ui| {
-            ui.strong("Write Safety");
+        section_card(ui, "Write Safety", |ui| {
             ui.checkbox(
                 &mut self.allow_steam_running,
                 "Allow writes while Steam is running",
             );
-            ui.label("Enable with caution. Steam may overwrite changes.");
-        });
-        ui.separator();
-
-        ui.group(|ui| {
-            ui.strong("Network");
-            ui.checkbox(&mut self.offline_mode, "Offline mode (cache only)");
             ui.label(
-                "Blocks cache refresh network calls. Library workflows still use cached metadata.",
+                RichText::new("Enable with caution. Steam may overwrite changes.")
+                    .size(TS_SM)
+                    .color(WARNING),
             );
         });
-        ui.separator();
+
+        section_card(ui, "Network", |ui| {
+            ui.checkbox(&mut self.offline_mode, "Offline mode (cache only)");
+            ui.label(
+                RichText::new(
+                    "Blocks cache refresh network calls. Library workflows still use cached metadata.",
+                )
+                .size(TS_SM)
+                .color(TEXT_MUTED),
+            );
+        });
 
         // Save button
         ui.horizontal(|ui| {
-            if ui.button("Save Settings").clicked() {
+            if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new("Save Settings")
+                            .size(TS_SM)
+                            .color(TEXT_INVERSE),
+                    )
+                    .fill(ACCENT)
+                    .stroke(egui::Stroke::NONE)
+                    .corner_radius(CORNER_SM),
+                )
+                .clicked()
+            {
                 self.save_settings();
             }
             if let Some(msg) = &self.settings_save_msg {
-                ui.label(msg);
+                ui.label(RichText::new(msg).size(TS_SM).color(TEXT_SECONDARY));
             }
         });
-        ui.separator();
+        ui.add_space(SP_3);
 
-        ui.group(|ui| {
-            ui.strong("Setup Diagnostics");
-            ui.label(
-                "Check Steam paths, accounts, libraries, cloud storage, cache, and credentials.",
-            );
-            if ui.button("Run Setup Check").clicked() {
-                self.run_setup_diagnostics();
-            }
-            if let Some(report) = &self.setup_diagnostics {
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new(report).monospace());
-            }
-        });
-        ui.separator();
-
-        ui.group(|ui| {
-            ui.strong("Diagnostics Export");
-            ui.label("Export sanitized support data for bug reports.");
+        section_card(ui, "Setup Diagnostics", |ui| {
             ui.horizontal(|ui| {
-                ui.label("Export path:");
-                ui.text_edit_singleline(&mut self.diagnostics_export_path);
-                if ui.button("Export Diagnostics").clicked() {
+                ui.label(
+                    RichText::new(
+                        "Check Steam paths, accounts, libraries, cloud storage, cache, and credentials.",
+                    )
+                    .size(TS_SM)
+                    .color(TEXT_SECONDARY),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Run Setup Check").size(TS_SM).color(TEXT_PRIMARY),
+                            )
+                            .fill(SURFACE)
+                            .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                            .corner_radius(CORNER_SM),
+                        )
+                        .clicked()
+                    {
+                        self.run_setup_diagnostics();
+                    }
+                });
+            });
+            if let Some(report) = &self.setup_diagnostics {
+                ui.add_space(SP_2);
+                ui.label(
+                    RichText::new(report)
+                        .size(TS_XS)
+                        .color(TEXT_PRIMARY)
+                        .monospace(),
+                );
+            }
+        });
+
+        section_card(ui, "Diagnostics Export", |ui| {
+            ui.label(
+                RichText::new("Export sanitized support data for bug reports.")
+                    .size(TS_SM)
+                    .color(TEXT_SECONDARY),
+            );
+            ui.add_space(SP_2);
+            form_field(ui, "Export path:", |ui| {
+                ui.add_sized(
+                    [300.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.diagnostics_export_path),
+                );
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("Export Diagnostics")
+                                .size(TS_SM)
+                                .color(TEXT_PRIMARY),
+                        )
+                        .fill(SURFACE)
+                        .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                        .corner_radius(CORNER_SM),
+                    )
+                    .clicked()
+                {
                     match self.export_diagnostics() {
                         Ok(()) => {
                             self.success_msg = Some(format!(
@@ -2689,13 +3738,19 @@ impl VapourflyApp {
                 }
             });
         });
-        ui.separator();
 
-        ui.group(|ui| {
-            ui.strong("About");
-            ui.label(format!("Vapourfly v{}", env!("CARGO_PKG_VERSION")));
-            ui.label("A local-first CLI/GUI tool for managing Steam game libraries.");
-            ui.label("Licensed under MIT OR Apache-2.0.");
+        section_card(ui, "About", |ui| {
+            stat_inline(ui, "Version:", &format!("v{}", env!("CARGO_PKG_VERSION")));
+            ui.label(
+                RichText::new("A local-first CLI/GUI tool for managing Steam game libraries.")
+                    .size(TS_BODY)
+                    .color(TEXT_SECONDARY),
+            );
+            ui.label(
+                RichText::new("Licensed under MIT OR Apache-2.0.")
+                    .size(TS_SM)
+                    .color(TEXT_MUTED),
+            );
         });
     }
 
@@ -2783,7 +3838,7 @@ impl VapourflyApp {
             Some(n) => {
                 tbl.insert(
                     "backup_retention_count".to_string(),
-                    toml::Value::Integer(n as i64),
+                    toml::Value::Integer(i64::from(n)),
                 );
             }
             None => {
@@ -2818,16 +3873,16 @@ impl VapourflyApp {
 
 fn configure_ui(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
-    style.spacing.item_spacing = egui::vec2(8.0, 7.0);
-    style.spacing.button_padding = egui::vec2(10.0, 5.0);
-    style.spacing.window_margin = egui::Margin::same(14);
-    style.spacing.indent = 14.0;
+    style.spacing.item_spacing = egui::vec2(SP_2, 7.0);
+    style.spacing.button_padding = egui::vec2(SP_3, SP_1);
+    style.spacing.window_margin = egui::Margin::same(m(SP_3));
+    style.spacing.indent = SP_3;
 
     let mut visuals = egui::Visuals::light();
     visuals.panel_fill = SURFACE;
     visuals.window_fill = SURFACE_RAISED;
     visuals.faint_bg_color = SURFACE_RAISED;
-    visuals.extreme_bg_color = Color32::from_rgb(238, 242, 246);
+    visuals.extreme_bg_color = SURFACE_SUNKEN;
     visuals.hyperlink_color = ACCENT;
     visuals.selection.bg_fill = ACCENT_SOFT;
     visuals.selection.stroke.color = TEXT_PRIMARY;
@@ -2835,7 +3890,7 @@ fn configure_ui(ctx: &egui::Context) {
     visuals.widgets.noninteractive.fg_stroke.color = TEXT_SECONDARY;
     visuals.widgets.inactive.bg_fill = SURFACE_MUTED;
     visuals.widgets.inactive.fg_stroke.color = TEXT_SECONDARY;
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(236, 229, 242);
+    visuals.widgets.hovered.bg_fill = ACCENT_SOFT;
     visuals.widgets.hovered.fg_stroke.color = TEXT_PRIMARY;
     visuals.widgets.active.bg_fill = ACCENT_SOFT;
     visuals.widgets.active.fg_stroke.color = TEXT_PRIMARY;
@@ -2845,86 +3900,11 @@ fn configure_ui(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
-fn metric_pill(ui: &mut egui::Ui, label: &str, value: String) {
-    egui::Frame::NONE
-        .fill(SURFACE_RAISED)
-        .inner_margin(egui::Margin::symmetric(12, 8))
-        .corner_radius(8)
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(label).size(12.0).color(TEXT_MUTED));
-                ui.label(RichText::new(value).size(14.0).strong().color(TEXT_PRIMARY));
-            });
-        });
-}
-
-fn filter_toggle(ui: &mut egui::Ui, value: &mut bool, label: &str) {
-    let fill = if *value { ACCENT_SOFT } else { SURFACE };
-    let stroke = if *value {
-        egui::Stroke::new(1.0, ACCENT)
-    } else {
-        egui::Stroke::new(1.0, SURFACE_MUTED)
-    };
-    let text = if *value { TEXT_PRIMARY } else { TEXT_SECONDARY };
-
-    if ui
-        .add(
-            egui::Button::new(RichText::new(label).color(text))
-                .fill(fill)
-                .stroke(stroke)
-                .corner_radius(18),
-        )
-        .clicked()
-    {
-        *value = !*value;
-    }
-}
-
-fn library_empty_state(ui: &mut egui::Ui, title: &str, body: &str) {
-    egui::Frame::NONE
-        .fill(SURFACE_RAISED)
-        .stroke(egui::Stroke::new(1.0, SURFACE_MUTED))
-        .inner_margin(egui::Margin::symmetric(24, 26))
-        .corner_radius(12)
-        .show(ui, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.label(RichText::new(title).size(18.0).strong().color(TEXT_PRIMARY));
-                ui.add_space(4.0);
-                ui.label(RichText::new(body).size(13.0).color(TEXT_SECONDARY));
-            });
-        });
-}
-
-fn app_id_tag(ui: &mut egui::Ui, app_id: u32) {
-    egui::Frame::NONE
-        .fill(SURFACE)
-        .inner_margin(egui::Margin::symmetric(8, 3))
-        .corner_radius(12)
-        .show(ui, |ui| {
-            ui.label(
-                RichText::new(app_id.to_string())
-                    .size(11.0)
-                    .strong()
-                    .color(TEXT_MUTED),
-            );
-        });
-}
-
-fn status_badge(ui: &mut egui::Ui, label: &str, fill: Color32, text: Color32) {
-    egui::Frame::NONE
-        .fill(fill)
-        .inner_margin(egui::Margin::symmetric(8, 3))
-        .corner_radius(12)
-        .show(ui, |ui| {
-            ui.label(RichText::new(label).size(11.0).strong().color(text));
-        });
-}
-
 fn game_primary_badge(game: &Game) -> (&'static str, Color32, Color32) {
     if game.is_junk {
-        ("Junk", Color32::from_rgb(250, 229, 229), ERROR)
+        ("Junk", ERROR_SOFT, ERROR)
     } else if game.is_hidden {
-        ("Hidden", Color32::from_rgb(232, 235, 239), TEXT_SECONDARY)
+        ("Hidden", SURFACE_MUTED, TEXT_SECONDARY)
     } else if game.installed {
         ("Installed", SUCCESS_SOFT, SUCCESS)
     } else {

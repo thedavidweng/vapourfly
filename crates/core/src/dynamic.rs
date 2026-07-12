@@ -189,8 +189,7 @@ fn playlist_radio_playlist(games: &[Game], options: &DynamicTemplateOptions) -> 
     let seed_name = games
         .iter()
         .find(|g| g.app_id == seed_id)
-        .map(|g| g.name.as_str())
-        .unwrap_or("your library");
+        .map_or("your library", |g| g.name.as_str());
 
     let similar_ids: std::collections::HashSet<u64> = games
         .iter()

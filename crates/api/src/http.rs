@@ -410,8 +410,7 @@ impl HttpClient {
                     }
                     let delay = response
                         .retry_after_secs()
-                        .map(Duration::from_secs)
-                        .unwrap_or_else(|| backoff_delay(attempt));
+                        .map_or_else(|| backoff_delay(attempt), Duration::from_secs);
                     tracing::warn!(
                         source = source,
                         attempt = attempt + 1,

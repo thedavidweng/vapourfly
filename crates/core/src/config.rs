@@ -6,11 +6,86 @@
 //! 3. Config file (`~/.config/vapourfly/config.toml` or platform equivalent)
 //! 4. Platform defaults
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
 use crate::error::{Result, VapourflyError};
+
+// ---------------------------------------------------------------------------
+// Settable config fields
+// ---------------------------------------------------------------------------
+
+/// A config field that can be shown, set, or unset via the CLI `settings`
+/// command or the GUI Settings panel.
+///
+/// The variants line up with the keys written to `config.toml`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigField {
+    SteamDir,
+    Account,
+    Cc,
+    Lang,
+    BackupRetentionCount,
+}
+
+impl ConfigField {
+    /// The TOML key this field is stored under.
+    pub fn as_key(&self) -> &'static str {
+        match self {
+            ConfigField::SteamDir => "steam_dir",
+            ConfigField::Account => "account",
+            ConfigField::Cc => "cc",
+            ConfigField::Lang => "lang",
+            ConfigField::BackupRetentionCount => "backup_retention_count",
+        }
+    }
+
+    /// Parse a config field from its TOML key name.
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "steam_dir" => Some(ConfigField::SteamDir),
+            "account" => Some(ConfigField::Account),
+            "cc" => Some(ConfigField::Cc),
+            "lang" => Some(ConfigField::Lang),
+            "backup_retention_count" => Some(ConfigField::BackupRetentionCount),
+            _ => None,
+        }
+    }
+
+    /// All known config fields, in display order.
+    pub fn all() -> &'static [ConfigField] {
+        &[
+            ConfigField::SteamDir,
+            ConfigField::Account,
+            ConfigField::Cc,
+            ConfigField::Lang,
+            ConfigField::BackupRetentionCount,
+        ]
+    }
+
+    /// Validate and normalise a raw string value for this field.
+    ///
+    /// Returns the string to store in `config.toml`, or an error message
+    /// when the value is malformed.
+    pub fn normalise(&self, raw: &str) -> std::result::Result<String, String> {
+        let trimmed = raw.trim();
+        match self {
+            ConfigField::SteamDir | ConfigField::Account | ConfigField::Cc | ConfigField::Lang => {
+                if trimmed.is_empty() {
+                    return Err("value must not be empty".into());
+                }
+                Ok(trimmed.to_string())
+            }
+            ConfigField::BackupRetentionCount => {
+                let n: u32 = trimmed
+                    .parse()
+                    .map_err(|_| "value must be a non-negative integer".to_string())?;
+                Ok(n.to_string())
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // On-disk config file schema (TOML)
@@ -200,12 +275,107 @@ fn detect_steam_dir() -> Option<PathBuf> {
 // Config file loading
 // ---------------------------------------------------------------------------
 
+/// Return the platform-specific path to the Vapourfly config file.
+///
+/// This is `{platform_config_dir}/vapourfly/config.toml`. Returns `None` when
+/// the platform config directory cannot be determined.
+pub fn config_file_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("vapourfly").join("config.toml"))
+}
+
 /// Attempt to load and parse the TOML config file from the platform config
 /// directory. Returns `None` if the file doesn't exist or is unparseable.
 fn load_config_file() -> Option<ConfigFile> {
-    let path = dirs::config_dir()?.join("vapourfly").join("config.toml");
+    let path = config_file_path()?;
     let contents = std::fs::read_to_string(&path).ok()?;
     toml::from_str(&contents).ok()
+}
+
+/// Read the config file at `path` as a TOML table, or return an empty table
+/// when the file does not exist or is unparseable.
+fn load_config_table_at(path: &Path) -> toml::Value {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| toml::from_str(&s).ok())
+        .filter(toml::Value::is_table)
+        .unwrap_or(toml::Value::Table(toml::map::Map::new()))
+}
+
+/// Persist a TOML table to `path`, creating parent directories as needed.
+fn write_config_table_at(table: &toml::Value, path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            VapourflyError::Internal(format!(
+                "failed to create config directory {}: {e}",
+                parent.display()
+            ))
+        })?;
+    }
+
+    let toml_str = toml::to_string_pretty(table)
+        .map_err(|e| VapourflyError::Internal(format!("failed to serialise config: {e}")))?;
+
+    std::fs::write(path, toml_str).map_err(|e| {
+        VapourflyError::Internal(format!("failed to write config to {}: {e}", path.display()))
+    })
+}
+
+/// Set a single config field in `config.toml`, creating the file if needed.
+///
+/// Existing keys that are not `field` are preserved. Pass the already-normalised
+/// string value; use [`ConfigField::normalise`] to validate user input first.
+pub fn set_config_field(field: ConfigField, value: &str) -> Result<()> {
+    set_config_field_at(
+        field,
+        value,
+        &config_file_path().ok_or_else(|| {
+            VapourflyError::Internal("could not determine platform config directory".into())
+        })?,
+    )
+}
+
+/// Same as [`set_config_field`] but writes to an explicit path. Used by tests.
+pub(crate) fn set_config_field_at(field: ConfigField, value: &str, path: &Path) -> Result<()> {
+    let mut table = load_config_table_at(path);
+    let tbl = table
+        .as_table_mut()
+        .ok_or_else(|| VapourflyError::Internal("config file root is not a table".into()))?;
+
+    let toml_value = match field {
+        ConfigField::BackupRetentionCount => {
+            let n: i64 = value.parse().map_err(|_| {
+                VapourflyError::InvalidInput("backup_retention_count must be an integer".into())
+            })?;
+            toml::Value::Integer(n)
+        }
+        _ => toml::Value::String(value.to_string()),
+    };
+
+    tbl.insert(field.as_key().to_string(), toml_value);
+    write_config_table_at(&table, path)
+}
+
+/// Remove a config field from `config.toml`.
+///
+/// Returns `Ok(())` even when the key was absent. The file is created (empty)
+/// when it does not exist, so callers can treat the result as "field is now
+/// unset".
+pub fn unset_config_field(field: ConfigField) -> Result<()> {
+    unset_config_field_at(
+        field,
+        &config_file_path().ok_or_else(|| {
+            VapourflyError::Internal("could not determine platform config directory".into())
+        })?,
+    )
+}
+
+/// Same as [`unset_config_field`] but writes to an explicit path. Used by tests.
+pub(crate) fn unset_config_field_at(field: ConfigField, path: &Path) -> Result<()> {
+    let mut table = load_config_table_at(path);
+    if let Some(tbl) = table.as_table_mut() {
+        tbl.remove(field.as_key());
+    }
+    write_config_table_at(&table, path)
 }
 
 // ---------------------------------------------------------------------------
@@ -579,5 +749,94 @@ backup_retention_count = 10
             lang: "english".into(),
             backup_retention_count: 5,
         }
+    }
+
+    // -- ConfigField ---------------------------------------------------------
+
+    #[test]
+    fn config_field_round_trips_keys() {
+        for field in ConfigField::all() {
+            let key = field.as_key();
+            assert_eq!(ConfigField::from_key(key), Some(*field));
+        }
+        assert!(ConfigField::from_key("unknown_key").is_none());
+    }
+
+    #[test]
+    fn config_field_normalise_rejects_empty_string() {
+        for field in ConfigField::all() {
+            assert!(
+                field.normalise("").is_err(),
+                "{field:?} should reject empty"
+            );
+        }
+    }
+
+    #[test]
+    fn config_field_normalise_backup_retention_requires_integer() {
+        assert!(ConfigField::BackupRetentionCount.normalise("abc").is_err());
+        assert!(ConfigField::BackupRetentionCount.normalise("-1").is_err());
+        assert!(ConfigField::BackupRetentionCount.normalise("3").is_ok());
+    }
+
+    // -- set_config_field_at / unset_config_field_at -------------------------
+
+    #[test]
+    fn set_config_field_creates_file_and_preserves_other_keys() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+
+        set_config_field_at(ConfigField::Cc, "JP", &path).unwrap();
+        set_config_field_at(ConfigField::Lang, "japanese", &path).unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let parsed: ConfigFile = toml::from_str(&contents).unwrap();
+        assert_eq!(parsed.cc.as_deref(), Some("JP"));
+        assert_eq!(parsed.lang.as_deref(), Some("japanese"));
+    }
+
+    #[test]
+    fn set_config_field_overwrites_existing_value() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+
+        set_config_field_at(ConfigField::Account, "first", &path).unwrap();
+        set_config_field_at(ConfigField::Account, "second", &path).unwrap();
+
+        let parsed: ConfigFile = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(parsed.account.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn set_config_field_backup_retention_writes_integer() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+
+        set_config_field_at(ConfigField::BackupRetentionCount, "10", &path).unwrap();
+
+        let parsed: ConfigFile = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(parsed.backup_retention_count, Some(10));
+    }
+
+    #[test]
+    fn unset_config_field_removes_key() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+
+        set_config_field_at(ConfigField::Account, "someone", &path).unwrap();
+        set_config_field_at(ConfigField::Cc, "GB", &path).unwrap();
+        unset_config_field_at(ConfigField::Account, &path).unwrap();
+
+        let parsed: ConfigFile = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(parsed.account.is_none());
+        assert_eq!(parsed.cc.as_deref(), Some("GB"));
+    }
+
+    #[test]
+    fn unset_config_field_on_missing_file_is_ok() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("nested/config.toml");
+        unset_config_field_at(ConfigField::Account, &path).unwrap();
+        assert!(path.exists());
     }
 }

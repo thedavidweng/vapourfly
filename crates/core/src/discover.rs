@@ -67,8 +67,7 @@ pub fn generate_discover_playlist(games: &[Game], options: &DiscoverOptions) -> 
         let seed_name = games
             .iter()
             .find(|g| g.app_id == seed_id)
-            .map(|g| g.name.as_str())
-            .unwrap_or("selected game");
+            .map_or("selected game", |g| g.name.as_str());
         (
             format!("discover-{seed_id}"),
             format!("Discover: {seed_name}"),
@@ -121,7 +120,7 @@ fn score_candidate(
     }
 
     if !taste_vector.is_empty() {
-        let keywords = game_keywords_lower(game);
+        let keywords = game.keywords_lower();
         let total_taste: f32 = taste_vector.values().sum();
         if total_taste > 0.0 {
             let overlap: f32 = keywords.iter().filter_map(|kw| taste_vector.get(kw)).sum();
@@ -142,24 +141,6 @@ fn score_candidate(
     }
 
     score
-}
-
-fn game_keywords_lower(game: &Game) -> Vec<String> {
-    let mut kws: Vec<String> = Vec::new();
-    if let Some(igdb) = &game.igdb {
-        kws.extend(igdb.keywords.iter().map(|s| s.to_lowercase()));
-        kws.extend(igdb.themes.iter().map(|s| s.to_lowercase()));
-        kws.extend(igdb.genres.iter().map(|s| s.to_lowercase()));
-    }
-    if kws.is_empty() {
-        if let Some(rawg) = &game.rawg {
-            kws.extend(rawg.tags.iter().map(|s| s.to_lowercase()));
-            kws.extend(rawg.genres.iter().map(|s| s.to_lowercase()));
-        }
-    }
-    kws.sort();
-    kws.dedup();
-    kws
 }
 
 #[cfg(test)]

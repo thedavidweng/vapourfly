@@ -32,8 +32,8 @@ feature row, the command reference, and the relevant GUI smoke test.
 | Playlist import | Yes | Yes | Imports Vapourfly JSON playlist files. CLI stores imported playlists under the app data playlist directory. |
 | Playlist export | Yes | Yes | CLI exports a stored playlist by ID. GUI exports the currently loaded playlist to a selected JSON path. |
 | Playlist match report | Yes | Yes | Reports owned, missing, played, unplayed, hidden, and junk counts for a playlist. |
-| Playlist completion price | Partial | Partial | Core can calculate missing-game price when `steam_store` data is present. CLI/GUI match flows hydrate cached metadata before matching, so this field appears when cache data exists. |
-| Rule-based playlists | Partial | Partial | Rule files can be imported and evaluated. CLI/GUI workflows hydrate cached metadata before rule evaluation when cache entries exist. |
+| Playlist completion price | Yes | Yes | CLI `playlist match`/`playlist import` and GUI match report show the sum of Steam Store prices for owned, unplayed, non-free games. Requires `steam-store` cache entries; run `vapourfly cache refresh --source steam-store` to populate. The CLI and GUI both display the field with a hint when no price data is cached. |
+| Rule-based playlists | Yes | Yes | CLI `playlist create-rules` and GUI Playlists view create rule-based playlists. CLI/GUI workflows hydrate cached metadata before rule evaluation. Rule operators: `ProtonAtLeast`, `HltbMaxMinutes`, `ControllerSupportFull`, `PlaytimeBetween`, `RatingAtLeast`, `HasGenre`, `HasTag`, `Installed`, `NotJunk`, `NotHidden`, `And`, `Or`, `Not`. |
 | Playlist sync to Steam collection | Yes | Yes | CLI `vapourfly sync collection <playlist-id>` and GUI Playlists sync resolve a playlist and write a Steam collection with dry-run/confirmation. |
 | Data source cache refresh | Yes | Yes | CLI `cache refresh --source <source>` and GUI Data Sources refresh support `igdb`, `rawg`, `protondb`, `pcgw`, `hltb`, `steam-store`, and `all`. |
 | Data source status | Yes | Yes | CLI `sources status`; GUI Data Sources table. Shows credential state, cache entries, stale entries, and last success. |
@@ -41,7 +41,7 @@ feature row, the command reference, and the relevant GUI smoke test.
 | Backup list | Yes | Yes | Lists backups next to the Steam cloud storage file. |
 | Backup restore | Yes | Yes | Restores a selected backup after confirmation. |
 | Diagnostics export | Yes | Yes | CLI `vapourfly diagnostics export --out <file>` and GUI Settings diagnostics export write sanitized support data. |
-| Settings | Partial | Yes | CLI uses flags, environment variables, and the standard config file. GUI edits Steam directory, account, store locale, backup retention, and write safety. |
+| Settings | Yes | Yes | CLI `settings show` displays resolved config; `settings set <field> <value>` and `settings unset <field>` edit `config.toml`. GUI edits Steam directory, account, store locale, backup retention, and write safety. Settable fields: `steam_dir`, `account`, `cc`, `lang`, `backup_retention_count`. |
 | Playlist creation/editing UI | Yes | Yes | CLI `playlist create`; GUI Playlists view supports create/edit fields and save to the local playlist store. |
 | Share codes | Yes | Yes | `VF1:` base64url playlist codes via CLI `playlist share` / `playlist import --code` and GUI copy/import controls. |
 | Discover / similar-game playlist generation | Yes | Yes | CLI `playlist discover`; GUI Playlists view generates a Discover playlist from taste similarity with optional seed AppID and count controls. |

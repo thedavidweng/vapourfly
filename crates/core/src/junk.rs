@@ -83,23 +83,7 @@ fn effective_completion_time(
 ///
 /// Priority: manual override > RAWG (native 0-5) > IGDB (0-100, converted).
 fn effective_rating(game: &Game, overrides: &ManualOverrides) -> Option<(f32, RatingSource)> {
-    if let Some(&rating) = overrides.manual_rating.get(&game.app_id) {
-        return Some((rating, RatingSource::ManualOverride));
-    }
-    if let Some(rawg) = &game.rawg {
-        if let Some(r) = rawg.rating_0_5 {
-            return Some((r, RatingSource::Rawg));
-        }
-    }
-    if let Some(igdb) = &game.igdb {
-        if let Some(r) = igdb.rating_0_100 {
-            return Some((r / 20.0, RatingSource::Igdb));
-        }
-        if let Some(r) = igdb.total_rating_0_100 {
-            return Some((r / 20.0, RatingSource::Igdb));
-        }
-    }
-    None
+    game.effective_rating(Some(&overrides.manual_rating))
 }
 
 // ---------------------------------------------------------------------------

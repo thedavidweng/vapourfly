@@ -44,16 +44,28 @@ impl IgdbClient {
     /// Create a new IGDB client from environment variables with a custom
     /// [`HttpClient`] (e.g. one backed by a [`MockBackend`](crate::http::MockBackend)).
     pub fn from_env_with_http(http: HttpClient) -> Result<Self> {
-        let client_id = std::env::var("VAPOURFLY_IGDB_CLIENT_ID").map_err(|_| {
-            VapourflyError::CredentialsMissing {
+        let client_id = std::env::var("VAPOURFLY_IGDB_CLIENT_ID")
+            .map_err(|_| VapourflyError::CredentialsMissing {
                 provider: "IGDB".into(),
-            }
-        })?;
-        let client_secret = std::env::var("VAPOURFLY_IGDB_CLIENT_SECRET").map_err(|_| {
-            VapourflyError::CredentialsMissing {
+            })?
+            .trim()
+            .to_string();
+        if client_id.is_empty() {
+            return Err(VapourflyError::CredentialsMissing {
                 provider: "IGDB".into(),
-            }
-        })?;
+            });
+        }
+        let client_secret = std::env::var("VAPOURFLY_IGDB_CLIENT_SECRET")
+            .map_err(|_| VapourflyError::CredentialsMissing {
+                provider: "IGDB".into(),
+            })?
+            .trim()
+            .to_string();
+        if client_secret.is_empty() {
+            return Err(VapourflyError::CredentialsMissing {
+                provider: "IGDB".into(),
+            });
+        }
         Ok(Self {
             client_id,
             client_secret,
@@ -174,9 +186,11 @@ impl IgdbClient {
         // Step 2: Fetch full game details.
         let mut data = self.fetch_game_details(igdb_id)?;
 
-        // Step 3: Fetch time-to-beat.
-        if let Ok(Some(ttb)) = self.fetch_time_to_beat(igdb_id) {
-            data.time_to_beat = Some(ttb);
+        // Step 3: Fetch time-to-beat (non-critical; log on error).
+        match self.fetch_time_to_beat(igdb_id) {
+            Ok(Some(ttb)) => data.time_to_beat = Some(ttb),
+            Ok(None) => {}
+            Err(e) => tracing::warn!(error = %e, igdb_id, "failed to fetch time-to-beat"),
         }
 
         // Mark as confirmed if we found it via external_games with Steam source.

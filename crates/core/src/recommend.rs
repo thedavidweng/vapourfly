@@ -59,10 +59,10 @@ impl SplitMix64 {
     }
 
     fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9e3779b97f4a7c15);
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
         z ^ (z >> 31)
     }
 
@@ -99,30 +99,11 @@ pub fn build_taste_vector(games: &[Game]) -> HashMap<String, f32> {
 
         let weight = (1.0 + playtime).ln();
 
-        // Prefer IGDB keywords, then themes, then genres
-        let mut keywords: Vec<String> = Vec::new();
-        if let Some(igdb) = &game.igdb {
-            keywords.extend(igdb.keywords.iter().cloned());
-            keywords.extend(igdb.themes.iter().cloned());
-            keywords.extend(igdb.genres.iter().cloned());
-        }
-
-        // Fall back to RAWG if IGDB is absent
-        if keywords.is_empty() {
-            if let Some(rawg) = &game.rawg {
-                keywords.extend(rawg.tags.iter().cloned());
-                keywords.extend(rawg.genres.iter().cloned());
-            }
-        }
-
-        // Deduplicate per game so a game with genre+tag overlap doesn't
-        // double-count a keyword.
-        let mut seen = std::collections::HashSet::new();
+        // Use the shared keyword helper (IGDB preferred, RAWG fallback).
+        // The helper already lowercases, sorts, and deduplicates.
+        let keywords = game.keywords_lower();
         for kw in keywords {
-            let lower = kw.to_lowercase();
-            if seen.insert(lower.clone()) {
-                *vector.entry(lower).or_insert(0.0) += weight;
-            }
+            *vector.entry(kw).or_insert(0.0) += weight;
         }
     }
 
@@ -225,7 +206,7 @@ fn score_game(
 
     // -- taste_similarity -----------------------------------------------------
     if !taste_vector.is_empty() {
-        let game_keywords = game_keywords_lower(game);
+        let game_keywords = game.keywords_lower();
         if !game_keywords.is_empty() {
             let mut overlap: f32 = 0.0;
             for kw in &game_keywords {
@@ -277,25 +258,6 @@ fn score_game(
     }
 
     (score, reasons)
-}
-
-/// Collect lowercase keywords (IGDB preferred, RAWG fallback) for a game.
-fn game_keywords_lower(game: &Game) -> Vec<String> {
-    let mut kws: Vec<String> = Vec::new();
-    if let Some(igdb) = &game.igdb {
-        kws.extend(igdb.keywords.iter().map(|s| s.to_lowercase()));
-        kws.extend(igdb.themes.iter().map(|s| s.to_lowercase()));
-        kws.extend(igdb.genres.iter().map(|s| s.to_lowercase()));
-    }
-    if kws.is_empty() {
-        if let Some(rawg) = &game.rawg {
-            kws.extend(rawg.tags.iter().map(|s| s.to_lowercase()));
-            kws.extend(rawg.genres.iter().map(|s| s.to_lowercase()));
-        }
-    }
-    kws.sort();
-    kws.dedup();
-    kws
 }
 
 // ---------------------------------------------------------------------------

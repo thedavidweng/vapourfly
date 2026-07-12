@@ -181,6 +181,9 @@ Import, export, and match playlists.
 # Create a manual playlist and store it locally
 vapourfly playlist create --id deck-shortlist --name "Deck Shortlist" --app-ids 292030,367520
 
+# Create a rule-based playlist from a JSON rules file
+vapourfly playlist create-rules --id installed-unplayed --name "Installed Unplayed" --rules rules.json
+
 # Import a playlist from JSON
 vapourfly playlist import my-playlist.json
 
@@ -202,7 +205,7 @@ vapourfly playlist match my-playlist.json
 vapourfly playlist match my-playlist.json --format json
 ```
 
-**Match report columns (table):** Owned, Missing, Played, Unplayed, Hidden, Junk counts.
+**Match report columns (table):** Owned, Missing, Played, Unplayed, Hidden, Junk counts, plus Completion price (sum of Steam Store prices for owned, unplayed, non-free games; requires `steam-store` cache entries).
 
 **Playlist types:**
 - **Manual** -- explicit list of AppIDs
@@ -211,6 +214,10 @@ vapourfly playlist match my-playlist.json --format json
 Available rule operators: `ProtonAtLeast`, `HltbMaxMinutes`,
 `ControllerSupportFull`, `PlaytimeBetween`, `RatingAtLeast`, `HasGenre`,
 `HasTag`, `Installed`, `NotJunk`, `NotHidden`, `And`, `Or`, `Not`.
+
+`playlist create-rules --rules <file>` accepts either a bare JSON rules array
+(`[{"op":"Installed"}, ...]`) or a full Vapourfly playlist JSON file (the rules
+are extracted from `content.value.rules`).
 
 Playlist import, match, sync, and discover workflows hydrate cached external
 metadata before evaluating rules or similarity. Rules that depend on external
@@ -284,6 +291,35 @@ vapourfly diagnostics export --out diagnostics.json
 ```
 
 See [PRIVACY.md](PRIVACY.md) for what is included and redacted.
+
+### `vapourfly settings`
+
+Show or edit Vapourfly settings stored in `config.toml`.
+
+```bash
+# Show resolved configuration (table)
+vapourfly settings show
+
+# Show resolved configuration (JSON)
+vapourfly settings show --format json
+
+# Set a field
+vapourfly settings set cc JP
+vapourfly settings set lang japanese
+vapourfly settings set backup_retention_count 10
+vapourfly settings set steam_dir /opt/steam
+vapourfly settings set account myuser
+
+# Remove a field (falls back to env var or platform default)
+vapourfly settings unset account
+```
+
+**Settable fields:** `steam_dir`, `account`, `cc`, `lang`, `backup_retention_count`.
+
+`settings show` reports the resolved configuration (CLI flags and environment
+variables override config file values, matching the precedence documented at
+the top of `vapourfly-core/src/config.rs`). The config file path is printed so
+you can edit it by hand if needed.
 
 ---
 

@@ -29,11 +29,17 @@ impl RawgClient {
     /// Create a new RAWG client from environment variables with a custom
     /// [`HttpClient`] (e.g. one backed by a [`MockBackend`](crate::http::MockBackend)).
     pub fn from_env_with_http(http: HttpClient) -> Result<Self> {
-        let api_key = std::env::var("VAPOURFLY_RAWG_KEY").map_err(|_| {
-            VapourflyError::CredentialsMissing {
+        let api_key = std::env::var("VAPOURFLY_RAWG_KEY")
+            .map_err(|_| VapourflyError::CredentialsMissing {
                 provider: "RAWG".into(),
-            }
-        })?;
+            })?
+            .trim()
+            .to_string();
+        if api_key.is_empty() {
+            return Err(VapourflyError::CredentialsMissing {
+                provider: "RAWG".into(),
+            });
+        }
         Ok(Self { api_key, http })
     }
 
