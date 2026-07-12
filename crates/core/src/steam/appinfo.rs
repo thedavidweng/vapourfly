@@ -29,13 +29,10 @@ const TYPE_END: u8 = 8;
 ///
 /// Missing AppIDs are omitted from the result. Returns an empty map when the
 /// file does not exist.
-pub fn lookup_appinfo_names<S>(
+pub fn lookup_appinfo_names(
     steam_dir: &Path,
-    wanted: &HashSet<u32, S>,
-) -> Result<HashMap<u32, String>>
-where
-    S: std::hash::BuildHasher,
-{
+    wanted: &HashSet<u32>,
+) -> Result<HashMap<u32, String>> {
     if wanted.is_empty() {
         return Ok(HashMap::new());
     }
@@ -52,13 +49,10 @@ where
     parse_appinfo_file(&mut file, wanted)
 }
 
-fn parse_appinfo_file<R: Read + Seek, S>(
+fn parse_appinfo_file<R: Read + Seek>(
     file: &mut R,
-    wanted: &HashSet<u32, S>,
-) -> Result<HashMap<u32, String>>
-where
-    S: std::hash::BuildHasher,
-{
+    wanted: &HashSet<u32>,
+) -> Result<HashMap<u32, String>> {
     let magic = read_u32(file)?;
     let _universe = read_u32(file)?;
 

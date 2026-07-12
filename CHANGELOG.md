@@ -27,6 +27,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `vapourfly_core::config::ConfigField` enum and `set_config_field` / `unset_config_field` functions for programmatic config editing.
 - `vapourfly_core::models::Money::format()` method for rendering prices as major-unit currency strings.
 
+### Changed
+
+#### CLI
+
+- `vapourfly backup restore` now requires either `--dry-run` or `--confirm` (matching the write-safety convention used by other write commands). `--dry-run` previews the restore (showing backup and current SHA-256 hashes) without writing; `--confirm` executes the restore. The previous implicit-confirm behaviour is removed.
+
+#### Core
+
+- `config::load_config_table_at` now returns an error when the config file exists but cannot be parsed, instead of silently replacing it with an empty table. A missing file still yields an empty table so first-run creation works.
+- `steam::appinfo::lookup_appinfo_names` no longer takes a generic `BuildHasher` parameter; it accepts a standard `HashSet<u32>`. No caller used a custom hasher.
+
+#### GUI
+
+- Settings panel now writes `config.toml` via the shared `vapourfly_core::config` API instead of a duplicated read-modify-write implementation.
+
+
 ## [0.1.0] - 2026-06-26
 
 Initial release of Vapourfly — a local-first CLI/GUI tool for managing Steam game libraries.

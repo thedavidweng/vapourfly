@@ -44,7 +44,6 @@ unused_must_use = "deny"
 # Enable pedantic as warnings, then allow specific lints that are too noisy
 # for this codebase or are stylistic preferences.
 pedantic = { level = "warn", priority = -1 }
-must_use = { level = "warn", priority = -1 }
 
 # Allow: these produce false positives or are too noisy for test-heavy code.
 must_use_candidate = "allow"
@@ -81,9 +80,5 @@ assigning_clones = "allow"
 ptr_arg = "allow"
 float_cmp = "allow"
 match_wildcard_for_single_variants = "allow"
-
-
-
-
-
-
+# No caller uses a custom BuildHasher; generalising HashSet params is YAGNI.
+implicit_hasher = "allow"

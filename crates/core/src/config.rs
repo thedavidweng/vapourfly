@@ -291,14 +291,38 @@ fn load_config_file() -> Option<ConfigFile> {
     toml::from_str(&contents).ok()
 }
 
-/// Read the config file at `path` as a TOML table, or return an empty table
-/// when the file does not exist or is unparseable.
-fn load_config_table_at(path: &Path) -> toml::Value {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| toml::from_str(&s).ok())
-        .filter(toml::Value::is_table)
-        .unwrap_or(toml::Value::Table(toml::map::Map::new()))
+/// Read the config file at `path` as a TOML table.
+///
+/// A missing file yields an empty table (so callers can create the file on
+/// first write). A present-but-unparseable file returns an error so that a
+/// corrupted config is never silently overwritten. A non-table root (e.g. a
+/// bare scalar) also returns an error.
+fn load_config_table_at(path: &Path) -> Result<toml::Value> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(toml::Value::Table(toml::map::Map::new()));
+        }
+        Err(e) => {
+            return Err(VapourflyError::Internal(format!(
+                "failed to read config {}: {e}",
+                path.display()
+            )));
+        }
+    };
+    let value: toml::Value = toml::from_str(&contents).map_err(|e| {
+        VapourflyError::Internal(format!(
+            "failed to parse config {}: {e}",
+            path.display()
+        ))
+    })?;
+    if !value.is_table() {
+        return Err(VapourflyError::Internal(format!(
+            "config file {} root is not a table",
+            path.display()
+        )));
+    }
+    Ok(value)
 }
 
 /// Persist a TOML table to `path`, creating parent directories as needed.
@@ -336,7 +360,7 @@ pub fn set_config_field(field: ConfigField, value: &str) -> Result<()> {
 
 /// Same as [`set_config_field`] but writes to an explicit path. Used by tests.
 pub(crate) fn set_config_field_at(field: ConfigField, value: &str, path: &Path) -> Result<()> {
-    let mut table = load_config_table_at(path);
+    let mut table = load_config_table_at(path)?;
     let tbl = table
         .as_table_mut()
         .ok_or_else(|| VapourflyError::Internal("config file root is not a table".into()))?;
@@ -371,7 +395,7 @@ pub fn unset_config_field(field: ConfigField) -> Result<()> {
 
 /// Same as [`unset_config_field`] but writes to an explicit path. Used by tests.
 pub(crate) fn unset_config_field_at(field: ConfigField, path: &Path) -> Result<()> {
-    let mut table = load_config_table_at(path);
+    let mut table = load_config_table_at(path)?;
     if let Some(tbl) = table.as_table_mut() {
         tbl.remove(field.as_key());
     }
@@ -838,5 +862,19 @@ backup_retention_count = 10
         let path = tmp.path().join("nested/config.toml");
         unset_config_field_at(ConfigField::Account, &path).unwrap();
         assert!(path.exists());
+    }
+
+    #[test]
+    fn set_config_field_rejects_corrupt_config() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "this is not = valid = toml").unwrap();
+        let err = set_config_field_at(ConfigField::Cc, "JP", &path);
+        assert!(err.is_err(), "should refuse to overwrite corrupt config");
+        // The corrupt file must be left untouched.
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "this is not = valid = toml"
+        );
     }
 }

@@ -234,6 +234,9 @@ struct VapourflyApp {
     playlist_edit_name: String,
     playlist_edit_description: String,
     playlist_edit_app_ids: String,
+    /// Optional JSON rules array. When non-empty, "Save Playlist" creates a
+    /// rule-based playlist instead of a manual one.
+    playlist_edit_rules: String,
     playlist_last_import: Option<PlaylistFile>,
     playlist_match_report: Option<PlaylistMatchReport>,
     playlist_discover_seed: String,
@@ -366,6 +369,18 @@ fn manual_playlist_app_ids_csv(pf: &PlaylistFile) -> String {
             .collect::<Vec<_>>()
             .join(", "),
         PlaylistContent::Rules { .. } => String::new(),
+    }
+}
+
+/// Render a playlist's rules as a pretty-printed JSON array string, or an
+/// empty string for manual playlists. Used to populate the Rules JSON edit
+/// field when loading an existing playlist.
+fn playlist_rules_json(pf: &PlaylistFile) -> String {
+    match &pf.playlist.content {
+        PlaylistContent::Rules { rules } => {
+            serde_json::to_string_pretty(rules).unwrap_or_default()
+        }
+        PlaylistContent::Manual { .. } => String::new(),
     }
 }
 
@@ -638,6 +653,7 @@ impl VapourflyApp {
             playlist_edit_name: String::new(),
             playlist_edit_description: String::new(),
             playlist_edit_app_ids: String::new(),
+            playlist_edit_rules: String::new(),
             playlist_last_import: None,
             playlist_match_report: None,
             playlist_discover_seed: String::new(),
@@ -1154,6 +1170,51 @@ impl VapourflyApp {
             .map_err(|e| format!("Failed to create playlist dir: {e}"))?;
         let path = store_dir.join(format!("{}.json", pf.playlist.id));
         playlist::export_playlist(pf, &path).map_err(|e| e.to_string())
+    }
+
+    /// Build a `PlaylistFile` from the current edit fields.
+    ///
+    /// When `playlist_edit_rules` is non-empty, it is parsed as a JSON rules
+    /// array and a rule-based playlist is produced (App IDs are ignored).
+    /// Otherwise the App IDs field is parsed into a manual playlist.
+    fn build_playlist_from_edit_fields(&self) -> Result<PlaylistFile, String> {
+        let id = self.playlist_edit_id.trim();
+        if id.is_empty() {
+            return Err("Playlist ID is required.".into());
+        }
+        let name = self.playlist_edit_name.trim();
+        if name.is_empty() {
+            return Err("Playlist name is required.".into());
+        }
+
+        let content = if self.playlist_edit_rules.trim().is_empty() {
+            let app_ids: Vec<u32> = self
+                .playlist_edit_app_ids
+                .split(',')
+                .filter_map(|part| part.trim().parse().ok())
+                .collect();
+            PlaylistContent::Manual { app_ids }
+        } else {
+            let rules: Vec<PlaylistRule> = serde_json::from_str(
+                self.playlist_edit_rules.trim(),
+            )
+            .map_err(|e| format!("Invalid Rules JSON: {e}"))?;
+            if rules.is_empty() {
+                return Err("Rules JSON must contain at least one rule.".into());
+            }
+            PlaylistContent::Rules { rules }
+        };
+
+        Ok(PlaylistFile {
+            vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
+            created_by: "user".into(),
+            playlist: Playlist {
+                id: id.to_string(),
+                name: name.to_string(),
+                description: self.playlist_edit_description.clone(),
+                content,
+            },
+        })
     }
 
     fn export_loaded_playlist(&self) -> Result<(), String> {
@@ -2520,6 +2581,25 @@ impl VapourflyApp {
                     .color(TEXT_MUTED),
             );
             ui.add_space(SP_2);
+            form_field(ui, "Rules JSON:", |ui| {
+                ui.add_sized(
+                    [360.0, 80.0],
+                    egui::TextEdit::multiline(&mut self.playlist_edit_rules)
+                        .code_editor()
+                        .desired_width(360.0),
+                );
+            });
+            ui.label(
+                RichText::new(
+                    "Optional. A JSON rules array (e.g. \
+                     `[{\"op\":\"Installed\"},{\"op\":\"NotHidden\"}]`). When \
+                     provided, App IDs are ignored and a rule-based playlist is \
+                     created.",
+                )
+                .size(TS_SM)
+                .color(TEXT_MUTED),
+            );
+            ui.add_space(SP_2);
             if ui
                 .add(
                     egui::Button::new(
@@ -2533,28 +2613,19 @@ impl VapourflyApp {
                 )
                 .clicked()
             {
-                let app_ids: Vec<u32> = self
-                    .playlist_edit_app_ids
-                    .split(',')
-                    .filter_map(|part| part.trim().parse().ok())
-                    .collect();
-                let pf = PlaylistFile {
-                    vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
-                    created_by: "user".into(),
-                    playlist: Playlist {
-                        id: self.playlist_edit_id.clone(),
-                        name: self.playlist_edit_name.clone(),
-                        description: self.playlist_edit_description.clone(),
-                        content: PlaylistContent::Manual { app_ids },
+                match self.build_playlist_from_edit_fields() {
+                    Ok(pf) => match self.store_playlist(&pf) {
+                        Ok(()) => {
+                            self.playlist_last_import = Some(pf.clone());
+                            self.match_playlist_against_library(&pf);
+                            self.success_msg =
+                                Some(format!("Saved playlist '{}'", pf.playlist.name));
+                        }
+                        Err(e) => self.error = Some(e),
                     },
-                };
-                match self.store_playlist(&pf) {
-                    Ok(()) => {
-                        self.playlist_last_import = Some(pf.clone());
-                        self.match_playlist_against_library(&pf);
-                        self.success_msg = Some(format!("Saved playlist '{}'", pf.playlist.name));
+                    Err(e) => {
+                        self.error = Some(e);
                     }
-                    Err(e) => self.error = Some(e),
                 }
             }
         });
@@ -2588,6 +2659,7 @@ impl VapourflyApp {
                                 self.playlist_edit_name = pf.playlist.name.clone();
                                 self.playlist_edit_description = pf.playlist.description.clone();
                                 self.playlist_edit_app_ids = manual_playlist_app_ids_csv(&pf);
+                                self.playlist_edit_rules = playlist_rules_json(&pf);
                             }
                         }
                         Err(e) => self.error = Some(format!("Import failed: {e}")),
@@ -2622,6 +2694,7 @@ impl VapourflyApp {
                                 self.playlist_edit_name = pf.playlist.name.clone();
                                 self.playlist_edit_description = pf.playlist.description.clone();
                                 self.playlist_edit_app_ids = manual_playlist_app_ids_csv(&pf);
+                                self.playlist_edit_rules = playlist_rules_json(&pf);
                             }
                         }
                         Err(e) => self.error = Some(format!("Share code import failed: {e}")),
@@ -2890,12 +2963,19 @@ impl VapourflyApp {
                 if let Some(price) = &report.completion_price {
                     ui.add_space(SP_2);
                     ui.label(
-                        RichText::new(format!(
-                            "Completion price: {} {}",
-                            price.currency, price.amount_cents
-                        ))
-                        .size(TS_BODY)
-                        .color(TEXT_SECONDARY),
+                        RichText::new(format!("Completion price: {}", price.format()))
+                            .size(TS_BODY)
+                            .color(TEXT_SECONDARY),
+                    );
+                } else {
+                    ui.add_space(SP_2);
+                    ui.label(
+                        RichText::new(
+                            "Completion price: (no Steam Store price cached; run \
+                             'vapourfly cache refresh --source steam-store')",
+                        )
+                        .size(TS_SM)
+                        .color(TEXT_MUTED),
                     );
                 }
             });
@@ -3755,114 +3835,70 @@ impl VapourflyApp {
     }
 
     /// Save settings to config.toml.
+    ///
+    /// Uses `vapourfly_core::config::set_config_field` / `unset_config_field`
+    /// so the on-disk read-modify-write logic (including atomic preservation
+    /// of fields this panel does not manage) lives in one place. Each call
+    /// reads the current file, mutates a single key, and writes it back.
     fn save_settings(&mut self) {
-        let config_path = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("vapourfly")
-            .join("config.toml");
+        use vapourfly_core::config::{ConfigField, set_config_field, unset_config_field};
 
-        // Create directory if needed
-        if let Some(parent) = config_path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                self.settings_save_msg = Some(format!("Failed to create config directory: {e}"));
-                return;
-            }
-        }
-
-        // Read existing config.toml to preserve fields this panel does not
-        // manage.
-        let mut table: toml::Value = std::fs::read_to_string(&config_path)
-            .ok()
-            .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or(toml::Value::Table(toml::map::Map::new()));
-
-        // Ensure we have a top-level table.
-        if !table.is_table() {
-            table = toml::Value::Table(toml::map::Map::new());
-        }
-
-        let backup_retention = self.backup_retention_edit.parse::<u32>().ok();
-
-        // Helper: set a string key, removing it when the value is None.
-        let tbl = table.as_table_mut().unwrap();
-        let set_str =
-            |tbl: &mut toml::map::Map<String, toml::Value>, key: &str, val: Option<String>| {
-                match val {
-                    Some(s) => {
-                        tbl.insert(key.to_string(), toml::Value::String(s));
-                    }
-                    None => {
-                        tbl.remove(key);
-                    }
-                }
+        // Helper: set or unset a string field depending on whether the edit
+        // buffer is empty.
+        let mut errors: Vec<String> = Vec::new();
+        let apply_str = |field: ConfigField, value: &str, errors: &mut Vec<String>| {
+            let result = if value.is_empty() {
+                unset_config_field(field)
+            } else {
+                set_config_field(field, value)
             };
-
-        set_str(
-            tbl,
-            "steam_dir",
-            if self.steam_dir_edit.is_empty() {
-                None
-            } else {
-                Some(self.steam_dir_edit.clone())
-            },
-        );
-        set_str(
-            tbl,
-            "account",
-            if self.account_edit.is_empty() {
-                None
-            } else {
-                Some(self.account_edit.clone())
-            },
-        );
-        set_str(
-            tbl,
-            "cc",
-            if self.cc_edit.is_empty() {
-                None
-            } else {
-                Some(self.cc_edit.clone())
-            },
-        );
-        set_str(
-            tbl,
-            "lang",
-            if self.lang_edit.is_empty() {
-                None
-            } else {
-                Some(self.lang_edit.clone())
-            },
-        );
-
-        match backup_retention {
-            Some(n) => {
-                tbl.insert(
-                    "backup_retention_count".to_string(),
-                    toml::Value::Integer(i64::from(n)),
-                );
+            if let Err(e) = result {
+                errors.push(format!("{}: {e}", field.as_key()));
             }
-            None => {
-                tbl.remove("backup_retention_count");
+        };
+
+        apply_str(ConfigField::SteamDir, &self.steam_dir_edit, &mut errors);
+        apply_str(ConfigField::Account, &self.account_edit, &mut errors);
+        apply_str(ConfigField::Cc, &self.cc_edit, &mut errors);
+        apply_str(ConfigField::Lang, &self.lang_edit, &mut errors);
+
+        // backup_retention_count is an integer field.
+        let backup_value = self.backup_retention_edit.trim();
+        if backup_value.is_empty() {
+            if let Err(e) = unset_config_field(ConfigField::BackupRetentionCount) {
+                errors.push(format!("backup_retention_count: {e}"));
+            }
+        } else {
+            // Validate locally first so we can surface a friendly message
+            // without round-tripping through the core error.
+            match backup_value.parse::<u32>() {
+                Ok(_) => {
+                    if let Err(e) = set_config_field(ConfigField::BackupRetentionCount, backup_value)
+                    {
+                        errors.push(format!("backup_retention_count: {e}"));
+                    }
+                }
+                Err(_) => {
+                    errors.push(
+                        "backup_retention_count: must be a non-negative integer".to_string(),
+                    );
+                }
             }
         }
 
-        match toml::to_string_pretty(&table) {
-            Ok(toml_str) => match std::fs::write(&config_path, toml_str) {
-                Ok(()) => {
-                    self.settings_save_msg = Some(format!("Saved to {}", config_path.display()));
-                    // Reload config
-                    self.config = VapourflyConfig::from_cli_and_env(
-                        vapourfly_core::config::CliOverrides::default(),
-                    )
-                    .ok();
-                }
-                Err(e) => {
-                    self.settings_save_msg = Some(format!("Failed to write config: {e}"));
-                }
-            },
-            Err(e) => {
-                self.settings_save_msg = Some(format!("Failed to serialize config: {e}"));
-            }
+        if errors.is_empty() {
+            let path = vapourfly_core::config::config_file_path();
+            self.settings_save_msg = Some(match path {
+                Some(p) => format!("Saved to {}", p.display()),
+                None => "Saved.".into(),
+            });
+            // Reload config so the UI reflects the new values.
+            self.config = VapourflyConfig::from_cli_and_env(
+                vapourfly_core::config::CliOverrides::default(),
+            )
+            .ok();
+        } else {
+            self.settings_save_msg = Some(format!("Failed to save: {}", errors.join("; ")));
         }
     }
 }
@@ -4318,6 +4354,91 @@ mod tests {
         };
 
         assert_eq!(manual_playlist_app_ids_csv(&pf), "730, 427520");
+    }
+
+    #[test]
+    fn playlist_rules_json_round_trips_rule_based_playlist() {
+        let pf = PlaylistFile {
+            vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
+            created_by: "test".into(),
+            playlist: Playlist {
+                id: "installed-unplayed".into(),
+                name: "Installed Unplayed".into(),
+                description: String::new(),
+                content: PlaylistContent::Rules {
+                    rules: vec![PlaylistRule::Installed, PlaylistRule::NotHidden],
+                },
+            },
+        };
+        let json = playlist_rules_json(&pf);
+        assert!(json.contains("\"Installed\""));
+        assert!(json.contains("\"NotHidden\""));
+
+        // Manual playlists produce an empty rules string.
+        let manual = PlaylistFile {
+            vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
+            created_by: "test".into(),
+            playlist: Playlist {
+                id: "manual".into(),
+                name: "Manual".into(),
+                description: String::new(),
+                content: PlaylistContent::Manual { app_ids: vec![1] },
+            },
+        };
+        assert_eq!(playlist_rules_json(&manual), "");
+    }
+
+    #[test]
+    fn build_playlist_from_edit_fields_creates_rule_based_playlist() {
+        let mut app = VapourflyApp::new(None);
+        app.playlist_edit_id = "installed-unplayed".into();
+        app.playlist_edit_name = "Installed Unplayed".into();
+        app.playlist_edit_rules = r#"[{"op":"Installed"},{"op":"NotHidden"}]"#.into();
+        // App IDs are ignored when rules are present.
+        app.playlist_edit_app_ids = "999, 9999".into();
+
+        let pf = app.build_playlist_from_edit_fields().unwrap();
+        assert_eq!(pf.playlist.id, "installed-unplayed");
+        match &pf.playlist.content {
+            PlaylistContent::Rules { rules } => assert_eq!(rules.len(), 2),
+            PlaylistContent::Manual { .. } => panic!("expected rule-based playlist"),
+        }
+    }
+
+    #[test]
+    fn build_playlist_from_edit_fields_rejects_invalid_rules_json() {
+        let mut app = VapourflyApp::new(None);
+        app.playlist_edit_id = "bad".into();
+        app.playlist_edit_name = "Bad".into();
+        app.playlist_edit_rules = "not json".into();
+        let err = app.build_playlist_from_edit_fields();
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("Invalid Rules JSON"));
+    }
+
+    #[test]
+    fn build_playlist_from_edit_fields_rejects_empty_rules_array() {
+        let mut app = VapourflyApp::new(None);
+        app.playlist_edit_id = "empty".into();
+        app.playlist_edit_name = "Empty".into();
+        app.playlist_edit_rules = "[]".into();
+        let err = app.build_playlist_from_edit_fields();
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("at least one rule"));
+    }
+
+    #[test]
+    fn build_playlist_from_edit_fields_requires_id_and_name() {
+        let mut app = VapourflyApp::new(None);
+        // No id, no name.
+        let err = app.build_playlist_from_edit_fields();
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("ID is required"));
+
+        app.playlist_edit_id = "has-id".into();
+        let err = app.build_playlist_from_edit_fields();
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("name is required"));
     }
 
     #[test]
