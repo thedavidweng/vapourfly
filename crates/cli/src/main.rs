@@ -26,19 +26,27 @@ fn long_version() -> &'static str {
         .as_str()
 }
 
+mod format;
+
 use vapourfly_core::config::{self, ConfigField, VapourflyConfig};
 use vapourfly_core::discover::{self, DiscoverOptions};
 use vapourfly_core::dynamic::{self, DynamicTemplate, DynamicTemplateOptions};
-use vapourfly_core::junk::{JunkPreviewResult, ManualOverrides, apply_junk_flags, evaluate_junk};
-use vapourfly_core::models::{
-    JunkMode, JunkRules, JunkSignal, PlaylistContent, PlaylistFile, PlaylistRule, RecommendRequest,
-    ScanResult, VAPOURFLY_JUNK_PREVIEW_SCHEMA, VAPOURFLY_PLAYLIST_SCHEMA,
-    VAPOURFLY_RECOMMENDATIONS_SCHEMA, VAPOURFLY_SCAN_SCHEMA, WriteOp,
+use vapourfly_core::junk::{
+    JunkPreviewResult, evaluate_junk, load_default_manual_overrides,
 };
+use vapourfly_core::models::{
+    JunkMode, JunkRules, PlaylistContent, PlaylistFile, PlaylistRule, RecommendRequest, ScanResult,
+    VAPOURFLY_JUNK_PREVIEW_SCHEMA, VAPOURFLY_PLAYLIST_SCHEMA, VAPOURFLY_RECOMMENDATIONS_SCHEMA,
+    VAPOURFLY_SCAN_SCHEMA, WriteOp,
+};
+use vapourfly_core::mood::{self, EditorialMood};
+use vapourfly_core::disposition;
 use vapourfly_core::playlist;
+use vapourfly_core::playlist_store;
 use vapourfly_core::recommend;
 use vapourfly_core::share_code;
 use vapourfly_core::steam;
+use vapourfly_core::write;
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -95,10 +103,7 @@ impl Cli {
         let steam_dir = self.resolve_steam_dir()?;
         let accounts = steam::detect_accounts(&steam_dir)?;
         let selected = steam::select_account(&accounts, self.account.as_deref())?;
-        Ok(
-            steam::resolve_userdata_dir(&steam_dir, &selected.steam_id64)
-                .join("config/cloudstorage/cloud-storage-namespace-1.json"),
-        )
+        Ok(steam::cloud_storage_path(&steam_dir, &selected.steam_id64))
     }
 }
 
@@ -254,20 +259,30 @@ enum CollectionsAction {
 
     /// Compile a dynamic collection template into a playlist.
     Dynamic {
-        /// Template name: deck-session, finish-it, mood, playlist-radio.
+        /// Template name: deck-session, finish-it.
         template: String,
 
         /// Session length in minutes (deck-session).
         #[arg(long, default_value = "90")]
         minutes: u32,
 
-        /// Genre or tag filter (mood).
+        /// Output playlist JSON path.
         #[arg(long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Compile an Editorial Mood into a playlist (ADR-0004).
+    ///
+    /// With no mood name, lists the available moods. With a mood name,
+    /// compiles it against the current library and stores the resulting
+    /// playlist.
+    Mood {
+        /// Mood id (e.g. "todays-biggest-hits"). Omit to list available moods.
         mood: Option<String>,
 
-        /// Seed AppID (playlist-radio).
-        #[arg(long)]
-        seed: Option<u32>,
+        /// Maximum number of games to include.
+        #[arg(long, default_value = "25")]
+        count: usize,
 
         /// Output playlist JSON path.
         #[arg(long)]
@@ -557,17 +572,11 @@ fn main() {
             CollectionsAction::Dynamic {
                 template,
                 minutes,
-                mood,
-                seed,
                 out,
-            } => cmd_collections_dynamic(
-                &cli,
-                template.clone(),
-                *minutes,
-                mood.clone(),
-                *seed,
-                out.clone(),
-            ),
+            } => cmd_collections_dynamic(&cli, template.clone(), *minutes, out.clone()),
+            CollectionsAction::Mood { mood, count, out } => {
+                cmd_collections_mood(&cli, mood.clone(), *count, out.clone())
+            }
         },
         Commands::Junk { action } => match action {
             JunkAction::Preview {
@@ -720,7 +729,7 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                     println!(
                         "Selected:      {} (***) [{}]",
                         acc.persona_name,
-                        mask_id(&acc.steam_id64)
+                        format::mask_id(&acc.steam_id64)
                     );
                 }
             }
@@ -736,8 +745,7 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 
             // Cloud storage
             if let Some(acc) = selected {
-                let cloud_path = steam::resolve_userdata_dir(dir, &acc.steam_id64)
-                    .join("config/cloudstorage/cloud-storage-namespace-1.json");
+                let cloud_path = steam::cloud_storage_path(dir, &acc.steam_id64);
                 if cloud_path.exists() {
                     println!("Cloud storage: available");
                 } else {
@@ -817,7 +825,7 @@ fn cmd_accounts_list(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
             println!(
                 "{} (***) [{}]{}",
                 acc.persona_name,
-                mask_id(&acc.steam_id64),
+                format::mask_id(&acc.steam_id64),
                 marker
             );
         }
@@ -876,7 +884,7 @@ fn cmd_scan(
                 println!(
                     "{:<10} {:<40} {:<10} {:<12} {:<12}",
                     game.app_id,
-                    truncate(&game.name, 38),
+                    format::truncate(&game.name, 38),
                     installed,
                     playtime,
                     coll_count
@@ -973,14 +981,10 @@ fn cmd_collections_dynamic(
     cli: &Cli,
     template: String,
     minutes: u32,
-    mood: Option<String>,
-    seed: Option<u32>,
     out: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let template = DynamicTemplate::parse(&template).ok_or_else(|| {
-        format!(
-            "unknown dynamic template '{template}'. Expected one of: deck-session, finish-it, mood, playlist-radio"
-        )
+        format!("unknown dynamic template '{template}'. Expected one of: deck-session, finish-it")
     })?;
 
     let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
@@ -989,8 +993,6 @@ fn cmd_collections_dynamic(
         &scan_result.games,
         &DynamicTemplateOptions {
             session_minutes: minutes,
-            mood,
-            seed_app_id: seed,
             count: 25,
         },
     );
@@ -999,6 +1001,56 @@ fn cmd_collections_dynamic(
     println!("Compiled dynamic template: {}", template.label());
     println!("  Playlist ID: {}", pf.playlist.id);
     println!("  Name:        {}", pf.playlist.name);
+    match &pf.playlist.content {
+        PlaylistContent::Manual { app_ids } => println!("  Games:       {}", app_ids.len()),
+        PlaylistContent::Rules { rules } => println!("  Rules:       {}", rules.len()),
+    }
+
+    if let Some(out) = out {
+        playlist::export_playlist(&pf, &out)?;
+        println!("  Exported to {}", out.display());
+    }
+
+    Ok(())
+}
+
+fn cmd_collections_mood(
+    cli: &Cli,
+    mood: Option<String>,
+    count: usize,
+    out: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // No mood name: list available moods.
+    let Some(mood_name) = mood else {
+        println!("Editorial Moods:");
+        for m in EditorialMood::all() {
+            println!("  {:<22} {}", m.id(), m.name());
+            println!("  {:<22} {}", "", m.description());
+        }
+        println!();
+        println!("Compile one with: vapourfly collections mood <id>");
+        return Ok(());
+    };
+
+    let mood = EditorialMood::parse(&mood_name).ok_or_else(|| {
+        format!(
+            "unknown editorial mood '{mood_name}'. Expected one of: {}",
+            EditorialMood::all()
+                .iter()
+                .map(|m| m.id())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })?;
+
+    let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
+    let pf = mood::compile_editorial_mood(mood, &scan_result.games, count);
+
+    store_playlist(&pf)?;
+    println!("Compiled editorial mood: {}", mood.name());
+    println!("  Playlist ID: {}", pf.playlist.id);
+    println!("  Name:        {}", pf.playlist.name);
+    println!("  Description: {}", pf.playlist.description);
     match &pf.playlist.content {
         PlaylistContent::Manual { app_ids } => println!("  Games:       {}", app_ids.len()),
         PlaylistContent::Rules { rules } => println!("  Rules:       {}", rules.len()),
@@ -1032,25 +1084,14 @@ fn scan_library_hydrated(
     junk_mode: JunkMode,
 ) -> Result<ScanResult, Box<dyn std::error::Error>> {
     let steam_dir = cli.resolve_steam_dir()?;
-    let mut scan_result = steam::scan_library(&steam::ScanOptions {
+    let result = vapourfly_api::workflow::prepare(&vapourfly_api::workflow::WorkflowOptions {
         steam_dir,
         account: cli.account.clone(),
         fixtures: cli.fixtures.clone(),
+        junk_mode,
+        offline: cli.offline,
     })?;
-
-    let cache = vapourfly_api::cache::DiskCache::new(vapourfly_core::config::default_cache_dir());
-    let hydration = vapourfly_api::enrichment::hydrate_from_cache(&mut scan_result.games, &cache);
-    tracing::debug!(
-        hydrated = hydration.fields_hydrated,
-        stale = hydration.stale_fields_used,
-        "hydrated cached metadata for workflow"
-    );
-
-    let rules = JunkRules::default();
-    let overrides = ManualOverrides::default();
-    apply_junk_flags(&mut scan_result.games, &rules, &junk_mode, &overrides);
-
-    Ok(scan_result)
+    Ok(result)
 }
 
 fn cmd_junk_preview(
@@ -1079,7 +1120,8 @@ fn cmd_junk_preview(
     }
 
     let rules = JunkRules::default();
-    let overrides = ManualOverrides::default();
+    // Same overrides as workflow::prepare — never wipe with empty defaults.
+    let overrides = load_default_manual_overrides();
     let decisions = evaluate_junk(&scan_result.games, &rules, &mode, &overrides);
 
     match format {
@@ -1098,8 +1140,11 @@ fn cmd_junk_preview(
                 let confidence = format!("{}%", (decision.confidence * 100.0) as u32);
 
                 let classification = if decision.is_junk {
-                    let reasons: Vec<String> =
-                        decision.matched.iter().map(format_junk_signal).collect();
+                    let reasons: Vec<String> = decision
+                        .matched
+                        .iter()
+                        .map(format::format_junk_signal)
+                        .collect();
                     format!("junk \u{2014} {}", reasons.join(", "))
                 } else {
                     "ok".into()
@@ -1108,7 +1153,7 @@ fn cmd_junk_preview(
                 println!(
                     "{:<10} {:<32} {:>10} {:>10}  {}",
                     game.app_id,
-                    truncate(&game.name, 30),
+                    format::truncate(&game.name, 30),
                     playtime,
                     confidence,
                     classification
@@ -1121,7 +1166,7 @@ fn cmd_junk_preview(
                 "{} games scanned, {} junk candidates (mode: {})",
                 decisions.len(),
                 junk_count,
-                format_junk_mode(&mode)
+                format::format_junk_mode(&mode)
             );
         }
         OutputFormat::Json => {
@@ -1149,30 +1194,15 @@ fn cmd_junk_apply(
     let cloud_path = cli.cloud_storage_path()?;
     let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
 
-    let mut junk_app_ids: Vec<u32> = scan_result
-        .games
-        .iter()
-        .filter(|g| g.is_junk)
-        .map(|g| g.app_id)
-        .collect();
-    junk_app_ids.sort_unstable();
-    junk_app_ids.dedup();
-
+    let junk_app_ids = disposition::junk_app_ids_from_games(&scan_result.games);
     if junk_app_ids.is_empty() {
         println!("No junk candidates found.");
         return Ok(());
     }
 
     let cloud = steam::read_cloud_storage(&cloud_path)?;
-    let plan = steam::generate_write_plan(
-        &cloud,
-        vec![WriteOp::UpsertCollection {
-            id: collection.clone(),
-            added: junk_app_ids.clone(),
-            removed: vec![],
-        }],
-        cloud_path.clone(),
-    )?;
+    let op = disposition::junk_apply(&collection, junk_app_ids.clone())?;
+    let plan = write::preview(&cloud, vec![op], cloud_path.clone())?;
 
     println!("Junk Apply");
     println!("==========");
@@ -1196,11 +1226,10 @@ fn cmd_junk_apply(
         println!();
         println!("Dry run complete. No changes made.");
     } else {
-        steam::check_write_safety(&cloud_path, cli.allow_steam_running)?;
-        steam::execute_write_plan(&plan, 5)?;
+        let backup = write::commit_with_retention(&plan, cli.allow_steam_running, backup_retention())?;
         println!();
         println!("Write complete.");
-        println!("  Backup: {}", plan.backup_path.display());
+        println!("  Backup: {}", backup.display());
     }
 
     Ok(())
@@ -1216,28 +1245,15 @@ fn cmd_junk_hide(
     let cloud_path = cli.cloud_storage_path()?;
     let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
 
-    let mut junk_app_ids: Vec<u32> = scan_result
-        .games
-        .iter()
-        .filter(|g| g.is_junk)
-        .map(|g| g.app_id)
-        .collect();
-    junk_app_ids.sort_unstable();
-    junk_app_ids.dedup();
-
+    let junk_app_ids = disposition::junk_app_ids_from_games(&scan_result.games);
     if junk_app_ids.is_empty() {
         println!("No junk candidates found.");
         return Ok(());
     }
 
     let cloud = steam::read_cloud_storage(&cloud_path)?;
-    let plan = steam::generate_write_plan(
-        &cloud,
-        vec![WriteOp::AddToHidden {
-            app_ids: junk_app_ids.clone(),
-        }],
-        cloud_path.clone(),
-    )?;
+    let op = disposition::junk_hide(junk_app_ids.clone())?;
+    let plan = write::preview(&cloud, vec![op], cloud_path.clone())?;
 
     println!("Junk Hide");
     println!("=========");
@@ -1257,17 +1273,15 @@ fn cmd_junk_hide(
         println!();
         println!("Dry run complete. No changes made.");
     } else {
-        steam::check_write_safety(&cloud_path, cli.allow_steam_running)?;
-        steam::execute_write_plan(&plan, 5)?;
+        let backup = write::commit_with_retention(&plan, cli.allow_steam_running, backup_retention())?;
         println!();
         println!("Write complete.");
-        println!("  Backup: {}", plan.backup_path.display());
+        println!("  Backup: {}", backup.display());
     }
 
     Ok(())
 }
 
-const RECOMMEND_COLLECTION_ID: &str = "vapourfly-picks";
 
 fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::error::Error>> {
     let RecommendArgs {
@@ -1308,19 +1322,12 @@ fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::erro
 
         let cloud_path = cli.cloud_storage_path()?;
         let cloud = steam::read_cloud_storage(&cloud_path)?;
-        let plan = steam::generate_write_plan(
-            &cloud,
-            vec![WriteOp::UpsertCollection {
-                id: RECOMMEND_COLLECTION_ID.into(),
-                added: app_ids.clone(),
-                removed: vec![],
-            }],
-            cloud_path.clone(),
-        )?;
+        let op = disposition::recommend_to_collection(app_ids.clone())?;
+        let plan = write::preview(&cloud, vec![op], cloud_path.clone())?;
 
         println!("Temporary recommendation collection");
         println!("===============================");
-        println!("Collection ID: {RECOMMEND_COLLECTION_ID}");
+        println!("Collection ID: {}", disposition::RECOMMEND_COLLECTION_ID);
         println!("Games:         {}", app_ids.len());
         println!();
         println!("Diff:");
@@ -1338,11 +1345,10 @@ fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::erro
             return Ok(());
         }
 
-        steam::check_write_safety(&cloud_path, cli.allow_steam_running)?;
-        steam::execute_write_plan(&plan, 5)?;
+        let backup = write::commit_with_retention(&plan, cli.allow_steam_running, backup_retention())?;
         println!();
         println!("Write complete.");
-        println!("  Backup: {}", plan.backup_path.display());
+        println!("  Backup: {}", backup.display());
         return Ok(());
     }
 
@@ -1355,7 +1361,7 @@ fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::erro
                 println!(
                     "{:<10} {:<40} {:>8.2}  {}",
                     rec.app_id,
-                    truncate(&rec.name, 38),
+                    format::truncate(&rec.name, 38),
                     rec.score,
                     reasons.join(", ")
                 );
@@ -1485,16 +1491,6 @@ fn parse_rules_file_contents(
 /// This is the storage primitive used by [`store_playlist`] (which writes to
 /// the platform playlist store) and by tests that need to target a temporary
 /// directory.
-fn store_playlist_at(
-    pf: &PlaylistFile,
-    store_dir: &Path,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    std::fs::create_dir_all(store_dir)?;
-    let stored_path = store_dir.join(format!("{}.json", pf.playlist.id));
-    playlist::export_playlist(pf, &stored_path)?;
-    Ok(stored_path)
-}
-
 fn cmd_playlist_import(
     cli: &Cli,
     path: Option<PathBuf>,
@@ -1653,47 +1649,28 @@ fn cmd_sync_collection(
     // Load the stored playlist to get app IDs to sync.
     let pf = load_stored_playlist(&id)?;
 
-    let app_ids = match &pf.playlist.content {
-        PlaylistContent::Manual { app_ids } => {
-            let mut ids = app_ids.clone();
-            ids.sort_unstable();
-            ids.dedup();
-            ids
-        }
-        PlaylistContent::Rules { rules: _ } => {
+    let resolved_owned = match &pf.playlist.content {
+        PlaylistContent::Manual { .. } => None,
+        PlaylistContent::Rules { .. } => {
             let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
             let report = playlist::match_playlist(&pf, &scan_result.games)?;
-            report.owned
+            Some(report.owned)
         }
     };
-
+    let app_ids = disposition::playlist_sync_app_ids(&pf, resolved_owned)?;
     if app_ids.is_empty() {
         println!("No app IDs to sync.");
         return Ok(());
     }
 
-    let steam_dir = cli.resolve_steam_dir()?;
-
-    let accounts = steam::detect_accounts(&steam_dir)?;
-    let selected = steam::select_account(&accounts, cli.account.as_deref())?;
-
-    let cloud_path = steam::resolve_userdata_dir(&steam_dir, &selected.steam_id64)
-        .join("config/cloudstorage/cloud-storage-namespace-1.json");
-
+    let cloud_path = cli.cloud_storage_path()?;
     let cloud = steam::read_cloud_storage(&cloud_path)?;
-
-    // Use the playlist ID as the Steam collection ID (slugified).
-    let collection_id = playlist::slugify(&pf.playlist.id);
-
-    let plan = steam::generate_write_plan(
-        &cloud,
-        vec![WriteOp::UpsertCollection {
-            id: collection_id.clone(),
-            added: app_ids.clone(),
-            removed: vec![],
-        }],
-        cloud_path.clone(),
-    )?;
+    let op = disposition::playlist_sync(&pf, app_ids.clone())?;
+    let collection_id = match &op {
+        WriteOp::UpsertCollection { id, .. } => id.clone(),
+        _ => playlist::slugify(&pf.playlist.id),
+    };
+    let plan = write::preview(&cloud, vec![op], cloud_path.clone())?;
 
     println!("Sync playlist '{}' to Steam collection", pf.playlist.name);
     println!("  Playlist ID:   {}", pf.playlist.id);
@@ -1717,11 +1694,10 @@ fn cmd_sync_collection(
         println!();
         println!("Dry run complete. No changes made.");
     } else {
-        steam::check_write_safety(&cloud_path, cli.allow_steam_running)?;
-        steam::execute_write_plan(&plan, 5)?;
+        let backup = write::commit_with_retention(&plan, cli.allow_steam_running, backup_retention())?;
         println!();
         println!("Write complete.");
-        println!("  Backup: {}", plan.backup_path.display());
+        println!("  Backup: {}", backup.display());
     }
 
     Ok(())
@@ -2108,20 +2084,35 @@ fn playlist_store_dir() -> PathBuf {
 
 /// Persist a playlist to the local playlist store.
 fn store_playlist(pf: &PlaylistFile) -> Result<(), Box<dyn std::error::Error>> {
-    store_playlist_at(pf, &playlist_store_dir())?;
+    playlist_store::put(&playlist_store_dir(), pf)?;
     Ok(())
+}
+
+/// Persist a playlist under an explicit store root (tests).
+#[cfg(test)]
+fn store_playlist_at(
+    pf: &PlaylistFile,
+    store_dir: &std::path::Path,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    Ok(playlist_store::put(store_dir, pf)?)
 }
 
 /// Load a stored playlist by ID from the local playlist store.
 fn load_stored_playlist(id: &str) -> Result<PlaylistFile, Box<dyn std::error::Error>> {
-    let path = playlist_store_dir().join(format!("{id}.json"));
-    if !path.exists() {
-        return Err(format!(
+    match playlist_store::get(&playlist_store_dir(), id) {
+        Ok(pf) => Ok(pf),
+        Err(_) => Err(format!(
             "playlist '{id}' not found. Import it first with: vapourfly playlist import <file>"
         )
-        .into());
+        .into()),
     }
-    playlist::import_playlist(&path).map_err(|e| e.into())
+}
+
+/// Backup retention from config when available, else write default.
+fn backup_retention() -> u32 {
+    vapourfly_core::config::VapourflyConfig::from_cli_and_env(Default::default())
+        .map(|c| c.backup_retention_count)
+        .unwrap_or(vapourfly_core::write::DEFAULT_BACKUP_RETENTION)
 }
 
 /// Validate that exactly one of `--dry-run` / `--confirm` is set.
@@ -2133,48 +2124,6 @@ fn validate_write_flags(dry_run: bool, confirm: bool) -> Result<(), Box<dyn std:
         return Err("cannot specify both --dry-run and --confirm".into());
     }
     Ok(())
-}
-
-/// Mask a Steam ID, showing only the last 4 characters.
-fn mask_id(id: &str) -> String {
-    if id.len() <= 4 {
-        "***".to_string()
-    } else {
-        format!("***{}", &id[id.len() - 4..])
-    }
-}
-
-/// Truncate a string to `max_len` display characters, adding an ellipsis if truncated.
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.chars().count() <= max_len {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max_len - 1).collect();
-        format!("{truncated}\u{2026}")
-    }
-}
-
-/// Format a [`JunkSignal`] into a human-readable reason string.
-fn format_junk_signal(signal: &JunkSignal) -> String {
-    match signal {
-        JunkSignal::LowPlaytime { minutes } => format!("low playtime ({minutes}m)"),
-        JunkSignal::ShortCompletion { seconds, .. } => {
-            let h = *seconds as f32 / 3600.0;
-            format!("short story ({h:.1}h)")
-        }
-        JunkSignal::LowRating { rating_0_5, .. } => {
-            format!("low rating ({rating_0_5:.1})")
-        }
-    }
-}
-
-/// Format a [`JunkMode`] into a display string.
-fn format_junk_mode(mode: &JunkMode) -> &'static str {
-    match mode {
-        JunkMode::Default => "default",
-        JunkMode::Strict => "strict",
-        JunkMode::Aggressive => "aggressive",
-    }
 }
 
 #[cfg(test)]

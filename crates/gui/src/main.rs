@@ -5,18 +5,23 @@ use eframe::egui;
 use egui::{Color32, RichText};
 use vapourfly_core::config::VapourflyConfig;
 use vapourfly_core::discover::{self, DiscoverOptions};
+use vapourfly_core::disposition;
+use vapourfly_core::display;
 use vapourfly_core::dynamic::{self, DynamicTemplate, DynamicTemplateOptions};
-use vapourfly_core::junk::{ManualOverrides, apply_junk_flags, evaluate_junk};
+use vapourfly_core::junk::{apply_junk_flags, evaluate_junk, load_default_manual_overrides};
 use vapourfly_core::models::*;
+use vapourfly_core::mood::{self, EditorialMood};
 use vapourfly_core::playlist;
+use vapourfly_core::playlist_store;
 use vapourfly_core::recommend::recommend;
 use vapourfly_core::share_code;
 use vapourfly_core::steam::BackupInfo;
 use vapourfly_core::steam::backup::list_backups;
+#[cfg(test)]
 use vapourfly_core::steam::scan::{ScanOptions, scan_library};
 use vapourfly_core::steam::{
     SteamAccount, detect_accounts, detect_library_folders, read_cloud_storage,
-    read_user_collections, redact_path, resolve_userdata_dir, select_account,
+    read_user_collections, redact_path, select_account,
 };
 
 // ---------------------------------------------------------------------------
@@ -243,8 +248,7 @@ struct VapourflyApp {
     playlist_discover_count: String,
     dynamic_template: String,
     dynamic_minutes: String,
-    dynamic_mood: String,
-    dynamic_seed: String,
+    editorial_mood: String,
 
     // Collections view
     collections: Vec<SteamCollection>,
@@ -289,11 +293,7 @@ struct VapourflyApp {
 }
 
 fn mask_steam_id(id: &str) -> String {
-    if id.len() <= 4 {
-        "***".to_string()
-    } else {
-        format!("***{}", &id[id.len() - 4..])
-    }
+    display::mask_id(id)
 }
 
 fn proton_tier_label(tier: &ProtonTier) -> &'static str {
@@ -658,8 +658,7 @@ impl VapourflyApp {
             playlist_discover_count: "20".into(),
             dynamic_template: "deck-session".into(),
             dynamic_minutes: "90".into(),
-            dynamic_mood: "Relaxing".into(),
-            dynamic_seed: String::new(),
+            editorial_mood: EditorialMood::all().first().map_or("", |m| m.id()).into(),
 
             collections: Vec::new(),
             collections_export_path: String::new(),
@@ -710,10 +709,10 @@ impl VapourflyApp {
         let selected = vapourfly_core::steam::select_account(&accounts, config.account.as_deref())
             .map_err(|e| format!("Failed to select account: {e}"))?;
 
-        Ok(
-            vapourfly_core::steam::resolve_userdata_dir(&config.steam_dir, &selected.steam_id64)
-                .join("config/cloudstorage/cloud-storage-namespace-1.json"),
-        )
+        Ok(vapourfly_core::steam::cloud_storage_path(
+            &config.steam_dir,
+            &selected.steam_id64,
+        ))
     }
 
     fn start_scan(&mut self, ctx: &egui::Context) {
@@ -741,15 +740,20 @@ impl VapourflyApp {
             });
 
         let account = self.config.as_ref().and_then(|c| c.account.clone());
+        let offline = self.offline_mode;
 
         std::thread::spawn(move || {
-            let opts = ScanOptions {
+            // Use the Workflow module (ADR-0002 lazy hydration + junk classification).
+            // When the user has enabled offline mode in Settings, the workflow
+            // skips network fetches and uses cached metadata only.
+            let opts = vapourfly_api::workflow::WorkflowOptions {
                 steam_dir,
                 account,
                 fixtures,
+                junk_mode: JunkMode::Default,
+                offline,
             };
-
-            let result = scan_library(&opts);
+            let result = vapourfly_api::workflow::prepare(&opts);
             ctx.request_repaint();
             SCAN_RESULT.lock().unwrap().replace(result);
         });
@@ -776,18 +780,16 @@ impl VapourflyApp {
             self.write_result = None;
             self.success_msg = None;
             let allow_steam_running = self.allow_steam_running;
+            let retention = self.backup_retention();
 
             std::thread::spawn(move || {
-                let result = vapourfly_core::steam::check_write_safety(
-                    &plan.target_path,
+                let result = vapourfly_core::write::commit_with_retention(
+                    &plan,
                     allow_steam_running,
+                    retention,
                 )
-                .map_err(|e| format!("Safety check failed: {e}"))
-                .and_then(|()| {
-                    vapourfly_core::steam::backup::execute_write_plan(&plan, 5)
-                        .map_err(|e| format!("Write failed: {e}"))
-                })
-                .map(|()| format!("Write complete. Backup: {}", plan.backup_path.display()));
+                .map_err(|e| format!("Write failed: {e}"))
+                .map(|backup| format!("Write complete. Backup: {}", backup.display()));
 
                 WRITE_RESULT.lock().unwrap().replace(result);
             });
@@ -810,6 +812,7 @@ impl VapourflyApp {
         let junk_results = self.junk_results.clone();
         let collection_name = self.junk_collection_name.clone();
         let allow_steam_running = self.allow_steam_running;
+        let retention = self.backup_retention();
 
         std::thread::spawn(move || {
             let result = match action {
@@ -818,10 +821,14 @@ impl VapourflyApp {
                     junk_results,
                     collection_name,
                     allow_steam_running,
+                    retention,
                 ),
-                PendingAction::JunkHide => {
-                    execute_junk_hide(cloud_path, junk_results, allow_steam_running)
-                }
+                PendingAction::JunkHide => execute_junk_hide(
+                    cloud_path,
+                    junk_results,
+                    allow_steam_running,
+                    retention,
+                ),
                 PendingAction::BackupRestore(backup_path) => {
                     execute_backup_restore(backup_path, cloud_path, allow_steam_running)
                 }
@@ -1032,8 +1039,8 @@ impl VapourflyApp {
                         mask_steam_id(&acc.steam_id64)
                     ));
 
-                    let cloud_path = resolve_userdata_dir(&dir, &acc.steam_id64)
-                        .join("config/cloudstorage/cloud-storage-namespace-1.json");
+                    let cloud_path =
+                        vapourfly_core::steam::cloud_storage_path(&dir, &acc.steam_id64);
                     lines.push(format!(
                         "Cloud storage: {}",
                         if cloud_path.exists() {
@@ -1105,17 +1112,36 @@ impl VapourflyApp {
             .map_err(|e| format!("Failed to write diagnostics export: {e}"))
     }
 
+    /// Backup retention for write commits: Settings edit field when valid,
+    /// else resolved config, else write default. Keeps UI and write path aligned.
+    fn backup_retention(&self) -> u32 {
+        if let Ok(n) = self.backup_retention_edit.trim().parse::<u32>() {
+            return n;
+        }
+        self.config
+            .as_ref()
+            .map(|c| c.backup_retention_count)
+            .unwrap_or(vapourfly_core::write::DEFAULT_BACKUP_RETENTION)
+    }
+
     fn prepared_games(&self, junk_mode: JunkMode) -> Option<Vec<Game>> {
         let scan = self.scan_result.as_ref()?;
         let mut games = scan.games.clone();
+        // Re-hydrate from cache so that a cache refresh (which writes to disk but
+        // does not update scan_result) is reflected in views without a re-scan.
+        // hydrate_from_cache is idempotent: it only fills in fields that have
+        // cached data, never overwriting with None.
         let cache =
             vapourfly_api::cache::DiskCache::new(vapourfly_core::config::default_cache_dir());
         vapourfly_api::enrichment::hydrate_from_cache(&mut games, &cache);
+        // Same overrides as workflow::prepare so re-classification does not wipe
+        // force-include / force-exclude / manual HLTB / rating.
+        let overrides = load_default_manual_overrides();
         apply_junk_flags(
             &mut games,
             &JunkRules::default(),
             &junk_mode,
-            &ManualOverrides::default(),
+            &overrides,
         );
         Some(games)
     }
@@ -1164,10 +1190,8 @@ impl VapourflyApp {
 
     fn store_playlist(&self, pf: &PlaylistFile) -> Result<(), String> {
         let store_dir = vapourfly_core::config::default_playlists_dir();
-        std::fs::create_dir_all(&store_dir)
-            .map_err(|e| format!("Failed to create playlist dir: {e}"))?;
-        let path = store_dir.join(format!("{}.json", pf.playlist.id));
-        playlist::export_playlist(pf, &path).map_err(|e| e.to_string())
+        playlist_store::put(&store_dir, pf).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     /// Build a `PlaylistFile` from the current edit fields.
@@ -1272,8 +1296,6 @@ impl VapourflyApp {
 
 /// Generate a [`WritePlan`] without executing it, so the GUI can display a
 /// dry-run diff before the user confirms.
-const RECOMMEND_COLLECTION_ID: &str = "vapourfly-picks";
-
 fn generate_dry_run_plan(
     cloud_path: PathBuf,
     action: &PendingAction,
@@ -1286,76 +1308,27 @@ fn generate_dry_run_plan(
 
     let op = match action {
         PendingAction::JunkApply => {
-            let mut junk_app_ids: Vec<u32> = junk_results
-                .iter()
-                .filter(|d| d.is_junk)
-                .map(|d| d.app_id)
-                .collect();
-            junk_app_ids.sort_unstable();
-            junk_app_ids.dedup();
-            if junk_app_ids.is_empty() {
-                return Err("No junk candidates found.".into());
-            }
-            WriteOp::UpsertCollection {
-                id: collection_name.to_string(),
-                added: junk_app_ids,
-                removed: vec![],
-            }
+            let junk_app_ids = disposition::junk_app_ids_from_decisions(junk_results);
+            disposition::junk_apply(collection_name, junk_app_ids).map_err(|e| e.to_string())?
         }
         PendingAction::JunkHide => {
-            let mut junk_app_ids: Vec<u32> = junk_results
-                .iter()
-                .filter(|d| d.is_junk)
-                .map(|d| d.app_id)
-                .collect();
-            junk_app_ids.sort_unstable();
-            junk_app_ids.dedup();
-            if junk_app_ids.is_empty() {
-                return Err("No junk candidates found.".into());
-            }
-            WriteOp::AddToHidden {
-                app_ids: junk_app_ids,
-            }
+            let junk_app_ids = disposition::junk_app_ids_from_decisions(junk_results);
+            disposition::junk_hide(junk_app_ids).map_err(|e| e.to_string())?
         }
         PendingAction::RecommendCollection => {
             let app_ids: Vec<u32> = recommend_results.iter().map(|r| r.app_id).collect();
-            if app_ids.is_empty() {
-                return Err("No recommendations to write.".into());
-            }
-            WriteOp::UpsertCollection {
-                id: RECOMMEND_COLLECTION_ID.into(),
-                added: app_ids,
-                removed: vec![],
-            }
+            disposition::recommend_to_collection(app_ids).map_err(|e| e.to_string())?
         }
         PendingAction::PlaylistSync(pf) => {
-            let collection_id = playlist::slugify(&pf.playlist.id);
-            if collection_id.is_empty() {
-                return Err("Playlist ID cannot produce a Steam collection ID.".into());
-            }
-            let mut app_ids = match &pf.playlist.content {
-                PlaylistContent::Manual { app_ids } => app_ids.clone(),
-                PlaylistContent::Rules { .. } => {
-                    return Err("Rule-based playlist sync was not resolved before dry-run.".into());
-                }
-            };
-            app_ids.sort_unstable();
-            app_ids.dedup();
-            if app_ids.is_empty() {
-                return Err("No app IDs to sync.".into());
-            }
-            WriteOp::UpsertCollection {
-                id: collection_id,
-                added: app_ids,
-                removed: vec![],
-            }
+            let app_ids = disposition::playlist_sync_app_ids(pf, None).map_err(|e| e.to_string())?;
+            disposition::playlist_sync(pf, app_ids).map_err(|e| e.to_string())?
         }
         PendingAction::BackupRestore(_) => {
             return Err("Dry-run not supported for backup restore.".into());
         }
     };
 
-    vapourfly_core::steam::generate_write_plan(&cloud, vec![op], cloud_path)
+    vapourfly_core::write::preview(&cloud, vec![op], cloud_path)
         .map_err(|e| format!("Failed to generate write plan: {e}"))
 }
 
@@ -1364,15 +1337,9 @@ fn execute_junk_apply(
     junk_results: Vec<JunkDecision>,
     collection_name: String,
     allow_steam_running: bool,
+    retention: u32,
 ) -> Result<String, String> {
-    let mut junk_app_ids: Vec<u32> = junk_results
-        .iter()
-        .filter(|d| d.is_junk)
-        .map(|d| d.app_id)
-        .collect();
-    junk_app_ids.sort_unstable();
-    junk_app_ids.dedup();
-
+    let junk_app_ids = disposition::junk_app_ids_from_decisions(&junk_results);
     if junk_app_ids.is_empty() {
         return Err("No junk candidates found.".into());
     }
@@ -1380,28 +1347,23 @@ fn execute_junk_apply(
     let cloud = vapourfly_core::steam::read_cloud_storage(&cloud_path)
         .map_err(|e| format!("Failed to read cloud storage: {e}"))?;
 
-    let plan = vapourfly_core::steam::generate_write_plan(
-        &cloud,
-        vec![WriteOp::UpsertCollection {
-            id: collection_name.clone(),
-            added: junk_app_ids.clone(),
-            removed: vec![],
-        }],
-        cloud_path.clone(),
+    let op = disposition::junk_apply(&collection_name, junk_app_ids.clone())
+        .map_err(|e| e.to_string())?;
+    let plan = vapourfly_core::write::preview(&cloud, vec![op], cloud_path.clone())
+        .map_err(|e| format!("Failed to generate write plan: {e}"))?;
+
+    let backup = vapourfly_core::write::commit_with_retention(
+        &plan,
+        allow_steam_running,
+        retention,
     )
-    .map_err(|e| format!("Failed to generate write plan: {e}"))?;
-
-    vapourfly_core::steam::check_write_safety(&cloud_path, allow_steam_running)
-        .map_err(|e| format!("Safety check failed: {e}"))?;
-
-    vapourfly_core::steam::execute_write_plan(&plan, 5)
-        .map_err(|e| format!("Write failed: {e}"))?;
+    .map_err(|e| format!("Write failed: {e}"))?;
 
     Ok(format!(
         "Applied {} junk games to collection '{}'. Backup: {}",
         junk_app_ids.len(),
         collection_name,
-        plan.backup_path.display()
+        backup.display()
     ))
 }
 
@@ -1409,15 +1371,9 @@ fn execute_junk_hide(
     cloud_path: PathBuf,
     junk_results: Vec<JunkDecision>,
     allow_steam_running: bool,
+    retention: u32,
 ) -> Result<String, String> {
-    let mut junk_app_ids: Vec<u32> = junk_results
-        .iter()
-        .filter(|d| d.is_junk)
-        .map(|d| d.app_id)
-        .collect();
-    junk_app_ids.sort_unstable();
-    junk_app_ids.dedup();
-
+    let junk_app_ids = disposition::junk_app_ids_from_decisions(&junk_results);
     if junk_app_ids.is_empty() {
         return Err("No junk candidates found.".into());
     }
@@ -1425,25 +1381,21 @@ fn execute_junk_hide(
     let cloud = vapourfly_core::steam::read_cloud_storage(&cloud_path)
         .map_err(|e| format!("Failed to read cloud storage: {e}"))?;
 
-    let plan = vapourfly_core::steam::generate_write_plan(
-        &cloud,
-        vec![WriteOp::AddToHidden {
-            app_ids: junk_app_ids.clone(),
-        }],
-        cloud_path.clone(),
+    let op = disposition::junk_hide(junk_app_ids.clone()).map_err(|e| e.to_string())?;
+    let plan = vapourfly_core::write::preview(&cloud, vec![op], cloud_path.clone())
+        .map_err(|e| format!("Failed to generate write plan: {e}"))?;
+
+    let backup = vapourfly_core::write::commit_with_retention(
+        &plan,
+        allow_steam_running,
+        retention,
     )
-    .map_err(|e| format!("Failed to generate write plan: {e}"))?;
-
-    vapourfly_core::steam::check_write_safety(&cloud_path, allow_steam_running)
-        .map_err(|e| format!("Safety check failed: {e}"))?;
-
-    vapourfly_core::steam::execute_write_plan(&plan, 5)
-        .map_err(|e| format!("Write failed: {e}"))?;
+    .map_err(|e| format!("Write failed: {e}"))?;
 
     Ok(format!(
         "Added {} junk games to Hidden collection. Backup: {}",
         junk_app_ids.len(),
-        plan.backup_path.display()
+        backup.display()
     ))
 }
 
@@ -1471,7 +1423,9 @@ fn execute_backup_restore(
 // ---------------------------------------------------------------------------
 
 impl eframe::App for VapourflyApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+
         // Poll background scan result.
         if self.loading {
             let mut guard = SCAN_RESULT.lock().unwrap();
@@ -1499,7 +1453,7 @@ impl eframe::App for VapourflyApp {
                     Ok(msg) => {
                         self.success_msg = Some(msg);
                         // Auto-re-scan to pick up changes
-                        self.start_scan(ctx);
+                        self.start_scan(&ctx);
                     }
                     Err(e) => self.error = Some(e),
                 }
@@ -1546,19 +1500,19 @@ impl eframe::App for VapourflyApp {
                 }
             }
         }
-        self.render_confirm_dialog(ctx);
+        self.render_confirm_dialog(&ctx);
 
         // -- Left panel: navigation -----------------------------------------
-        egui::SidePanel::left("nav_panel")
+        egui::Panel::left("nav_panel")
             .resizable(false)
-            .default_width(SIDEBAR_WIDTH)
+            .default_size(SIDEBAR_WIDTH)
             .frame(
                 egui::Frame::NONE
                     .fill(SURFACE_RAISED)
                     .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
                     .inner_margin(egui::Margin::same(m(SP_3))),
             )
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 // Brand header
                 ui.add_space(SP_2);
                 ui.label(
@@ -1632,7 +1586,7 @@ impl eframe::App for VapourflyApp {
                         )
                         .clicked()
                     {
-                        self.start_scan(ctx);
+                        self.start_scan(&ctx);
                     }
                     if let Some(scan) = &self.scan_result {
                         ui.label(
@@ -1651,7 +1605,7 @@ impl eframe::App for VapourflyApp {
                     .fill(SURFACE)
                     .inner_margin(egui::Margin::same(m(SP_4))),
             )
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
@@ -1708,12 +1662,12 @@ impl eframe::App for VapourflyApp {
                         }
 
                         match self.current_view {
-                            View::Library => self.render_library(ui, ctx),
+                            View::Library => self.render_library(ui, &ctx),
                             View::Junk => self.render_junk(ui),
                             View::Recommend => self.render_recommend(ui),
                             View::Playlists => self.render_playlists(ui),
                             View::Collections => self.render_collections(ui),
-                            View::DataSources => self.render_data_sources(ui, ctx),
+                            View::DataSources => self.render_data_sources(ui, &ctx),
                             View::Backups => self.render_backups(ui),
                             View::Settings => self.render_settings(ui),
                         }
@@ -1722,7 +1676,7 @@ impl eframe::App for VapourflyApp {
 
         // Kick off initial scan on first frame.
         if self.scan_result.is_none() && !self.loading && self.error.is_none() {
-            self.start_scan(ctx);
+            self.start_scan(&ctx);
         }
     }
 }
@@ -2206,11 +2160,12 @@ impl VapourflyApp {
                             JunkModeChoice::Aggressive => JunkMode::Aggressive,
                         };
                         if let Some(games) = self.prepared_games(mode.clone()) {
+                            let overrides = load_default_manual_overrides();
                             self.junk_results = evaluate_junk(
                                 &games,
                                 &JunkRules::default(),
                                 &mode,
-                                &ManualOverrides::default(),
+                                &overrides,
                             );
                             self.junk_selected.clear();
                         }
@@ -2764,24 +2719,6 @@ impl VapourflyApp {
                 );
             });
             ui.add_space(SP_2);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_1);
-                ui.label(RichText::new("Mood/tag:").size(TS_SM).color(TEXT_SECONDARY));
-                ui.add_sized(
-                    [100.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.dynamic_mood),
-                );
-                ui.label(
-                    RichText::new("Seed AppID:")
-                        .size(TS_SM)
-                        .color(TEXT_SECONDARY),
-                );
-                ui.add_sized(
-                    [80.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.dynamic_seed),
-                );
-            });
-            ui.add_space(SP_2);
             if ui
                 .add(
                     egui::Button::new(
@@ -2802,8 +2739,6 @@ impl VapourflyApp {
                             &games,
                             &DynamicTemplateOptions {
                                 session_minutes: self.dynamic_minutes.parse().unwrap_or(90),
-                                mood: Some(self.dynamic_mood.clone()),
-                                seed_app_id: self.dynamic_seed.trim().parse().ok(),
                                 count: 25,
                             },
                         );
@@ -2817,10 +2752,75 @@ impl VapourflyApp {
                         }
                     }
                 } else {
-                    self.error = Some(
-                        "Unknown template. Use deck-session, finish-it, mood, or playlist-radio."
-                            .into(),
-                    );
+                    self.error = Some("Unknown template. Use deck-session or finish-it.".into());
+                }
+            }
+        });
+
+        // Editorial Moods (ADR-0004): named, curated playlists with hidden
+        // selection criteria. The user picks a vibe; Vapourfly compiles the
+        // playlist. Criteria are opaque to the user.
+        section_card(ui, "Editorial Moods", |ui| {
+            ui.label(
+                RichText::new(
+                    "Named, curated playlists with hidden selection criteria — \
+                     pick a vibe and Vapourfly does the rest.",
+                )
+                .size(TS_SM)
+                .color(TEXT_MUTED),
+            );
+            ui.add_space(SP_2);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_1);
+                ui.label(RichText::new("Mood:").size(TS_SM).color(TEXT_SECONDARY));
+                egui::ComboBox::from_id_salt("editorial_mood_combo")
+                    .selected_text(
+                        EditorialMood::parse(&self.editorial_mood)
+                            .map_or("Select mood", |m| m.name()),
+                    )
+                    .width(180.0)
+                    .show_ui(ui, |ui| {
+                        for m in EditorialMood::all() {
+                            ui.selectable_value(&mut self.editorial_mood, m.id().into(), m.name());
+                        }
+                    });
+            });
+            ui.add_space(SP_2);
+            if let Some(mood) = EditorialMood::parse(&self.editorial_mood) {
+                ui.label(
+                    RichText::new(mood.description())
+                        .size(TS_SM)
+                        .color(TEXT_SECONDARY),
+                );
+                ui.add_space(SP_2);
+            }
+            if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new("Compile Editorial Mood")
+                            .size(TS_SM)
+                            .color(TEXT_INVERSE),
+                    )
+                    .fill(ACCENT)
+                    .stroke(egui::Stroke::NONE)
+                    .corner_radius(CORNER_SM),
+                )
+                .clicked()
+            {
+                if let Some(mood) = EditorialMood::parse(&self.editorial_mood) {
+                    if let Some(games) = self.prepared_games(JunkMode::Default) {
+                        let pf = mood::compile_editorial_mood(mood, &games, 25);
+                        if let Err(e) = self.store_playlist(&pf) {
+                            self.error = Some(e);
+                        } else {
+                            self.playlist_last_import = Some(pf.clone());
+                            self.match_playlist_against_library(&pf);
+                            self.success_msg =
+                                Some(format!("Compiled editorial mood '{}'", pf.playlist.name));
+                        }
+                    }
+                } else {
+                    self.error = Some("Unknown mood. Pick one from the dropdown.".into());
                 }
             }
         });
@@ -3711,7 +3711,7 @@ impl VapourflyApp {
             ui.checkbox(&mut self.offline_mode, "Offline mode (cache only)");
             ui.label(
                 RichText::new(
-                    "Blocks cache refresh network calls. Library workflows still use cached metadata.",
+                    "Blocks all network calls: cache refresh and library scan hydration.",
                 )
                 .size(TS_SM)
                 .color(TEXT_MUTED),
@@ -3906,7 +3906,7 @@ impl VapourflyApp {
 // ---------------------------------------------------------------------------
 
 fn configure_ui(ctx: &egui::Context) {
-    let mut style = (*ctx.style()).clone();
+    let mut style = (*ctx.style_of(egui::Theme::Light)).clone();
     style.spacing.item_spacing = egui::vec2(SP_2, 7.0);
     style.spacing.button_padding = egui::vec2(SP_3, SP_1);
     style.spacing.window_margin = egui::Margin::same(m(SP_3));
@@ -3931,7 +3931,7 @@ fn configure_ui(ctx: &egui::Context) {
     visuals.override_text_color = Some(TEXT_PRIMARY);
     style.visuals = visuals;
 
-    ctx.set_style(style);
+    ctx.set_style_of(egui::Theme::Light, style);
 }
 
 fn game_primary_badge(game: &Game) -> (&'static str, Color32, Color32) {
@@ -4023,15 +4023,7 @@ fn format_playtime(minutes: u32) -> String {
 }
 
 fn format_junk_signal(signal: &JunkSignal) -> String {
-    match signal {
-        JunkSignal::LowPlaytime { minutes } => format!("Low playtime ({minutes}m)"),
-        JunkSignal::ShortCompletion { seconds, source } => {
-            format!("Short completion ({}h, {:?})", seconds / 3600, source)
-        }
-        JunkSignal::LowRating { rating_0_5, source } => {
-            format!("Low rating ({rating_0_5:.1}, {source:?})")
-        }
-    }
+    display::format_junk_signal(signal)
 }
 
 // ---------------------------------------------------------------------------
@@ -4237,6 +4229,27 @@ mod tests {
         let _b = a.clone();
         let c = PendingAction::BackupRestore(PathBuf::from("/tmp/test"));
         let _d = c.clone();
+    }
+
+    #[test]
+    fn backup_retention_prefers_settings_edit_field() {
+        let mut app = VapourflyApp::new(None);
+        app.backup_retention_edit = "1".into();
+        assert_eq!(app.backup_retention(), 1);
+        app.backup_retention_edit = "not-a-number".into();
+        // Falls back to config or default when edit is invalid.
+        let expected = app
+            .config
+            .as_ref()
+            .map(|c| c.backup_retention_count)
+            .unwrap_or(vapourfly_core::write::DEFAULT_BACKUP_RETENTION);
+        assert_eq!(app.backup_retention(), expected);
+        app.backup_retention_edit = "7".into();
+        assert_eq!(
+            app.backup_retention(),
+            7,
+            "Settings UI retention must drive write commit retention"
+        );
     }
 
     #[test]
