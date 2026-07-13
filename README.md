@@ -21,7 +21,7 @@ For the current CLI/GUI feature contract, see
 ### From Source
 
 ```bash
-git clone https://github.com/vapourfly/vapourfly.git
+git clone https://github.com/thedavidweng/vapourfly.git
 cd vapourfly
 cargo install --path crates/cli
 ```
