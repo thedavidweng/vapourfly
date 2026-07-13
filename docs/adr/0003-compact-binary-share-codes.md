@@ -1,0 +1,3 @@
+# Compact binary share codes, no backward compatibility
+
+Share codes switch from `VF1:<base64url(JSON)>` to `VF1:<compressed-binary-payload>`. The payload carries the playlist's content (manual AppID list or rules tree) plus name and description, encoded as a compact binary format with compression. The previous base64url(JSON) format is replaced outright — existing VF1 codes will fail to decode under the new decoder. This is accepted because v0.1.0 is a source-only release with few users. The `VF1:` prefix is retained (the `1` is now the format generation, not the JSON-encoding version). Trade-off: compact codes are shorter and cheaper to share, but the format is more complex and old codes break.

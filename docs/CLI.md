@@ -86,15 +86,21 @@ vapourfly collections export --out collections.json
 # Compile a dynamic template into a stored playlist
 vapourfly collections dynamic deck-session --minutes 90
 vapourfly collections dynamic finish-it --out finish-it.json
-vapourfly collections dynamic mood --mood "Roguelike"
-vapourfly collections dynamic playlist-radio --seed 367520
+
+# List available Editorial Moods
+vapourfly collections mood
+
+# Compile an Editorial Mood into a stored playlist
+vapourfly collections mood friday-party
+vapourfly collections mood quick-round --out quick-round.json
 ```
 
 Hidden collections are reported separately as a count.
 
-Dynamic templates hydrate cached external metadata before compiling. Hydration
-is cache-only; run `vapourfly cache refresh --source all` first when a template
-depends on ProtonDB, HLTB, RAWG, IGDB, PCGW, or Steam Store data.
+Dynamic templates and Editorial Moods hydrate external metadata before
+compiling. When not offline, missing cache entries are fetched on demand
+(ADR-0002); fetch failures degrade gracefully. Use `--offline` to force
+cache-only behaviour.
 
 ### `vapourfly junk`
 
@@ -141,9 +147,10 @@ Cannot use `--strict` and `--aggressive` together.
 
 Each decision includes a confidence score (fraction of possible signals for which data was available) and lists which signals matched and which were missing.
 
-Current CLI junk commands scan the library, hydrate cached external metadata,
-and then evaluate junk rules. Hydration is cache-only and never makes network
-requests.
+Current CLI junk commands scan the library, hydrate external metadata (lazy
+network fetch when not offline — ADR-0002), and then evaluate junk rules.
+Fetch failures degrade gracefully; use `--offline` to force cache-only
+hydration.
 
 ### `vapourfly recommend`
 
@@ -169,9 +176,10 @@ vapourfly recommend --minutes 120 --count 5 --to-collection --confirm
 
 **Output columns (table):** App ID, Name, Score, Reasons.
 
-Current CLI recommendations scan the library, hydrate cached external metadata,
-annotate junk flags, and then score games. Hydration is cache-only and never
-makes network requests.
+Current CLI recommendations scan the library, hydrate external metadata (lazy
+network fetch when not offline — ADR-0002), annotate junk flags, and then
+score games. Fetch failures degrade gracefully; use `--offline` to force
+cache-only hydration.
 
 ### `vapourfly playlist`
 
@@ -219,9 +227,11 @@ Available rule operators: `ProtonAtLeast`, `HltbMaxMinutes`,
 (`[{"op":"Installed"}, ...]`) or a full Vapourfly playlist JSON file (the rules
 are extracted from `content.value.rules`).
 
-Playlist import, match, sync, and discover workflows hydrate cached external
-metadata before evaluating rules or similarity. Rules that depend on external
-metadata only match when the relevant cache entries exist.
+Playlist import, match, sync, and discover workflows hydrate external metadata
+before evaluating rules or similarity. When not offline, missing cache entries
+are fetched on demand (ADR-0002); fetch failures degrade gracefully. Rules
+that depend on external metadata only match when the relevant data is
+available.
 
 ### `vapourfly sync`
 
@@ -236,8 +246,8 @@ vapourfly sync collection my-playlist-id --confirm
 ```
 
 The playlist ID is slugified to produce the Steam collection ID. For rule-based playlists, the rules are evaluated against the current library to resolve matching AppIDs.
-Rule-based sync hydrates cached external metadata before resolving matching
-AppIDs.
+Rule-based sync hydrates external metadata before resolving matching AppIDs
+(lazy network fetch when not offline — ADR-0002).
 
 ### `vapourfly cache`
 

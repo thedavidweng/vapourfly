@@ -157,9 +157,10 @@ Identify games you are unlikely to play using three evaluation modes:
 | **Aggressive** | Low playtime + at least one other negative signal, no minimum data requirement |
 
 Every decision is explainable: the output includes which signals matched, which were missing, and a confidence score reflecting data completeness.
-Current CLI and GUI junk flows scan the library, hydrate cached external
-metadata, and then classify games. Hydration is cache-only and does not make
-network requests.
+Current CLI and GUI junk flows scan the library, hydrate external metadata
+(lazy network fetch when not offline — ADR-0002), and then classify games.
+Fetch failures degrade gracefully; use `--offline` to force cache-only
+hydration.
 
 ```bash
 # Preview junk candidates (default mode)
@@ -199,8 +200,9 @@ vapourfly recommend --minutes 120 --to-collection --dry-run
 vapourfly recommend --minutes 120 --to-collection --confirm
 ```
 
-Current CLI and GUI recommendation flows hydrate cached external metadata and
-annotate junk flags before scoring. Hydration is cache-only.
+Current CLI and GUI recommendation flows hydrate external metadata and
+annotate junk flags before scoring. When not offline, missing cache entries
+are fetched on demand (ADR-0002); fetch failures degrade gracefully.
 
 ## Playlists
 
@@ -232,8 +234,10 @@ vapourfly collections export --out collections.json
 # Compile dynamic playlist templates
 vapourfly collections dynamic deck-session --minutes 90
 vapourfly collections dynamic finish-it
-vapourfly collections dynamic mood --mood "Roguelike"
-vapourfly collections dynamic playlist-radio --seed 367520
+
+# Compile an Editorial Mood (named, curated playlist)
+vapourfly collections mood              # list available moods
+vapourfly collections mood friday-party # compile one
 ```
 
 ### Rule-Based Playlists
@@ -268,9 +272,11 @@ Rule playlists support composable boolean logic:
 Available rule operators: `ProtonAtLeast`, `HltbMaxMinutes`,
 `ControllerSupportFull`, `PlaytimeBetween`, `RatingAtLeast`, `HasGenre`,
 `HasTag`, `Installed`, `NotJunk`, `NotHidden`, `And`, `Or`, `Not`.
-Playlist import, match, sync, discover, and dynamic template workflows hydrate
-cached external metadata before evaluating rules or similarity. External
-metadata rules only match when the relevant cache entries exist.
+Playlist import, match, sync, discover, dynamic template, and editorial mood
+workflows hydrate external metadata before evaluating rules or similarity.
+When not offline, missing cache entries are fetched on demand (ADR-0002);
+fetch failures degrade gracefully. External metadata rules only match when
+the relevant data is available.
 
 ### Match Reports
 

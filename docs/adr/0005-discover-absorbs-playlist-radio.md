@@ -1,0 +1,3 @@
+# Discover absorbs Playlist Radio
+
+Playlist Radio is removed. It was a strictly weaker version of Discover-with-seed: Playlist Radio used binary IGDB-similar-membership (in or out) with a fallback to "any unplayed game", while Discover uses IGDB-similar membership (+5.0) plus taste-vector overlap (normalised) plus high-rating bonus (+0.25). Discover-with-seed already covers the entire "seed-based similar picks" surface and does it better. The `collections dynamic playlist-radio` CLI command and corresponding GUI entry are removed. Trade-off: one fewer concept and one fewer command, but a breaking change for anyone using the playlist-radio command.

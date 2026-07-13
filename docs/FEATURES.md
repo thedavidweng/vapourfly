@@ -43,20 +43,20 @@ feature row, the command reference, and the relevant GUI smoke test.
 | Diagnostics export | Yes | Yes | CLI `vapourfly diagnostics export --out <file>` and GUI Settings diagnostics export write sanitized support data. |
 | Settings | Yes | Yes | CLI `settings show` displays resolved config; `settings set <field> <value>` and `settings unset <field>` edit `config.toml`. GUI edits Steam directory, account, store locale, backup retention, and write safety. Settable fields: `steam_dir`, `account`, `cc`, `lang`, `backup_retention_count`. |
 | Playlist creation/editing UI | Yes | Yes | CLI `playlist create`; GUI Playlists view supports create/edit fields and save to the local playlist store. |
-| Share codes | Yes | Yes | `VF1:` base64url playlist codes via CLI `playlist share` / `playlist import --code` and GUI copy/import controls. |
-| Discover / similar-game playlist generation | Yes | Yes | CLI `playlist discover`; GUI Playlists view generates a Discover playlist from taste similarity with optional seed AppID and count controls. |
-| Dynamic collection templates | Yes | Yes | CLI `collections dynamic <template>`; GUI Playlists view compiles deck-session, finish-it, mood, and playlist-radio templates. Deck Session requires installed, not hidden, not junk, ProtonDB Gold-or-better, PCGW full controller support, and HLTB within the requested session length. |
+| Share codes | Yes | Yes | `VF1:` compact binary playlist codes (ADR-0003) via CLI `playlist share` / `playlist import --code` and GUI copy/import controls. The payload carries content + name + description, DEFLATE-compressed and base64url-encoded. No backward compatibility with the old base64url(JSON) format. |
+| Discover / similar-game playlist generation | Yes | Yes | CLI `playlist discover`; GUI Playlists view generates a Discover playlist from taste similarity with optional seed AppID and count controls. Discover owns the entire "similar picks" surface (ADR-0005). |
+| Dynamic collection templates | Yes | Yes | CLI `collections dynamic <template>`; GUI Playlists view compiles deck-session and finish-it templates. Deck Session requires installed, not hidden, not junk, ProtonDB Gold-or-better, PCGW full controller support, and HLTB within the requested session length. |
+| Editorial Moods | Yes | Yes | CLI `collections mood [name]`; GUI Playlists view compiles named, curated playlists with hidden selection criteria (ADR-0004). Seven canonical moods: Today's Biggest Hits, Indie Rising, Friday Party, Deck Guardians, Unopened Treasures, Weekend Marathon, Quick Round. |
 
 ## Current Data Flow
 
 1. `scan` reads local Steam files and builds the library model.
 2. `scan --enrich` or cache refresh fetches external metadata and stores API responses in the local cache.
-3. User workflows such as Junk, Recommend, Playlist Match, Sync, Discover, and Dynamic templates scan the library, then hydrate cached external metadata before evaluation.
-4. Hydration is cache-only (no network). Use `scan --enrich` or `cache refresh` to populate missing cache entries first.
+3. User workflows such as Junk, Recommend, Playlist Match, Sync, Discover, Dynamic templates, and Editorial Moods go through `vapourfly_api::workflow::prepare`, which scans the library, hydrates external metadata (lazy network fetch when not offline — ADR-0002), and classifies junk. Fetch failures degrade gracefully: the game is evaluated with whatever data is available.
+4. `--offline` forces cache-only hydration. Use `scan --enrich` or `cache refresh` to populate missing cache entries ahead of time when you want to avoid network calls during workflows.
 
-For developers, junk/recommend/playlist workflows call
-`vapourfly_api::enrichment::hydrate_from_cache` and annotate `Game.is_junk`
-before scoring or rule evaluation.
+For developers, workflow commands call `vapourfly_api::workflow::prepare` and
+then re-classify junk with the desired mode if different from Default.
 
 ## Supported Data Sources
 

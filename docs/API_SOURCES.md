@@ -169,10 +169,12 @@ vapourfly sources status
 Cache refresh is blocked in `--offline` mode.
 
 Cache refresh stores source responses locally. Junk, Recommend, Playlist Match,
-Playlist Sync, Discover, and Dynamic Template workflows hydrate cached responses
-into scanned game records before evaluating rules or scores. Hydration is
-cache-only and never makes network requests. Use `scan --enrich --format json`
-when you need to inspect enriched game data from the CLI.
+Playlist Sync, Discover, Editorial Mood, and Dynamic Template workflows run
+through `workflow::prepare`, which **lazy-fetches missing cache entries over
+the network by default** (ADR-0002). Pass `--offline` to force cache-only
+hydration. Per-game fetch failures degrade gracefully — the workflow always
+returns a result. Use `scan --enrich --format json` when you need to inspect
+enriched game data from the CLI without running a full evaluation workflow.
 
 ## Data Priority
 
