@@ -311,10 +311,7 @@ fn load_config_table_at(path: &Path) -> Result<toml::Value> {
         }
     };
     let value: toml::Value = toml::from_str(&contents).map_err(|e| {
-        VapourflyError::Internal(format!(
-            "failed to parse config {}: {e}",
-            path.display()
-        ))
+        VapourflyError::Internal(format!("failed to parse config {}: {e}", path.display()))
     })?;
     if !value.is_table() {
         return Err(VapourflyError::Internal(format!(
@@ -326,6 +323,12 @@ fn load_config_table_at(path: &Path) -> Result<toml::Value> {
 }
 
 /// Persist a TOML table to `path`, creating parent directories as needed.
+///
+/// The write is atomic: the serialised TOML is written to a temporary file in
+/// the same directory and then renamed over the target. This mirrors the
+/// temp-file-then-rename pattern used elsewhere in Vapourfly (e.g. the API
+/// cache and Steam backup writer) and prevents `config.toml` from being left
+/// truncated or corrupt if the process is interrupted mid-write.
 fn write_config_table_at(table: &toml::Value, path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
@@ -339,8 +342,25 @@ fn write_config_table_at(table: &toml::Value, path: &Path) -> Result<()> {
     let toml_str = toml::to_string_pretty(table)
         .map_err(|e| VapourflyError::Internal(format!("failed to serialise config: {e}")))?;
 
-    std::fs::write(path, toml_str).map_err(|e| {
-        VapourflyError::Internal(format!("failed to write config to {}: {e}", path.display()))
+    // Atomic write: write to a temp file in the same directory, then rename
+    // over the target. `rename` is atomic on POSIX when source and destination
+    // are on the same filesystem, which is guaranteed by the same-directory
+    // temp file. On Windows the rename is still atomic with respect to other
+    // readers of the target.
+    let tmp_path = path.with_extension("toml.tmp");
+    std::fs::write(&tmp_path, &toml_str).map_err(|e| {
+        VapourflyError::Internal(format!(
+            "failed to write config tmp file {}: {e}",
+            tmp_path.display()
+        ))
+    })?;
+    std::fs::rename(&tmp_path, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        VapourflyError::Internal(format!(
+            "failed to rename config tmp file {} -> {}: {e}",
+            tmp_path.display(),
+            path.display()
+        ))
     })
 }
 
@@ -360,23 +380,7 @@ pub fn set_config_field(field: ConfigField, value: &str) -> Result<()> {
 
 /// Same as [`set_config_field`] but writes to an explicit path. Used by tests.
 pub(crate) fn set_config_field_at(field: ConfigField, value: &str, path: &Path) -> Result<()> {
-    let mut table = load_config_table_at(path)?;
-    let tbl = table
-        .as_table_mut()
-        .ok_or_else(|| VapourflyError::Internal("config file root is not a table".into()))?;
-
-    let toml_value = match field {
-        ConfigField::BackupRetentionCount => {
-            let n: i64 = value.parse().map_err(|_| {
-                VapourflyError::InvalidInput("backup_retention_count must be an integer".into())
-            })?;
-            toml::Value::Integer(n)
-        }
-        _ => toml::Value::String(value.to_string()),
-    };
-
-    tbl.insert(field.as_key().to_string(), toml_value);
-    write_config_table_at(&table, path)
+    apply_config_updates_at(&[(field, Some(value.to_string()))], path)
 }
 
 /// Remove a config field from `config.toml`.
@@ -395,10 +399,66 @@ pub fn unset_config_field(field: ConfigField) -> Result<()> {
 
 /// Same as [`unset_config_field`] but writes to an explicit path. Used by tests.
 pub(crate) fn unset_config_field_at(field: ConfigField, path: &Path) -> Result<()> {
+    apply_config_updates_at(&[(field, None)], path)
+}
+
+/// A single field update: set the field to `value`, or unset it when `value`
+/// is `None`.
+pub type ConfigUpdate = (ConfigField, Option<String>);
+
+/// Apply a batch of config field updates in a single read-modify-write
+/// transaction.
+///
+/// Each entry is `(field, Some(value))` to set or `(field, None)` to unset.
+/// Values must already be normalised (see [`ConfigField::normalise`]); this
+/// function performs only the type coercion needed for TOML storage (e.g.
+/// `backup_retention_count` is stored as an integer). All updates are applied
+/// to one in-memory table and persisted with a single atomic write (see
+/// [`write_config_table_at`]), so either every update lands on disk or none
+/// of them do — the file is never left in a partially-updated state, even if
+/// the process is interrupted mid-write.
+pub fn apply_config_updates(updates: &[ConfigUpdate]) -> Result<()> {
+    apply_config_updates_at(
+        updates,
+        &config_file_path().ok_or_else(|| {
+            VapourflyError::Internal("could not determine platform config directory".into())
+        })?,
+    )
+}
+
+/// Same as [`apply_config_updates`] but writes to an explicit path. Used by
+/// tests.
+pub(crate) fn apply_config_updates_at(updates: &[ConfigUpdate], path: &Path) -> Result<()> {
     let mut table = load_config_table_at(path)?;
-    if let Some(tbl) = table.as_table_mut() {
-        tbl.remove(field.as_key());
+    let tbl = table
+        .as_table_mut()
+        .ok_or_else(|| VapourflyError::Internal("config file root is not a table".into()))?;
+
+    for (field, value) in updates {
+        match value {
+            Some(value) => {
+                let toml_value = match field {
+                    ConfigField::BackupRetentionCount => {
+                        // Parse as u32 to match the storage type
+                        // (`Option<u32>`) and reject negatives, then widen to
+                        // the i64 TOML integer representation.
+                        let n: u32 = value.parse().map_err(|_| {
+                            VapourflyError::InvalidInput(
+                                "backup_retention_count must be a non-negative integer".into(),
+                            )
+                        })?;
+                        toml::Value::Integer(i64::from(n))
+                    }
+                    _ => toml::Value::String(value.clone()),
+                };
+                tbl.insert(field.as_key().to_string(), toml_value);
+            }
+            None => {
+                tbl.remove(field.as_key());
+            }
+        }
     }
+
     write_config_table_at(&table, path)
 }
 
@@ -876,5 +936,124 @@ backup_retention_count = 10
             std::fs::read_to_string(&path).unwrap(),
             "this is not = valid = toml"
         );
+    }
+
+    // -- apply_config_updates_at ---------------------------------------------
+
+    #[test]
+    fn apply_config_updates_sets_and_unsets_in_one_write() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+
+        // Seed with an existing value to verify it is preserved/unset
+        // correctly within the batch.
+        set_config_field_at(ConfigField::Account, "old", &path).unwrap();
+
+        let updates: &[ConfigUpdate] = &[
+            (ConfigField::Cc, Some("US".into())),
+            (ConfigField::Lang, Some("english".into())),
+            (ConfigField::BackupRetentionCount, Some("5".into())),
+            (ConfigField::Account, None), // unset
+        ];
+        apply_config_updates_at(updates, &path).unwrap();
+
+        let parsed: ConfigFile = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(parsed.cc.as_deref(), Some("US"));
+        assert_eq!(parsed.lang.as_deref(), Some("english"));
+        assert_eq!(parsed.backup_retention_count, Some(5));
+        assert!(parsed.account.is_none(), "account should have been unset");
+    }
+
+    #[test]
+    fn apply_config_updates_preserves_unrelated_keys() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+
+        // Write a key that the batch does not touch.
+        set_config_field_at(ConfigField::SteamDir, "/steam", &path).unwrap();
+
+        let updates: &[ConfigUpdate] = &[(ConfigField::Cc, Some("JP".into()))];
+        apply_config_updates_at(updates, &path).unwrap();
+
+        let parsed: ConfigFile = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(parsed.steam_dir.as_deref(), Some("/steam"));
+        assert_eq!(parsed.cc.as_deref(), Some("JP"));
+    }
+
+    #[test]
+    fn apply_config_updates_rejects_corrupt_config() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "this is not = valid = toml").unwrap();
+
+        let updates: &[ConfigUpdate] = &[(ConfigField::Cc, Some("JP".into()))];
+        let err = apply_config_updates_at(updates, &path);
+        assert!(err.is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "this is not = valid = toml"
+        );
+    }
+
+    #[test]
+    fn apply_config_updates_rejects_non_integer_backup_retention() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+
+        let updates: &[ConfigUpdate] = &[(ConfigField::BackupRetentionCount, Some("abc".into()))];
+        let err = apply_config_updates_at(updates, &path);
+        assert!(err.is_err());
+        // File should not exist because the write failed before persisting.
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn apply_config_updates_rejects_negative_backup_retention() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+
+        // A negative value must be rejected to match the `Option<u32>` storage
+        // type and `ConfigField::normalise`. Previously this was accepted
+        // because the field was parsed as `i64`.
+        let updates: &[ConfigUpdate] = &[(ConfigField::BackupRetentionCount, Some("-1".into()))];
+        let err = apply_config_updates_at(updates, &path);
+        assert!(err.is_err());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn write_config_table_at_is_atomic_no_tmp_left_behind() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+
+        set_config_field_at(ConfigField::Cc, "US", &path).unwrap();
+        let tmp_path = path.with_extension("toml.tmp");
+        assert!(
+            !tmp_path.exists(),
+            "atomic write must not leave a tmp file behind on success"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            toml::to_string_pretty(&toml::Value::Table({
+                let mut m = toml::map::Map::new();
+                m.insert("cc".into(), toml::Value::String("US".into()));
+                m
+            }))
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn write_config_table_at_preserves_existing_file_on_parse_failure() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "cc = \"US\"\n").unwrap();
+
+        // A parse failure happens before any write, so the original file and
+        // no tmp file should be present.
+        let updates: &[ConfigUpdate] = &[(ConfigField::BackupRetentionCount, Some("abc".into()))];
+        assert!(apply_config_updates_at(updates, &path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "cc = \"US\"\n");
+        assert!(!path.with_extension("toml.tmp").exists());
     }
 }

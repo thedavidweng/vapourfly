@@ -3,7 +3,7 @@
 //! Implemented commands: doctor, scan, collections, junk, recommend,
 //! playlist, sync, cache, sources, backup, diagnostics.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use clap::{Parser, Subcommand};
@@ -1414,16 +1414,57 @@ fn cmd_playlist_create_rules(
     description: String,
     rules_path: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let contents = std::fs::read_to_string(&rules_path)
+    let pf = build_rule_playlist_from_file(&id, &name, &description, &rules_path)?;
+    store_playlist(&pf)?;
+    println!("Created rule-based playlist: {}", pf.playlist.name);
+    println!("  ID: {}", pf.playlist.id);
+    match &pf.playlist.content {
+        PlaylistContent::Rules { rules } => println!("  Rules: {}", rules.len()),
+        PlaylistContent::Manual { .. } => {}
+    }
+    Ok(())
+}
+
+/// Parse a rules file and build a `PlaylistFile` for a rule-based playlist.
+///
+/// `rules_path` may point at either a bare JSON rules array (`[...]`) or a
+/// full Vapourfly playlist JSON file (rules are extracted from
+/// `content.value.rules`). The playlist is built with the given `id`, `name`,
+/// and `description`; it is not persisted.
+fn build_rule_playlist_from_file(
+    id: &str,
+    name: &str,
+    description: &str,
+    rules_path: &Path,
+) -> Result<PlaylistFile, Box<dyn std::error::Error>> {
+    let contents = std::fs::read_to_string(rules_path)
         .map_err(|_| format!("could not read rules file: {}", rules_path.display()))?;
 
+    let rules = parse_rules_file_contents(&contents)?;
+    let pf = PlaylistFile {
+        vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
+        created_by: "user".into(),
+        playlist: vapourfly_core::models::Playlist {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: description.to_string(),
+            content: PlaylistContent::Rules { rules },
+        },
+    };
+    Ok(pf)
+}
+
+/// Parse rules from either a bare JSON rules array or a full playlist file.
+fn parse_rules_file_contents(
+    contents: &str,
+) -> Result<Vec<PlaylistRule>, Box<dyn std::error::Error>> {
     // Accept either a bare rules array `[...]` or a full playlist file
     // (which contains `content.value.rules`).
     let rules: Vec<PlaylistRule> = if contents.trim_start().starts_with('[') {
-        serde_json::from_str(&contents)
+        serde_json::from_str(contents)
             .map_err(|e| format!("rules file is not a valid JSON array of rules: {e}"))?
     } else {
-        let pf: PlaylistFile = serde_json::from_str(&contents)
+        let pf: PlaylistFile = serde_json::from_str(contents)
             .map_err(|e| format!("rules file is neither a rules array nor a playlist file: {e}"))?;
         match pf.playlist.content {
             PlaylistContent::Rules { rules } => rules,
@@ -1436,26 +1477,22 @@ fn cmd_playlist_create_rules(
     if rules.is_empty() {
         return Err("rules file contains no rules".into());
     }
+    Ok(rules)
+}
 
-    let pf = PlaylistFile {
-        vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
-        created_by: "user".into(),
-        playlist: vapourfly_core::models::Playlist {
-            id,
-            name,
-            description,
-            content: PlaylistContent::Rules { rules },
-        },
-    };
-
-    store_playlist(&pf)?;
-    println!("Created rule-based playlist: {}", pf.playlist.name);
-    println!("  ID: {}", pf.playlist.id);
-    match &pf.playlist.content {
-        PlaylistContent::Rules { rules } => println!("  Rules: {}", rules.len()),
-        PlaylistContent::Manual { .. } => {}
-    }
-    Ok(())
+/// Persist a playlist to an explicit store directory.
+///
+/// This is the storage primitive used by [`store_playlist`] (which writes to
+/// the platform playlist store) and by tests that need to target a temporary
+/// directory.
+fn store_playlist_at(
+    pf: &PlaylistFile,
+    store_dir: &Path,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(store_dir)?;
+    let stored_path = store_dir.join(format!("{}.json", pf.playlist.id));
+    playlist::export_playlist(pf, &stored_path)?;
+    Ok(stored_path)
 }
 
 fn cmd_playlist_import(
@@ -2071,10 +2108,7 @@ fn playlist_store_dir() -> PathBuf {
 
 /// Persist a playlist to the local playlist store.
 fn store_playlist(pf: &PlaylistFile) -> Result<(), Box<dyn std::error::Error>> {
-    let store_dir = playlist_store_dir();
-    std::fs::create_dir_all(&store_dir)?;
-    let stored_path = store_dir.join(format!("{}.json", pf.playlist.id));
-    playlist::export_playlist(pf, &stored_path)?;
+    store_playlist_at(pf, &playlist_store_dir())?;
     Ok(())
 }
 
@@ -2185,14 +2219,24 @@ mod tests {
         let rules_path = tmp.path().join("rules.json");
         std::fs::write(&rules_path, r#"[{"op":"Installed"},{"op":"NotHidden"}]"#).unwrap();
 
-        // We can't call cmd_playlist_create_rules directly because it writes
-        // to the real playlist store. Instead, verify the parsing logic by
-        // checking that the rules file is valid JSON.
-        let contents = std::fs::read_to_string(&rules_path).unwrap();
-        let rules: Vec<PlaylistRule> = serde_json::from_str(&contents).unwrap();
-        assert_eq!(rules.len(), 2);
-        assert_eq!(rules[0], PlaylistRule::Installed);
-        assert_eq!(rules[1], PlaylistRule::NotHidden);
+        let pf = build_rule_playlist_from_file("test-id", "Test", "", &rules_path).unwrap();
+        assert_eq!(pf.playlist.id, "test-id");
+        assert_eq!(pf.playlist.name, "Test");
+        match &pf.playlist.content {
+            PlaylistContent::Rules { rules } => {
+                assert_eq!(rules.len(), 2);
+                assert_eq!(rules[0], PlaylistRule::Installed);
+                assert_eq!(rules[1], PlaylistRule::NotHidden);
+            }
+            PlaylistContent::Manual { .. } => panic!("expected rule-based playlist"),
+        }
+
+        // Verify the playlist can be persisted and re-read.
+        let store_dir = tmp.path().join("store");
+        let stored_path = store_playlist_at(&pf, &store_dir).unwrap();
+        assert!(stored_path.exists());
+        let reloaded = playlist::import_playlist(&stored_path).unwrap();
+        assert_eq!(reloaded.playlist.id, "test-id");
     }
 
     #[test]
@@ -2219,11 +2263,77 @@ mod tests {
         )
         .unwrap();
 
-        let contents = std::fs::read_to_string(&rules_path).unwrap();
-        let pf: PlaylistFile = serde_json::from_str(&contents).unwrap();
-        match pf.playlist.content {
+        let pf = build_rule_playlist_from_file("new-id", "New Name", "desc", &rules_path).unwrap();
+        // The id/name/description come from the arguments, not the file.
+        assert_eq!(pf.playlist.id, "new-id");
+        assert_eq!(pf.playlist.name, "New Name");
+        assert_eq!(pf.playlist.description, "desc");
+        match &pf.playlist.content {
             PlaylistContent::Rules { rules } => assert_eq!(rules.len(), 1),
             PlaylistContent::Manual { .. } => panic!("expected rule-based playlist"),
         }
+    }
+
+    #[test]
+    fn playlist_create_rules_rejects_empty_rules_array() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let rules_path = tmp.path().join("rules.json");
+        std::fs::write(&rules_path, "[]").unwrap();
+
+        let result = build_rule_playlist_from_file("id", "Name", "", &rules_path);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("no rules"), "got: {msg}");
+    }
+
+    #[test]
+    fn playlist_create_rules_rejects_manual_playlist_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let rules_path = tmp.path().join("playlist.json");
+        std::fs::write(
+            &rules_path,
+            r#"{
+                "vapourfly_schema": "vapourfly.playlist.v1",
+                "created_by": "user",
+                "playlist": {
+                    "id": "test",
+                    "name": "Test",
+                    "description": "",
+                    "content": {
+                        "type": "Manual",
+                        "value": {
+                            "app_ids": [10, 20]
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let result = build_rule_playlist_from_file("id", "Name", "", &rules_path);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("manual playlist"), "got: {msg}");
+    }
+
+    #[test]
+    fn playlist_create_rules_rejects_unparseable_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let rules_path = tmp.path().join("rules.json");
+        std::fs::write(&rules_path, "not json at all").unwrap();
+
+        let result = build_rule_playlist_from_file("id", "Name", "", &rules_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn playlist_create_rules_rejects_missing_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let rules_path = tmp.path().join("nonexistent.json");
+
+        let result = build_rule_playlist_from_file("id", "Name", "", &rules_path);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("could not read"), "got: {msg}");
     }
 }

@@ -40,8 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### GUI
 
-- Settings panel now writes `config.toml` via the shared `vapourfly_core::config` API instead of a duplicated read-modify-write implementation.
-
+- Settings panel now writes `config.toml` via the shared `vapourfly_core::config` batch API (`apply_config_updates`) instead of a duplicated read-modify-write implementation. All field updates are validated before any write and persisted in a single atomic write (temp file + rename), so the file is never left in a partially-updated, truncated, or corrupt state — even if the process is interrupted mid-write.
 
 ## [0.1.0] - 2026-06-26
 

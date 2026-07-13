@@ -377,9 +377,7 @@ fn manual_playlist_app_ids_csv(pf: &PlaylistFile) -> String {
 /// field when loading an existing playlist.
 fn playlist_rules_json(pf: &PlaylistFile) -> String {
     match &pf.playlist.content {
-        PlaylistContent::Rules { rules } => {
-            serde_json::to_string_pretty(rules).unwrap_or_default()
-        }
+        PlaylistContent::Rules { rules } => serde_json::to_string_pretty(rules).unwrap_or_default(),
         PlaylistContent::Manual { .. } => String::new(),
     }
 }
@@ -1195,10 +1193,8 @@ impl VapourflyApp {
                 .collect();
             PlaylistContent::Manual { app_ids }
         } else {
-            let rules: Vec<PlaylistRule> = serde_json::from_str(
-                self.playlist_edit_rules.trim(),
-            )
-            .map_err(|e| format!("Invalid Rules JSON: {e}"))?;
+            let rules: Vec<PlaylistRule> = serde_json::from_str(self.playlist_edit_rules.trim())
+                .map_err(|e| format!("Invalid Rules JSON: {e}"))?;
             if rules.is_empty() {
                 return Err("Rules JSON must contain at least one rule.".into());
             }
@@ -3836,70 +3832,72 @@ impl VapourflyApp {
 
     /// Save settings to config.toml.
     ///
-    /// Uses `vapourfly_core::config::set_config_field` / `unset_config_field`
-    /// so the on-disk read-modify-write logic (including atomic preservation
-    /// of fields this panel does not manage) lives in one place. Each call
-    /// reads the current file, mutates a single key, and writes it back.
+    /// All field updates are validated first, then applied in a single
+    /// read-modify-write transaction via
+    /// [`vapourfly_core::config::apply_config_updates`]. Because validation
+    /// happens before any write, a validation failure never leaves the file
+    /// in a partially-updated state, and the surfaced error message always
+    /// reflects whether anything was actually persisted. The single write is
+    /// atomic (temp file + rename), so the file is also not left truncated or
+    /// corrupt if the process is interrupted mid-write.
     fn save_settings(&mut self) {
-        use vapourfly_core::config::{ConfigField, set_config_field, unset_config_field};
+        use vapourfly_core::config::{ConfigField, ConfigUpdate, apply_config_updates};
 
-        // Helper: set or unset a string field depending on whether the edit
-        // buffer is empty.
+        // Validate every input first. If any field is invalid, we abort before
+        // touching the config file so the user never sees a "Failed to save"
+        // message for a save that partially succeeded.
         let mut errors: Vec<String> = Vec::new();
-        let apply_str = |field: ConfigField, value: &str, errors: &mut Vec<String>| {
-            let result = if value.is_empty() {
-                unset_config_field(field)
-            } else {
-                set_config_field(field, value)
-            };
-            if let Err(e) = result {
-                errors.push(format!("{}: {e}", field.as_key()));
+
+        let backup_value = self.backup_retention_edit.trim();
+        let backup_update: Option<Option<String>> = if backup_value.is_empty() {
+            Some(None) // unset
+        } else {
+            match backup_value.parse::<u32>() {
+                Ok(_) => Some(Some(backup_value.to_string())),
+                Err(_) => {
+                    errors.push("backup_retention_count: must be a non-negative integer".into());
+                    None
+                }
             }
         };
 
-        apply_str(ConfigField::SteamDir, &self.steam_dir_edit, &mut errors);
-        apply_str(ConfigField::Account, &self.account_edit, &mut errors);
-        apply_str(ConfigField::Cc, &self.cc_edit, &mut errors);
-        apply_str(ConfigField::Lang, &self.lang_edit, &mut errors);
-
-        // backup_retention_count is an integer field.
-        let backup_value = self.backup_retention_edit.trim();
-        if backup_value.is_empty() {
-            if let Err(e) = unset_config_field(ConfigField::BackupRetentionCount) {
-                errors.push(format!("backup_retention_count: {e}"));
-            }
-        } else {
-            // Validate locally first so we can surface a friendly message
-            // without round-tripping through the core error.
-            match backup_value.parse::<u32>() {
-                Ok(_) => {
-                    if let Err(e) = set_config_field(ConfigField::BackupRetentionCount, backup_value)
-                    {
-                        errors.push(format!("backup_retention_count: {e}"));
-                    }
-                }
-                Err(_) => {
-                    errors.push(
-                        "backup_retention_count: must be a non-negative integer".to_string(),
-                    );
-                }
-            }
-        }
-
-        if errors.is_empty() {
-            let path = vapourfly_core::config::config_file_path();
-            self.settings_save_msg = Some(match path {
-                Some(p) => format!("Saved to {}", p.display()),
-                None => "Saved.".into(),
-            });
-            // Reload config so the UI reflects the new values.
-            self.config = VapourflyConfig::from_cli_and_env(
-                vapourfly_core::config::CliOverrides::default(),
-            )
-            .ok();
-        } else {
+        if !errors.is_empty() {
             self.settings_save_msg = Some(format!("Failed to save: {}", errors.join("; ")));
+            return;
         }
+
+        // All inputs are valid — build the batch and persist atomically.
+        let str_field = |field: ConfigField, value: &str| -> ConfigUpdate {
+            if value.is_empty() {
+                (field, None)
+            } else {
+                (field, Some(value.to_string()))
+            }
+        };
+
+        let mut updates: Vec<ConfigUpdate> = vec![
+            str_field(ConfigField::SteamDir, &self.steam_dir_edit),
+            str_field(ConfigField::Account, &self.account_edit),
+            str_field(ConfigField::Cc, &self.cc_edit),
+            str_field(ConfigField::Lang, &self.lang_edit),
+        ];
+        if let Some(update) = backup_update {
+            updates.push((ConfigField::BackupRetentionCount, update));
+        }
+
+        if let Err(e) = apply_config_updates(&updates) {
+            self.settings_save_msg = Some(format!("Failed to save: {e}"));
+            return;
+        }
+
+        let path = vapourfly_core::config::config_file_path();
+        self.settings_save_msg = Some(match path {
+            Some(p) => format!("Saved to {}", p.display()),
+            None => "Saved.".into(),
+        });
+        // Reload config so the UI reflects the new values.
+        self.config =
+            VapourflyConfig::from_cli_and_env(vapourfly_core::config::CliOverrides::default()).ok();
     }
 }
 
