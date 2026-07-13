@@ -13,3 +13,4 @@ pub mod pcgw;
 pub mod protondb;
 pub mod rawg;
 pub mod steam_store;
+pub mod workflow;

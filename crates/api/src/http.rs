@@ -12,7 +12,6 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::io::Read as _;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -507,67 +506,61 @@ struct UreqBackend {
 
 impl UreqBackend {
     fn new() -> Self {
-        let agent = ureq::AgentBuilder::new()
-            .timeout(DEFAULT_TIMEOUT)
-            .user_agent(&format!("Vapourfly/{}", env!("CARGO_PKG_VERSION")))
+        let config = ureq::Agent::config_builder()
+            .timeout_global(Some(DEFAULT_TIMEOUT))
+            .http_status_as_error(false)
+            .user_agent(format!("Vapourfly/{}", env!("CARGO_PKG_VERSION")))
             .build();
-        Self { agent }
+        Self {
+            agent: config.into(),
+        }
     }
 }
 
 impl HttpBackend for UreqBackend {
     fn execute(&self, request: &HttpRequest) -> Result<HttpResponse> {
-        let mut req = match request.method {
-            HttpMethod::Get => self.agent.get(&request.url),
-            HttpMethod::Head => self.agent.head(&request.url),
-            HttpMethod::Post => self.agent.post(&request.url),
-        };
-
-        for (key, value) in &request.headers {
-            req = req.set(key.as_str(), value.as_str());
-        }
-
-        let body_bytes = request.body.as_deref().unwrap_or(b"");
-
-        match req.send_bytes(body_bytes) {
-            Ok(response) => {
-                let status = response.status();
-                let mut resp_headers = HashMap::new();
-                for name in response.headers_names() {
-                    if let Some(value) = response.header(&name) {
-                        resp_headers.insert(name.to_lowercase(), value.to_string());
-                    }
+        let response = match request.method {
+            HttpMethod::Get => {
+                let mut req = self.agent.get(&request.url);
+                for (key, value) in &request.headers {
+                    req = req.header(key.as_str(), value.as_str());
                 }
-                let body = read_body(response);
-                Ok(HttpResponse {
-                    status,
-                    headers: resp_headers,
-                    body,
-                })
+                req.call()
             }
-            Err(ureq::Error::Status(status, response)) => {
-                // ureq treats non-2xx as errors by default. Extract the
-                // response body and return a normal HttpResponse so the
-                // caller can inspect status + body.
-                let body = read_body(response);
-                Ok(HttpResponse {
-                    status,
-                    headers: HashMap::new(),
-                    body,
-                })
+            HttpMethod::Head => {
+                let mut req = self.agent.head(&request.url);
+                for (key, value) in &request.headers {
+                    req = req.header(key.as_str(), value.as_str());
+                }
+                req.call()
             }
-            Err(e) => Err(VapourflyError::NetworkUnavailable {
-                source: Box::new(std::io::Error::other(e.to_string())),
-            }),
+            HttpMethod::Post => {
+                let mut req = self.agent.post(&request.url);
+                for (key, value) in &request.headers {
+                    req = req.header(key.as_str(), value.as_str());
+                }
+                let body_bytes = request.body.as_deref().unwrap_or(b"");
+                req.send(body_bytes)
+            }
         }
-    }
-}
+        .map_err(|e| VapourflyError::NetworkUnavailable {
+            source: Box::new(std::io::Error::other(e.to_string())),
+        })?;
 
-/// Read the full body from a ureq response.
-fn read_body(response: ureq::Response) -> Vec<u8> {
-    let mut buf = Vec::new();
-    let _ = response.into_reader().read_to_end(&mut buf);
-    buf
+        let status = response.status().as_u16();
+        let mut resp_headers = HashMap::new();
+        for (name, value) in response.headers().iter() {
+            if let Ok(v) = value.to_str() {
+                resp_headers.insert(name.as_str().to_lowercase(), v.to_string());
+            }
+        }
+        let body = response.into_body().read_to_vec().unwrap_or_default();
+        Ok(HttpResponse {
+            status,
+            headers: resp_headers,
+            body,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------

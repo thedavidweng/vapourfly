@@ -181,6 +181,8 @@ fn enrich_source(
 
     match source {
         SOURCE_PROTONDB => {
+            // One client per source batch so rate limiting accumulates across games.
+            let client = crate::protondb::ProtonDbClient::new();
             for game in games.iter_mut() {
                 let key = format!("app/{}", game.app_id);
                 if !options.force {
@@ -195,7 +197,7 @@ fn enrich_source(
                 if options.offline {
                     continue;
                 }
-                match crate::protondb::ProtonDbClient::new().fetch_summary(game.app_id) {
+                match client.fetch_summary(game.app_id) {
                     Ok(data) => {
                         let record = CacheRecord {
                             source: source.to_string(),
@@ -229,6 +231,7 @@ fn enrich_source(
             }
         }
         SOURCE_PCGW => {
+            let client = crate::pcgw::PcgwClient::new();
             for game in games.iter_mut() {
                 let key = format!("app/{}", game.app_id);
                 if !options.force {
@@ -243,7 +246,7 @@ fn enrich_source(
                 if options.offline {
                     continue;
                 }
-                match crate::pcgw::PcgwClient::new().fetch_by_appid(game.app_id) {
+                match client.fetch_by_appid(game.app_id) {
                     Ok(data) => {
                         let record = CacheRecord {
                             source: source.to_string(),
@@ -276,6 +279,7 @@ fn enrich_source(
             }
         }
         SOURCE_HLTB => {
+            let client = crate::hltb::HltbClient::new();
             for game in games.iter_mut() {
                 let key = format!("name/{}", game.name);
                 if !options.force {
@@ -290,7 +294,7 @@ fn enrich_source(
                 if options.offline {
                     continue;
                 }
-                match crate::hltb::HltbClient::new().fetch(&game.name) {
+                match client.fetch(&game.name) {
                     Ok(Some(data)) => {
                         let record = CacheRecord {
                             source: source.to_string(),
@@ -331,6 +335,8 @@ fn enrich_source(
                 Ok(k) if !k.is_empty() => k,
                 _ => return stats,
             };
+            // One HttpClient + RawgClient for the whole batch (rate-limit locality).
+            let client = crate::rawg::RawgClient::new(rawg_key, HttpClient::new());
             for game in games.iter_mut() {
                 let key = format!("name/{}", game.name);
                 if !options.force {
@@ -345,9 +351,7 @@ fn enrich_source(
                 if options.offline {
                     continue;
                 }
-                match crate::rawg::RawgClient::new(rawg_key.clone(), HttpClient::new())
-                    .search_by_name(&game.name)
-                {
+                match client.search_by_name(&game.name) {
                     Ok(Some(data)) => {
                         let record = CacheRecord {
                             source: source.to_string(),
