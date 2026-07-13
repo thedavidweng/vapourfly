@@ -260,6 +260,19 @@ pub fn default_playlists_dir() -> PathBuf {
         .join("playlists")
 }
 
+/// Default path for optional junk ManualOverrides JSON
+/// (`{data}/vapourfly/manual_overrides.json`).
+///
+/// When the file is absent, workflows use empty overrides. Product path:
+/// place a JSON file matching [`crate::models::ManualOverrides`] at this path
+/// to force-include/exclude games or supply manual HLTB/ratings.
+pub fn default_manual_overrides_path() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("vapourfly")
+        .join("manual_overrides.json")
+}
+
 // ---------------------------------------------------------------------------
 // Platform Steam detection — delegate to steam::paths
 // ---------------------------------------------------------------------------

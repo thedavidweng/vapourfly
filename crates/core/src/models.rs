@@ -4,7 +4,7 @@
 //! All public JSON-facing structs implement `Serialize`/`Deserialize` with
 //! deterministic key ordering where practical.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -481,6 +481,23 @@ impl Default for JunkRules {
     }
 }
 
+/// Manual overrides that let the user force specific games in or out of the
+/// junk set, or supply their own HLTB / rating data.
+///
+/// Lives with the data model so [`crate::signal`] can apply rating/HLTB
+/// precedence without depending on the junk evaluation module.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ManualOverrides {
+    /// App IDs that should **never** be marked junk, regardless of signals.
+    pub force_include: HashSet<u32>,
+    /// App IDs that should **always** be marked junk, regardless of signals.
+    pub force_exclude: HashSet<u32>,
+    /// User-supplied completion time in seconds (replaces HLTB lookup).
+    pub manual_hltb: HashMap<u32, u32>,
+    /// User-supplied rating on a 0-5 scale (replaces RAWG/IGDB lookup).
+    pub manual_rating: HashMap<u32, f32>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JunkDecision {
     pub app_id: u32,
@@ -521,7 +538,7 @@ pub enum RatingSource {
     ManualOverride,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JunkMode {
     Default,
     Strict,
@@ -578,63 +595,6 @@ pub struct ScanResult {
 pub struct ScanWarning {
     pub code: String,
     pub message: String,
-}
-
-// ---------------------------------------------------------------------------
-// Shared Game helpers
-// ---------------------------------------------------------------------------
-
-impl Game {
-    /// Return lowercase keywords (genres, themes, tags) for similarity matching.
-    ///
-    /// Prefers IGDB keywords/themes/genres; falls back to RAWG tags/genres when
-    /// IGDB data is absent. The result is sorted and deduplicated.
-    pub fn keywords_lower(&self) -> Vec<String> {
-        let mut kws: Vec<String> = Vec::new();
-        if let Some(igdb) = &self.igdb {
-            kws.extend(igdb.keywords.iter().map(|s| s.to_lowercase()));
-            kws.extend(igdb.themes.iter().map(|s| s.to_lowercase()));
-            kws.extend(igdb.genres.iter().map(|s| s.to_lowercase()));
-        }
-        if kws.is_empty() {
-            if let Some(rawg) = &self.rawg {
-                kws.extend(rawg.tags.iter().map(|s| s.to_lowercase()));
-                kws.extend(rawg.genres.iter().map(|s| s.to_lowercase()));
-            }
-        }
-        kws.sort();
-        kws.dedup();
-        kws
-    }
-
-    /// Return the effective rating on a 0–5 scale and its source.
-    ///
-    /// Priority: `overrides` > RAWG (native 0–5) > IGDB (0–100, converted).
-    /// Returns `None` when no rating data is available.
-    pub fn effective_rating(
-        &self,
-        overrides: Option<&HashMap<u32, f32>>,
-    ) -> Option<(f32, RatingSource)> {
-        if let Some(overrides) = overrides {
-            if let Some(&rating) = overrides.get(&self.app_id) {
-                return Some((rating, RatingSource::ManualOverride));
-            }
-        }
-        if let Some(rawg) = &self.rawg {
-            if let Some(r) = rawg.rating_0_5 {
-                return Some((r, RatingSource::Rawg));
-            }
-        }
-        if let Some(igdb) = &self.igdb {
-            if let Some(r) = igdb.rating_0_100 {
-                return Some((r / 20.0, RatingSource::Igdb));
-            }
-            if let Some(r) = igdb.total_rating_0_100 {
-                return Some((r / 20.0, RatingSource::Igdb));
-            }
-        }
-        None
-    }
 }
 
 // ---------------------------------------------------------------------------

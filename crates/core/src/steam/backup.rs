@@ -148,7 +148,10 @@ pub fn create_backup(target_path: &Path, _retention_count: u32) -> Result<PathBu
 /// 9. Prunes old backups to `retention_count`.
 ///
 /// If a failure occurs after backup creation, an automatic restore is attempted.
-pub fn execute_write_plan(plan: &WritePlan, retention_count: u32) -> Result<()> {
+///
+/// On success, returns the path of the backup file that was actually created
+/// on disk (timestamped name — not the decorative placeholder on [`WritePlan`]).
+pub fn execute_write_plan(plan: &WritePlan, retention_count: u32) -> Result<PathBuf> {
     // -- Step 1: confirm target still matches ---------------------------------
     let current_bytes = fs::read(&plan.target_path).map_err(|_| VapourflyError::FileNotFound {
         path: crate::SafePath::new(&plan.target_path),
@@ -170,7 +173,7 @@ pub fn execute_write_plan(plan: &WritePlan, retention_count: u32) -> Result<()> 
 
     // -- Steps 3-9: perform the atomic write, restoring on failure ------------
     match atomic_write_inner(plan, retention_count) {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(backup_path),
         Err(write_err) => {
             tracing::warn!(
                 error = %write_err,

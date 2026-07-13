@@ -26,7 +26,8 @@ use crate::models::{
 /// 3. Serialises the result and computes `after_sha256`.
 /// 4. Builds a human-readable diff.
 /// 5. Validates the generated JSON can be round-tripped.
-/// 6. Derives `backup_path` and `tmp_path` from `target_path`.
+/// 6. Leaves `backup_path` / `tmp_path` empty — real names are created at
+///    execute time (see [`crate::steam::execute_write_plan`]).
 pub fn generate_write_plan(
     cloud: &CloudStorageFile,
     operations: Vec<WriteOp>,
@@ -78,19 +79,12 @@ pub fn generate_write_plan(
     // 6. Generate diff
     let diff = compute_diff(&original_snapshot, &modified, &operations);
 
-    // 7. Derive backup and tmp paths
-    let file_name = target_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("cloud-storage-namespace-1.json");
-    let parent = target_path.parent().unwrap_or(std::path::Path::new("."));
-    let backup_path = parent.join(format!("{file_name}.vapourfly-backup-1.json"));
-    let tmp_path = parent.join(format!(".{file_name}.vapourfly.tmp"));
-
+    // 7. Backup/tmp paths are assigned at execute time with timestamp + sha.
+    // Leaving them empty avoids lying to callers who print plan.backup_path.
     Ok(WritePlan {
         target_path,
-        backup_path,
-        tmp_path,
+        backup_path: PathBuf::new(),
+        tmp_path: PathBuf::new(),
         before_sha256,
         after_sha256,
         after_content: after_json.into_bytes(),
@@ -800,16 +794,9 @@ mod tests {
         let plan = generate_write_plan(&cloud, vec![], path.clone()).unwrap();
 
         assert_eq!(plan.target_path, path);
-        let parent = path.parent().unwrap();
-        let fname = path.file_name().unwrap().to_str().unwrap();
-        assert_eq!(
-            plan.backup_path,
-            parent.join(format!("{fname}.vapourfly-backup-1.json"))
-        );
-        assert_eq!(
-            plan.tmp_path,
-            parent.join(format!(".{fname}.vapourfly.tmp"))
-        );
+        // Backup/tmp names are assigned at execute time, not preview.
+        assert!(plan.backup_path.as_os_str().is_empty());
+        assert!(plan.tmp_path.as_os_str().is_empty());
     }
 
     #[test]

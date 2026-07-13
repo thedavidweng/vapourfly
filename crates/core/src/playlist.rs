@@ -33,6 +33,7 @@ use crate::models::{
     ControllerSupport, Game, Money, PlaylistContent, PlaylistFile, PlaylistMatchReport,
     PlaylistRule, ProtonTier, VAPOURFLY_PLAYLIST_SCHEMA,
 };
+use crate::signal;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -262,13 +263,6 @@ pub fn export_playlist(playlist: &PlaylistFile, path: &Path) -> Result<()> {
 // evaluate_rules
 // ---------------------------------------------------------------------------
 
-/// Determine the effective rating on a 0-5 scale for a game.
-///
-/// Priority: RAWG (native 0-5) > IGDB (0-100, converted).
-fn effective_rating(game: &Game) -> Option<f32> {
-    game.effective_rating(None).map(|(r, _)| r)
-}
-
 /// Evaluate a single leaf or compound rule against a game.
 ///
 /// Returns `true` if the game matches, `false` otherwise.
@@ -314,8 +308,8 @@ fn eval(rule: &PlaylistRule, game: &Game) -> bool {
 
         // -- Rating at least ---------------------------------------------------
         PlaylistRule::RatingAtLeast { rating_0_5 } => {
-            match effective_rating(game) {
-                Some(rating) => rating >= *rating_0_5,
+            match signal::effective_rating(game, None) {
+                Some((rating, _)) => rating >= *rating_0_5,
                 None => false, // fail closed
             }
         }

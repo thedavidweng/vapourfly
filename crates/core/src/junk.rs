@@ -5,34 +5,17 @@
 //! Supports three evaluation modes (Default, Strict, Aggressive) and manual
 //! overrides for force-include/exclude and user-supplied metadata.
 
-use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, SafePath, VapourflyError};
-use crate::models::{
-    Game, HltbSource, JunkDecision, JunkMode, JunkRules, JunkSignal, JunkSignalKind, RatingSource,
-};
+use crate::models::{Game, JunkDecision, JunkMode, JunkRules, JunkSignal, JunkSignalKind};
+use crate::signal;
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
-/// Manual overrides that let the user force specific games in or out of the
-/// junk set, or supply their own HLTB / rating data.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct ManualOverrides {
-    /// App IDs that should **never** be marked junk, regardless of signals.
-    pub force_include: HashSet<u32>,
-    /// App IDs that should **always** be marked junk, regardless of signals.
-    pub force_exclude: HashSet<u32>,
-    /// User-supplied completion time in seconds (replaces HLTB lookup).
-    pub manual_hltb: HashMap<u32, u32>,
-    /// User-supplied rating on a 0-5 scale (replaces RAWG/IGDB lookup).
-    pub manual_rating: HashMap<u32, f32>,
-}
+// Re-export so existing `junk::ManualOverrides` call sites keep compiling.
+pub use crate::models::ManualOverrides;
 
 /// The top-level result of a junk preview evaluation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -60,30 +43,35 @@ pub fn load_manual_overrides(path: &Path) -> Result<ManualOverrides> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Signal extraction helpers
-// ---------------------------------------------------------------------------
-
-/// Return the effective completion time in seconds and its source.
+/// Load overrides from `path` when present; otherwise empty defaults.
 ///
-/// Manual overrides take precedence over scraped HLTB data.
-fn effective_completion_time(
-    game: &Game,
-    overrides: &ManualOverrides,
-) -> Option<(u32, HltbSource)> {
-    if let Some(&seconds) = overrides.manual_hltb.get(&game.app_id) {
-        return Some((seconds, HltbSource::ManualOverride));
+/// On parse/IO error, logs a warning and returns defaults so workflows never
+/// fail solely because overrides are broken.
+pub fn load_manual_overrides_or_default(path: &Path) -> ManualOverrides {
+    if !path.is_file() {
+        return ManualOverrides::default();
     }
-    game.hltb
-        .as_ref()
-        .and_then(|h| h.main_story_seconds.map(|s| (s, h.source.clone())))
+    match load_manual_overrides(path) {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "failed to load manual overrides; using defaults"
+            );
+            ManualOverrides::default()
+        }
+    }
 }
 
-/// Return the effective rating on a 0-5 scale and its source.
+/// Load overrides from the platform default path
+/// ([`crate::config::default_manual_overrides_path`]).
 ///
-/// Priority: manual override > RAWG (native 0-5) > IGDB (0-100, converted).
-fn effective_rating(game: &Game, overrides: &ManualOverrides) -> Option<(f32, RatingSource)> {
-    game.effective_rating(Some(&overrides.manual_rating))
+/// This is the product path for CLI, GUI, and `workflow::prepare` — all must
+/// use the same overrides so re-classification does not wipe force-include /
+/// force-exclude / manual HLTB / rating.
+pub fn load_default_manual_overrides() -> ManualOverrides {
+    load_manual_overrides_or_default(&crate::config::default_manual_overrides_path())
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +104,7 @@ fn evaluate_game(
     }
 
     // -- Completion time (HLTB) ---------------------------------------------
-    match effective_completion_time(game, overrides) {
+    match signal::effective_completion_time(game, overrides) {
         Some((seconds, source)) => {
             available += 1;
             if seconds < rules.max_main_story_seconds {
@@ -127,7 +115,7 @@ fn evaluate_game(
     }
 
     // -- Rating -------------------------------------------------------------
-    match effective_rating(game, overrides) {
+    match signal::effective_rating(game, Some(&overrides.manual_rating)) {
         Some((rating_0_5, source)) => {
             available += 1;
             if rating_0_5 < rules.max_rating_0_5 {
@@ -245,7 +233,9 @@ pub fn apply_junk_flags(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{Game, HltbData, RawgData, SteamAppType, VAPOURFLY_JUNK_PREVIEW_SCHEMA};
+    use crate::models::{
+        Game, HltbData, HltbSource, RawgData, SteamAppType, VAPOURFLY_JUNK_PREVIEW_SCHEMA,
+    };
 
     /// Helper: build a minimal Game with the given parameters.
     fn make_game(
@@ -527,6 +517,16 @@ mod tests {
         assert!(overrides.force_include.contains(&1));
         assert!(overrides.force_include.contains(&2));
         assert!(overrides.force_exclude.contains(&3));
+
+        // or_default uses the same file path product path as prepare/CLI/GUI
+        let via_or_default = load_manual_overrides_or_default(&path);
+        assert!(via_or_default.force_exclude.contains(&3));
+        assert!(via_or_default.force_include.contains(&1));
+
+        // Missing file → empty defaults (does not wipe when used consistently)
+        let missing = load_manual_overrides_or_default(&dir.join("no-such-overrides.json"));
+        assert!(missing.force_include.is_empty());
+        assert!(missing.force_exclude.is_empty());
         assert_eq!(overrides.manual_hltb.get(&4), Some(&3600));
         assert!((overrides.manual_rating.get(&5).unwrap() - 3.5).abs() < f32::EPSILON);
 
@@ -542,5 +542,47 @@ mod tests {
             mode: JunkMode::Default,
         };
         assert_eq!(result.schema, "vapourfly.junk_preview.v1");
+    }
+
+    /// Product path: load overrides from disk then re-classify (as CLI/GUI do
+    /// after prepare) must keep force_exclude — never wipe with empty defaults.
+    #[test]
+    fn reclassify_with_loaded_overrides_preserves_force_exclude() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("overrides.json");
+        fs::write(
+            &path,
+            r#"{"force_include":[],"force_exclude":[42],"manual_hltb":{},"manual_rating":{}}"#,
+        )
+        .unwrap();
+
+        // Game that would not be junk on signals alone (high playtime).
+        let mut games = vec![make_game(42, "Forced Junk", Some(9999), Some(50_000), Some(5.0))];
+        let overrides = load_manual_overrides_or_default(&path);
+        apply_junk_flags(&mut games, &default_rules(), &JunkMode::Default, &overrides);
+        assert!(
+            games[0].is_junk,
+            "force_exclude from loaded file must apply on first classify"
+        );
+
+        // Simulate GUI prepared_games / CLI junk preview re-evaluate with SAME load path.
+        let overrides2 = load_manual_overrides_or_default(&path);
+        let decisions = evaluate_junk(&games, &default_rules(), &JunkMode::Default, &overrides2);
+        assert!(
+            decisions[0].is_junk,
+            "re-classify must use loaded overrides, not empty defaults"
+        );
+
+        // Contrast: empty defaults would wipe force_exclude for this high-playtime game.
+        let wiped = evaluate_junk(
+            &games,
+            &default_rules(),
+            &JunkMode::Default,
+            &ManualOverrides::default(),
+        );
+        assert!(
+            !wiped[0].is_junk,
+            "sanity: empty overrides would not mark high-playtime game junk"
+        );
     }
 }

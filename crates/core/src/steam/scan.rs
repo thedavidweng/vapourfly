@@ -129,7 +129,7 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
     };
 
     // -- 7. Parse cloud storage for collections and hidden status -------------
-    let cloud_path = userdata_dir.join("config/cloudstorage/cloud-storage-namespace-1.json");
+    let cloud_path = userdata_dir.join(crate::steam::CLOUD_STORAGE_RELATIVE);
     let (collections, hidden_ids) = match read_cloud_storage(&cloud_path) {
         Ok(cloud) => match read_user_collections(&cloud) {
             Ok(cols) => {

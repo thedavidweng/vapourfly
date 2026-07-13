@@ -32,8 +32,9 @@ pub use collections::{read_cloud_storage, read_user_collections};
 pub use librarycache::parse_librarycache;
 pub use localconfig::parse_localconfig;
 pub use paths::{
-    AppManifest, SteamAccount, detect_accounts, detect_library_folders, detect_steam_dirs,
-    parse_appmanifests, redact_path, resolve_userdata_dir, steam_account_id,
+    AppManifest, CLOUD_STORAGE_RELATIVE, SteamAccount, cloud_storage_path, detect_accounts,
+    detect_library_folders, detect_steam_dirs, parse_appmanifests, redact_path,
+    resolve_userdata_dir, steam_account_id,
 };
 pub use safety::{check_write_safety, is_steam_running, set_steam_running_override};
 pub use scan::{ScanOptions, scan_library};

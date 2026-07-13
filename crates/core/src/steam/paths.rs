@@ -169,6 +169,15 @@ pub fn steam_account_id(steam_id64: &str) -> Option<String> {
     Some((id - STEAM_ID64_BASE).to_string())
 }
 
+/// Relative path from an account userdata dir to the sole write surface
+/// (ADR-0001): `config/cloudstorage/cloud-storage-namespace-1.json`.
+pub const CLOUD_STORAGE_RELATIVE: &str = "config/cloudstorage/cloud-storage-namespace-1.json";
+
+/// Resolve the cloud storage path for an account under `steam_dir`.
+pub fn cloud_storage_path(steam_dir: &Path, steam_id64: &str) -> PathBuf {
+    resolve_userdata_dir(steam_dir, steam_id64).join(CLOUD_STORAGE_RELATIVE)
+}
+
 /// Resolve the `userdata/{id}` directory for an account.
 ///
 /// Steam may name this folder with either the full SteamID64 or the 32-bit

@@ -2,10 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::models::{
-    Game, Playlist, PlaylistContent, PlaylistFile, SteamAppType, VAPOURFLY_PLAYLIST_SCHEMA,
-};
-use crate::recommend::build_taste_vector;
+use crate::models::{Game, Playlist, PlaylistContent, PlaylistFile, VAPOURFLY_PLAYLIST_SCHEMA};
+use crate::scoring;
 
 /// Options for generating a Discover playlist.
 #[derive(Clone, Debug)]
@@ -32,7 +30,7 @@ impl Default for DiscoverOptions {
 /// Otherwise, candidates are ranked by overlap with the taste vector built
 /// from meaningful lifetime playtime.
 pub fn generate_discover_playlist(games: &[Game], options: &DiscoverOptions) -> PlaylistFile {
-    let taste_vector = build_taste_vector(games);
+    let taste_vector = scoring::build_taste_vector(games);
     let mut seed_similar: HashSet<u64> = HashSet::new();
     if let Some(seed_id) = options.seed_app_id {
         if let Some(seed_game) = games.iter().find(|g| g.app_id == seed_id) {
@@ -94,16 +92,7 @@ pub fn generate_discover_playlist(games: &[Game], options: &DiscoverOptions) -> 
 }
 
 fn is_discover_candidate(game: &Game) -> bool {
-    if game.is_hidden || game.is_junk {
-        return false;
-    }
-    if matches!(
-        game.app_type,
-        SteamAppType::Application | SteamAppType::Tool | SteamAppType::Dlc
-    ) {
-        return false;
-    }
-    game.playtime_minutes.is_none_or(|m| m == 0)
+    crate::eligibility::is_discover_eligible(game)
 }
 
 fn score_candidate(
@@ -120,24 +109,11 @@ fn score_candidate(
     }
 
     if !taste_vector.is_empty() {
-        let keywords = game.keywords_lower();
-        let total_taste: f32 = taste_vector.values().sum();
-        if total_taste > 0.0 {
-            let overlap: f32 = keywords.iter().filter_map(|kw| taste_vector.get(kw)).sum();
-            score += overlap / total_taste;
-        }
+        score += scoring::taste_overlap(game, taste_vector);
     }
 
-    if let Some(rawg) = &game.rawg {
-        if rawg.rating_0_5.is_some_and(|r| r >= 4.0) {
-            score += 0.25;
-        }
-    } else if let Some(igdb) = &game.igdb {
-        if igdb.rating_0_100.is_some_and(|r| r >= 80.0)
-            || igdb.total_rating_0_100.is_some_and(|r| r >= 80.0)
-        {
-            score += 0.25;
-        }
+    if scoring::is_high_rating(game) {
+        score += 0.25;
     }
 
     score
@@ -146,6 +122,7 @@ fn score_candidate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::SteamAppType;
     use crate::models::{IgdbData, RawgData};
 
     fn make_game(app_id: u32, name: &str) -> Game {

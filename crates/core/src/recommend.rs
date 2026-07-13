@@ -8,9 +8,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::models::{
-    Game, ProtonTier, RecommendReason, RecommendRequest, Recommendation, SteamAppType,
-};
+use crate::models::{Game, ProtonTier, RecommendReason, RecommendRequest, Recommendation};
+use crate::scoring;
 
 // ---------------------------------------------------------------------------
 // Public result type
@@ -70,44 +69,6 @@ impl SplitMix64 {
     fn next_f64(&mut self) -> f64 {
         (self.next_u64() >> 11) as f64 / ((1u64 << 53) as f64)
     }
-}
-
-// ---------------------------------------------------------------------------
-// Taste vector
-// ---------------------------------------------------------------------------
-
-/// Build a taste vector from the user's library.
-///
-/// Each entry maps a keyword (genre, theme, or tag) to a weight derived from
-/// log-scaled lifetime playtime.  Only non-hidden, non-junk games with
-/// meaningful playtime (>= 1 hour) contribute.
-///
-/// Prefer IGDB genres/themes/keywords; fall back to RAWG genres/tags.
-pub fn build_taste_vector(games: &[Game]) -> HashMap<String, f32> {
-    let mut vector: HashMap<String, f32> = HashMap::new();
-
-    for game in games {
-        // Skip hidden and junk
-        if game.is_hidden || game.is_junk {
-            continue;
-        }
-
-        let playtime = match game.playtime_minutes {
-            Some(m) if m >= 60 => m as f32,
-            _ => continue, // skip games with no meaningful playtime
-        };
-
-        let weight = (1.0 + playtime).ln();
-
-        // Use the shared keyword helper (IGDB preferred, RAWG fallback).
-        // The helper already lowercases, sorts, and deduplicates.
-        let keywords = game.keywords_lower();
-        for kw in keywords {
-            *vector.entry(kw).or_insert(0.0) += weight;
-        }
-    }
-
-    vector
 }
 
 // ---------------------------------------------------------------------------
@@ -187,14 +148,7 @@ fn score_game(
     }
 
     // -- high_rating ----------------------------------------------------------
-    let is_high_rating = if let Some(rawg) = &game.rawg {
-        rawg.rating_0_5.is_some_and(|r| r >= 4.0)
-    } else if let Some(igdb) = &game.igdb {
-        igdb.rating_0_100.is_some_and(|r| r >= 80.0)
-            || igdb.total_rating_0_100.is_some_and(|r| r >= 80.0)
-    } else {
-        false
-    };
+    let is_high_rating = scoring::is_high_rating(game);
     if is_high_rating {
         score += W_HIGH_RATING;
         reasons.push(RecommendReason {
@@ -206,28 +160,14 @@ fn score_game(
 
     // -- taste_similarity -----------------------------------------------------
     if !taste_vector.is_empty() {
-        let game_keywords = game.keywords_lower();
-        if !game_keywords.is_empty() {
-            let mut overlap: f32 = 0.0;
-            for kw in &game_keywords {
-                if let Some(&w) = taste_vector.get(kw) {
-                    overlap += w;
-                }
-            }
-            // Normalize: divide by the max possible overlap (sum of taste vector).
-            // Only award the signal if there is meaningful overlap.
-            let total_taste: f32 = taste_vector.values().sum();
-            if total_taste > 0.0 {
-                let similarity = overlap / total_taste;
-                if similarity > 0.05 {
-                    score += W_TASTE_SIMILARITY;
-                    reasons.push(RecommendReason {
-                        code: "taste_similarity".into(),
-                        description: "Matches your taste profile".into(),
-                        weight: W_TASTE_SIMILARITY,
-                    });
-                }
-            }
+        let similarity = scoring::taste_overlap(game, taste_vector);
+        if similarity > 0.05 {
+            score += W_TASTE_SIMILARITY;
+            reasons.push(RecommendReason {
+                code: "taste_similarity".into(),
+                description: "Matches your taste profile".into(),
+                weight: W_TASTE_SIMILARITY,
+            });
         }
     }
 
@@ -264,18 +204,6 @@ fn score_game(
 // Filtering helpers
 // ---------------------------------------------------------------------------
 
-/// Returns true if the game type should be excluded by default.
-///
-/// Non-game app types (Application, Tool, Dlc, Demo) are excluded unless they
-/// have been explicitly curated by the user (i.e., they are not junk and not
-/// hidden).
-fn is_unsupported_type(game: &Game) -> bool {
-    matches!(
-        game.app_type,
-        SteamAppType::Application | SteamAppType::Tool | SteamAppType::Dlc
-    )
-}
-
 // ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
@@ -293,7 +221,9 @@ fn is_unsupported_type(game: &Game) -> bool {
 /// A random perturbation in [0.0, 0.25) is added to break ties; when `seed`
 /// is provided the perturbation is deterministic.
 pub fn recommend(games: &[Game], request: &RecommendRequest) -> Vec<Recommendation> {
-    let taste_vector = build_taste_vector(games);
+    use crate::eligibility::{EligibilityOptions, is_eligible};
+
+    let taste_vector = scoring::build_taste_vector(games);
 
     // "now" — derive from chrono for testability; in production this is wall clock.
     let now_unix = chrono::Utc::now().timestamp();
@@ -303,14 +233,13 @@ pub fn recommend(games: &[Game], request: &RecommendRequest) -> Vec<Recommendati
     let mut candidates: Vec<Recommendation> = games
         .iter()
         .filter(|g| {
-            // -- Filtering ----------------------------------------------------
-            if g.is_hidden || g.is_junk {
-                return false;
-            }
-            if is_unsupported_type(g) {
-                return false;
-            }
-            if request.include_installed_only && !g.installed {
+            if !is_eligible(
+                g,
+                EligibilityOptions {
+                    unplayed_only: false,
+                    installed_only: request.include_installed_only,
+                },
+            ) {
                 return false;
             }
             // Exclude games belonging to any excluded collection.
@@ -755,7 +684,7 @@ mod tests {
         });
 
         let games = vec![game];
-        let vector = build_taste_vector(&games);
+        let vector = scoring::build_taste_vector(&games);
 
         // IGDB keywords should be present
         assert!(vector.contains_key("open world"));
@@ -780,7 +709,7 @@ mod tests {
         });
 
         let games = vec![game];
-        let vector = build_taste_vector(&games);
+        let vector = scoring::build_taste_vector(&games);
 
         assert!(vector.contains_key("strategy"));
         assert!(vector.contains_key("turn-based"));
@@ -797,7 +726,7 @@ mod tests {
         junk.playtime_minutes = Some(500);
 
         let games = vec![hidden, junk];
-        let vector = build_taste_vector(&games);
+        let vector = scoring::build_taste_vector(&games);
         assert!(vector.is_empty());
     }
 
@@ -815,7 +744,7 @@ mod tests {
         });
 
         let games = vec![game];
-        let vector = build_taste_vector(&games);
+        let vector = scoring::build_taste_vector(&games);
         assert!(vector.is_empty());
     }
 
