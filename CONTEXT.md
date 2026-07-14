@@ -111,6 +111,14 @@ Discover owns the entire "similar picks" surface — there is no separate
 Playlist Radio concept. Same shape as a Dynamic Template: a generator, not an
 artifact.
 
+### Generator playlist slot
+
+A fixed playlist-store identity used by the GUI for the latest output of a
+generator (Discover, a Dynamic Template, or an Editorial Mood). Regenerating
+overwrites that slot rather than creating a new Playlist id each time. The
+slot is a presentation/store convenience for “latest generation”; it is not a
+separate domain artifact type. See [ADR-0007](docs/adr/0007-generator-playlist-slots.md).
+
 ## Library and games
 
 ### Game

@@ -65,7 +65,47 @@ impl View {
             View::Settings => "Settings",
         }
     }
+}
 
+// ---------------------------------------------------------------------------
+// Generator playlist slots (ADR-0007)
+// ---------------------------------------------------------------------------
+
+/// GUI-owned generator identity for playlist-store slots.
+///
+/// Core engines produce playlists; the GUI assigns a **stable playlist id**
+/// per identity and overwrites that slot on regenerate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GeneratorIdentity {
+    /// Single Discover slot (seed is presentation-only; id does not vary).
+    Discover,
+    Dynamic(DynamicTemplate),
+    Mood(EditorialMood),
+}
+
+impl GeneratorIdentity {
+    /// Stable, readable playlist id for this generator slot.
+    fn slot_id(self) -> String {
+        match self {
+            Self::Discover => "discover".into(),
+            Self::Dynamic(template) => format!("dynamic-{}", template.id()),
+            Self::Mood(mood) => format!("mood-{}", mood.id()),
+        }
+    }
+}
+
+/// Assign the stable slot id and write the playlist to `store_dir`.
+///
+/// Returns the playlist as stored (id rewritten to the slot id). Content
+/// (name, description, app ids / rules) is otherwise left unchanged.
+fn put_generator_slot(
+    store_dir: &Path,
+    identity: GeneratorIdentity,
+    mut playlist: PlaylistFile,
+) -> Result<PlaylistFile, String> {
+    playlist.playlist.id = identity.slot_id();
+    playlist_store::put(store_dir, &playlist).map_err(|e| e.to_string())?;
+    Ok(playlist)
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +218,6 @@ const fn m(v: f32) -> i8 {
 }
 
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 // App state
 // ---------------------------------------------------------------------------
 
@@ -193,6 +232,9 @@ struct VapourflyApp {
 
     // Config
     config: Option<VapourflyConfig>,
+
+    /// Optional override for the playlist store directory (tests inject a temp dir).
+    playlist_store_dir: Option<PathBuf>,
 
     // Library view
     search_query: String,
@@ -808,6 +850,7 @@ impl VapourflyApp {
             fixtures_path,
 
             config,
+            playlist_store_dir: None,
 
             search_query: String::new(),
             filter_installed: false,
@@ -1375,10 +1418,35 @@ impl VapourflyApp {
         }
     }
 
+    fn playlist_store_path(&self) -> PathBuf {
+        self.playlist_store_dir
+            .clone()
+            .unwrap_or_else(vapourfly_core::config::default_playlists_dir)
+    }
+
     fn store_playlist(&self, pf: &PlaylistFile) -> Result<(), String> {
-        let store_dir = vapourfly_core::config::default_playlists_dir();
-        playlist_store::put(&store_dir, pf).map_err(|e| e.to_string())?;
+        playlist_store::put(&self.playlist_store_path(), pf).map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// Write a generator result to its stable playlist slot (ADR-0007).
+    fn store_generator_playlist(
+        &self,
+        identity: GeneratorIdentity,
+        playlist: PlaylistFile,
+    ) -> Result<PlaylistFile, String> {
+        put_generator_slot(&self.playlist_store_path(), identity, playlist)
+    }
+
+    /// Load a playlist into the Playlists edit/match surface (and last-import).
+    fn adopt_playlist_for_edit(&mut self, pf: &PlaylistFile) {
+        self.playlist_last_import = Some(pf.clone());
+        self.playlist_edit_id = pf.playlist.id.clone();
+        self.playlist_edit_name = pf.playlist.name.clone();
+        self.playlist_edit_description = pf.playlist.description.clone();
+        self.playlist_edit_app_ids = manual_playlist_app_ids_csv(pf);
+        self.playlist_edit_rules = playlist_rules_json(pf);
+        self.match_playlist_against_library(pf);
     }
 
     /// Build a `PlaylistFile` from the current edit fields.
@@ -2845,13 +2913,18 @@ impl VapourflyApp {
                                 count: 25,
                             },
                         );
-                        if let Err(e) = self.store_playlist(&pf) {
-                            self.error = Some(e);
-                        } else {
-                            self.playlist_last_import = Some(pf.clone());
-                            self.match_playlist_against_library(&pf);
-                            self.success_msg =
-                                Some(format!("Compiled dynamic template '{}'", pf.playlist.name));
+                        match self.store_generator_playlist(
+                            GeneratorIdentity::Dynamic(template),
+                            pf,
+                        ) {
+                            Ok(pf) => {
+                                self.adopt_playlist_for_edit(&pf);
+                                self.success_msg = Some(format!(
+                                    "Compiled dynamic template '{}' (slot {})",
+                                    pf.playlist.name, pf.playlist.id
+                                ));
+                            }
+                            Err(e) => self.error = Some(e),
                         }
                     }
                 } else {
@@ -2913,13 +2986,17 @@ impl VapourflyApp {
                 if let Some(mood) = EditorialMood::parse(&self.editorial_mood) {
                     if let Some(games) = self.prepared_games(JunkMode::Default) {
                         let pf = mood::compile_editorial_mood(mood, &games, 25);
-                        if let Err(e) = self.store_playlist(&pf) {
-                            self.error = Some(e);
-                        } else {
-                            self.playlist_last_import = Some(pf.clone());
-                            self.match_playlist_against_library(&pf);
-                            self.success_msg =
-                                Some(format!("Compiled editorial mood '{}'", pf.playlist.name));
+                        match self
+                            .store_generator_playlist(GeneratorIdentity::Mood(mood), pf)
+                        {
+                            Ok(pf) => {
+                                self.adopt_playlist_for_edit(&pf);
+                                self.success_msg = Some(format!(
+                                    "Compiled editorial mood '{}' (slot {})",
+                                    pf.playlist.name, pf.playlist.id
+                                ));
+                            }
+                            Err(e) => self.error = Some(e),
                         }
                     }
                 } else {
@@ -3112,22 +3189,19 @@ impl VapourflyApp {
                         Ok(options) => {
                             if let Some(games) = self.prepared_games(JunkMode::Default) {
                                 let pf = discover::generate_discover_playlist(&games, &options);
-                                if let Err(e) = self.store_playlist(&pf) {
-                                    self.error = Some(e);
-                                } else {
-                                    self.discover_last_playlist = Some(pf.clone());
-                                    // Also load into Playlists state so "Open in Playlists" is seamless.
-                                    self.playlist_last_import = Some(pf.clone());
-                                    self.playlist_edit_id = pf.playlist.id.clone();
-                                    self.playlist_edit_name = pf.playlist.name.clone();
-                                    self.playlist_edit_description = pf.playlist.description.clone();
-                                    self.playlist_edit_app_ids = manual_playlist_app_ids_csv(&pf);
-                                    self.playlist_edit_rules = playlist_rules_json(&pf);
-                                    self.match_playlist_against_library(&pf);
-                                    self.success_msg = Some(format!(
-                                        "Generated Discover playlist '{}'",
-                                        pf.playlist.name
-                                    ));
+                                match self
+                                    .store_generator_playlist(GeneratorIdentity::Discover, pf)
+                                {
+                                    Ok(pf) => {
+                                        self.discover_last_playlist = Some(pf.clone());
+                                        // Also load into Playlists state so "Open in Playlists" is seamless.
+                                        self.adopt_playlist_for_edit(&pf);
+                                        self.success_msg = Some(format!(
+                                            "Generated Discover playlist '{}' (slot {})",
+                                            pf.playlist.name, pf.playlist.id
+                                        ));
+                                    }
+                                    Err(e) => self.error = Some(e),
                                 }
                             }
                         }
@@ -3138,7 +3212,7 @@ impl VapourflyApp {
             ui.add_space(SP_2);
             ui.label(
                 RichText::new(
-                    "Results write a Manual playlist to the local store. Open Playlists to edit, share, or sync.",
+                    "Results overwrite the stable 'discover' playlist slot in the local store. Open Playlists to edit, share, or sync — change id/name and Save to keep a copy.",
                 )
                 .size(TS_SM)
                 .color(TEXT_MUTED),
@@ -4552,6 +4626,144 @@ mod tests {
             app.discover_options_from_inputs().unwrap().seed_app_id,
             None
         );
+    }
+
+    // -- Generator playlist slots (ADR-0007) --------------------------------
+
+    fn sample_generator_playlist(id: &str, app_ids: Vec<u32>) -> PlaylistFile {
+        PlaylistFile {
+            vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
+            created_by: "vapourfly".into(),
+            playlist: Playlist {
+                id: id.into(),
+                name: "Generated".into(),
+                description: "test".into(),
+                content: PlaylistContent::Manual { app_ids },
+            },
+        }
+    }
+
+    #[test]
+    fn generator_slot_ids_are_stable_per_identity() {
+        assert_eq!(GeneratorIdentity::Discover.slot_id(), "discover");
+        assert_eq!(
+            GeneratorIdentity::Dynamic(DynamicTemplate::DeckSession).slot_id(),
+            "dynamic-deck-session"
+        );
+        assert_eq!(
+            GeneratorIdentity::Dynamic(DynamicTemplate::FinishIt).slot_id(),
+            "dynamic-finish-it"
+        );
+        assert_eq!(
+            GeneratorIdentity::Mood(EditorialMood::QuickRound).slot_id(),
+            "mood-quick-round"
+        );
+        assert_eq!(
+            GeneratorIdentity::Mood(EditorialMood::FridayParty).slot_id(),
+            "mood-friday-party"
+        );
+    }
+
+    #[test]
+    fn put_generator_slot_writes_stable_id_and_overwrites_on_regenerate() {
+        let dir = TempDir::new().unwrap();
+        let store = dir.path();
+
+        // Discover: one slot regardless of content/source id.
+        let first = put_generator_slot(
+            store,
+            GeneratorIdentity::Discover,
+            sample_generator_playlist("discover-taste", vec![10, 20]),
+        )
+        .unwrap();
+        assert_eq!(first.playlist.id, "discover");
+        let loaded = playlist_store::get(store, "discover").unwrap();
+        match &loaded.playlist.content {
+            PlaylistContent::Manual { app_ids } => assert_eq!(app_ids, &vec![10, 20]),
+            _ => panic!("expected manual"),
+        }
+
+        let second = put_generator_slot(
+            store,
+            GeneratorIdentity::Discover,
+            sample_generator_playlist("discover-367520", vec![30, 40, 50]),
+        )
+        .unwrap();
+        assert_eq!(second.playlist.id, "discover");
+        let ids = playlist_store::list_ids(store).unwrap();
+        assert_eq!(ids, vec!["discover"], "regenerate must not create a second id");
+        let reloaded = playlist_store::get(store, "discover").unwrap();
+        match reloaded.playlist.content {
+            PlaylistContent::Manual { app_ids } => assert_eq!(app_ids, vec![30, 40, 50]),
+            _ => panic!("expected manual"),
+        }
+
+        // Dynamic template slot is independent of Discover.
+        let dyn_pf = put_generator_slot(
+            store,
+            GeneratorIdentity::Dynamic(DynamicTemplate::DeckSession),
+            sample_generator_playlist("deck-session", vec![1]),
+        )
+        .unwrap();
+        assert_eq!(dyn_pf.playlist.id, "dynamic-deck-session");
+        put_generator_slot(
+            store,
+            GeneratorIdentity::Dynamic(DynamicTemplate::DeckSession),
+            sample_generator_playlist("deck-session", vec![2, 3]),
+        )
+        .unwrap();
+        let dyn_loaded = playlist_store::get(store, "dynamic-deck-session").unwrap();
+        match dyn_loaded.playlist.content {
+            PlaylistContent::Manual { app_ids } => assert_eq!(app_ids, vec![2, 3]),
+            _ => panic!("expected manual"),
+        }
+
+        // Editorial mood slot.
+        put_generator_slot(
+            store,
+            GeneratorIdentity::Mood(EditorialMood::QuickRound),
+            sample_generator_playlist("mood-quick-round", vec![7]),
+        )
+        .unwrap();
+        put_generator_slot(
+            store,
+            GeneratorIdentity::Mood(EditorialMood::QuickRound),
+            sample_generator_playlist("mood-quick-round", vec![8, 9]),
+        )
+        .unwrap();
+        let mood_loaded = playlist_store::get(store, "mood-quick-round").unwrap();
+        match mood_loaded.playlist.content {
+            PlaylistContent::Manual { app_ids } => assert_eq!(app_ids, vec![8, 9]),
+            _ => panic!("expected manual"),
+        }
+
+        let mut all = playlist_store::list_ids(store).unwrap();
+        all.sort();
+        assert_eq!(
+            all,
+            vec![
+                "discover",
+                "dynamic-deck-session",
+                "mood-quick-round"
+            ]
+        );
+    }
+
+    #[test]
+    fn app_store_generator_playlist_uses_injected_store_dir() {
+        let dir = TempDir::new().unwrap();
+        let mut app = VapourflyApp::new(None);
+        app.playlist_store_dir = Some(dir.path().to_path_buf());
+
+        let pf = app
+            .store_generator_playlist(
+                GeneratorIdentity::Discover,
+                sample_generator_playlist("ignored-id", vec![100]),
+            )
+            .unwrap();
+        assert_eq!(pf.playlist.id, "discover");
+        assert!(dir.path().join("discover.json").is_file());
+        assert!(!dir.path().join("ignored-id.json").exists());
     }
 
     #[test]

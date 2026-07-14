@@ -99,8 +99,8 @@ Shell uses a dark design-token theme and monochrome line icons (not emoji).
 8. Cancel the sync modal and verify the Steam cloud storage file is unchanged.
 9. Confirm the sync modal and verify a backup is created before the Steam collection is written.
 10. Confirm Playlists has **no** Discover seed/Generate Discover control (Discover is a top-level view).
-11. Compile `deck-session` and `finish-it` templates and verify each produces a playlist or rule summary without errors.
-12. Pick an Editorial Mood from the dropdown (e.g. "Quick Round") and click "Compile Editorial Mood"; verify a playlist is created without errors.
+11. Compile `deck-session` and `finish-it` templates and verify each produces a playlist or rule summary without errors, and that each is saved under the stable slot ids `dynamic-deck-session` / `dynamic-finish-it` (a second compile overwrites the same slot).
+12. Pick an Editorial Mood from the dropdown (e.g. "Quick Round") and click "Compile Editorial Mood"; verify a playlist is written under `mood-quick-round` without errors (regenerate overwrites that slot).
 13. Clear the edit fields, enter a new ID and name, and paste a JSON rules array (e.g. `[{"op":"Installed"},{"op":"NotHidden"}]`) into the Rules JSON field. Click "Save Playlist" and verify a rule-based playlist is saved and the match report appears.
 14. Enter invalid JSON in the Rules JSON field and click "Save Playlist"; verify an error is shown and no playlist is saved.
 15. Verify the match report shows "Completion price:" with a formatted price when Steam Store cache data exists, or a hint to run `cache refresh --source steam-store` when no price data is cached.
@@ -108,9 +108,9 @@ Shell uses a dark design-token theme and monochrome line icons (not emoji).
 ### 6. Discover
 
 1. Navigate to **Discover** via the left sidebar (not via Playlists).
-2. Set Discover seed AppID and Count, click "Generate Discover", and verify a Discover playlist is created with the requested count when enough candidates exist.
-3. Clear Discover seed AppID, rerun generation, and verify the taste-based Discover playlist still works.
-4. Optionally click "Open in Playlists" and verify the generated playlist is available for edit/sync.
+2. Set Discover seed AppID and Count, click "Generate Discover", and verify a Discover playlist is created with the requested count when enough candidates exist and is stored under the stable id `discover`.
+3. Clear Discover seed AppID, rerun generation, and verify the taste-based Discover playlist still works and **overwrites** the same `discover` slot (no second playlist id).
+4. Optionally click "Open in Playlists" and verify the generated playlist is available for edit/sync. To keep a long-term copy, change id/name and Save again.
 
 ### 7. Collections
 
