@@ -142,9 +142,7 @@ mod tests {
     fn generators_agree_on_non_game_exclusions() {
         use crate::discover::generate_discover_playlist;
         use crate::dynamic::{DynamicTemplate, DynamicTemplateOptions, compile_dynamic_template};
-        use crate::models::{
-            HltbData, HltbSource, PlaylistContent, RecommendRequest,
-        };
+        use crate::models::{HltbData, HltbSource, PlaylistContent, RecommendRequest};
         use crate::mood::{EditorialMood, compile_editorial_mood};
         use crate::recommend::recommend;
 

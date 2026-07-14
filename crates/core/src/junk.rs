@@ -557,7 +557,13 @@ mod tests {
         .unwrap();
 
         // Game that would not be junk on signals alone (high playtime).
-        let mut games = vec![make_game(42, "Forced Junk", Some(9999), Some(50_000), Some(5.0))];
+        let mut games = vec![make_game(
+            42,
+            "Forced Junk",
+            Some(9999),
+            Some(50_000),
+            Some(5.0),
+        )];
         let overrides = load_manual_overrides_or_default(&path);
         apply_junk_flags(&mut games, &default_rules(), &JunkMode::Default, &overrides);
         assert!(

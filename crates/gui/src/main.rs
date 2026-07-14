@@ -4,9 +4,9 @@ use std::sync::Mutex;
 use eframe::egui;
 use egui::{Color32, RichText};
 use vapourfly_core::config::VapourflyConfig;
-use vapourfly_core::discover::{self, DiscoverOptions};
-use vapourfly_core::disposition;
+use vapourfly_core::discover::{self, DiscoverOptions, DiscoverPick};
 use vapourfly_core::display;
+use vapourfly_core::disposition;
 use vapourfly_core::dynamic::{self, DynamicTemplate, DynamicTemplateOptions};
 use vapourfly_core::junk::{apply_junk_flags, evaluate_junk, load_default_manual_overrides};
 use vapourfly_core::models::*;
@@ -106,6 +106,21 @@ fn put_generator_slot(
     playlist.playlist.id = identity.slot_id();
     playlist_store::put(store_dir, &playlist).map_err(|e| e.to_string())?;
     Ok(playlist)
+}
+
+// ---------------------------------------------------------------------------
+// Playlists generator choosers (ticket 06)
+// ---------------------------------------------------------------------------
+
+/// Lightweight modal chooser opened from Playlists action bar.
+///
+/// Discover is intentionally absent — it is a top-level view (ADR-0005/0006).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum PlaylistChooser {
+    #[default]
+    None,
+    Dynamic,
+    Mood,
 }
 
 // ---------------------------------------------------------------------------
@@ -278,8 +293,17 @@ struct VapourflyApp {
     playlist_edit_rules: String,
     playlist_last_import: Option<PlaylistFile>,
     playlist_match_report: Option<PlaylistMatchReport>,
+    /// Ids present in the local playlist store (for Load existing).
+    playlist_store_ids: Vec<String>,
+    /// Whether [`playlist_store_ids`] has been loaded at least once this session.
+    playlist_store_ids_loaded: bool,
+    /// Selected id in the Load existing combo (empty = none).
+    playlist_load_selected: String,
+    /// Open generator chooser (Dynamic / Mood only).
+    playlist_chooser: PlaylistChooser,
     dynamic_template: String,
     dynamic_minutes: String,
+    dynamic_count: String,
     editorial_mood: String,
 
     // Discover view (top-level; no longer nested under Playlists)
@@ -287,6 +311,8 @@ struct VapourflyApp {
     discover_count: String,
     /// Last playlist generated from the Discover view (owned by Discover UI).
     discover_last_playlist: Option<PlaylistFile>,
+    /// On-page Discover results with scores and reason codes.
+    discover_results: Vec<DiscoverPick>,
 
     // Collections view
     collections: Vec<SteamCollection>,
@@ -774,10 +800,7 @@ fn paint_nav_icon(painter: &egui::Painter, rect: egui::Rect, view: View, color: 
             // Three horizontal lines (list)
             for i in 0..3 {
                 let y = c.y - s * 0.7 + i as f32 * s * 0.7;
-                painter.line_segment(
-                    [egui::pos2(c.x - s, y), egui::pos2(c.x + s, y)],
-                    stroke,
-                );
+                painter.line_segment([egui::pos2(c.x - s, y), egui::pos2(c.x + s, y)], stroke);
             }
         }
         View::Discover => {
@@ -958,13 +981,19 @@ impl VapourflyApp {
             playlist_edit_rules: String::new(),
             playlist_last_import: None,
             playlist_match_report: None,
-            dynamic_template: "deck-session".into(),
+            playlist_store_ids: Vec::new(),
+            playlist_store_ids_loaded: false,
+            playlist_load_selected: String::new(),
+            playlist_chooser: PlaylistChooser::None,
+            dynamic_template: DynamicTemplate::DeckSession.id().into(),
             dynamic_minutes: "90".into(),
+            dynamic_count: "25".into(),
             editorial_mood: EditorialMood::all().first().map_or("", |m| m.id()).into(),
 
             discover_seed: String::new(),
             discover_count: "20".into(),
             discover_last_playlist: None,
+            discover_results: Vec::new(),
 
             collections: Vec::new(),
             collections_export_path: String::new(),
@@ -1129,12 +1158,9 @@ impl VapourflyApp {
                     allow_steam_running,
                     retention,
                 ),
-                PendingAction::JunkHide => execute_junk_hide(
-                    cloud_path,
-                    junk_results,
-                    allow_steam_running,
-                    retention,
-                ),
+                PendingAction::JunkHide => {
+                    execute_junk_hide(cloud_path, junk_results, allow_steam_running, retention)
+                }
                 PendingAction::BackupRestore(backup_path) => {
                     execute_backup_restore(backup_path, cloud_path, allow_steam_running)
                 }
@@ -1413,12 +1439,7 @@ impl VapourflyApp {
         // Same overrides as workflow::prepare so re-classification does not wipe
         // force-include / force-exclude / manual HLTB / rating.
         let overrides = load_default_manual_overrides();
-        apply_junk_flags(
-            &mut games,
-            &JunkRules::default(),
-            &junk_mode,
-            &overrides,
-        );
+        apply_junk_flags(&mut games, &JunkRules::default(), &junk_mode, &overrides);
         Some(games)
     }
 
@@ -1589,6 +1610,78 @@ impl VapourflyApp {
             }
         }
     }
+
+    /// Refresh the Load existing combo from the local playlist store.
+    fn refresh_playlist_store_ids(&mut self) {
+        // Always mark loaded so a transient failure does not re-list every frame.
+        self.playlist_store_ids_loaded = true;
+        match playlist_store::list_ids(&self.playlist_store_path()) {
+            Ok(ids) => self.playlist_store_ids = ids,
+            Err(e) => self.error = Some(format!("Failed to list playlists: {e}")),
+        }
+    }
+
+    /// Load a playlist id from the store into the edit/match surface.
+    fn load_playlist_from_store(&mut self, id: &str) -> Result<(), String> {
+        let pf = playlist_store::get(&self.playlist_store_path(), id).map_err(|e| e.to_string())?;
+        self.adopt_playlist_for_edit(&pf);
+        self.playlist_load_selected = id.to_string();
+        Ok(())
+    }
+
+    /// Compile the Dynamic template chosen in the chooser into its stable slot.
+    fn run_dynamic_generate(&mut self) -> Result<PlaylistFile, String> {
+        let template = DynamicTemplate::parse(&self.dynamic_template)
+            .ok_or_else(|| "Unknown template. Use deck-session or finish-it.".to_string())?;
+        let session_minutes = parse_required_u32("Session minutes", &self.dynamic_minutes)?;
+        let count = parse_required_usize("Count", &self.dynamic_count)?;
+        let games = self
+            .prepared_games(JunkMode::Default)
+            .ok_or_else(|| "Scan your library before generating.".to_string())?;
+        let pf = dynamic::compile_dynamic_template(
+            template,
+            &games,
+            &DynamicTemplateOptions {
+                session_minutes,
+                count,
+            },
+        );
+        let stored = self.store_generator_playlist(GeneratorIdentity::Dynamic(template), pf)?;
+        self.adopt_playlist_for_edit(&stored);
+        self.refresh_playlist_store_ids();
+        Ok(stored)
+    }
+
+    /// Compile the Editorial Mood chosen in the chooser into its stable slot.
+    fn run_mood_generate(&mut self) -> Result<PlaylistFile, String> {
+        let mood = EditorialMood::parse(&self.editorial_mood)
+            .ok_or_else(|| "Unknown mood. Pick one from the list.".to_string())?;
+        let games = self
+            .prepared_games(JunkMode::Default)
+            .ok_or_else(|| "Scan your library before generating.".to_string())?;
+        let pf = mood::compile_editorial_mood(mood, &games, 25);
+        let stored = self.store_generator_playlist(GeneratorIdentity::Mood(mood), pf)?;
+        self.adopt_playlist_for_edit(&stored);
+        self.refresh_playlist_store_ids();
+        Ok(stored)
+    }
+
+    /// Generate Discover playlist into the stable slot and populate on-page results.
+    fn run_discover_generate(&mut self) -> Result<PlaylistFile, String> {
+        let options = self.discover_options_from_inputs()?;
+        let games = self
+            .prepared_games(JunkMode::Default)
+            .ok_or_else(|| "Scan your library before generating.".to_string())?;
+        let picks = discover::rank_discover_picks(&games, &options);
+        let pf = discover::playlist_from_discover_picks(&games, &options, &picks);
+        let stored = self.store_generator_playlist(GeneratorIdentity::Discover, pf)?;
+        self.discover_results = picks;
+        self.discover_last_playlist = Some(stored.clone());
+        // Load into Playlists state so "Open in Playlists" is seamless.
+        self.adopt_playlist_for_edit(&stored);
+        self.refresh_playlist_store_ids();
+        Ok(stored)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1621,7 +1714,8 @@ fn generate_dry_run_plan(
             disposition::recommend_to_collection(app_ids).map_err(|e| e.to_string())?
         }
         PendingAction::PlaylistSync(pf) => {
-            let app_ids = disposition::playlist_sync_app_ids(pf, None).map_err(|e| e.to_string())?;
+            let app_ids =
+                disposition::playlist_sync_app_ids(pf, None).map_err(|e| e.to_string())?;
             disposition::playlist_sync(pf, app_ids).map_err(|e| e.to_string())?
         }
         PendingAction::BackupRestore(_) => {
@@ -1653,12 +1747,9 @@ fn execute_junk_apply(
     let plan = vapourfly_core::write::preview(&cloud, vec![op], cloud_path.clone())
         .map_err(|e| format!("Failed to generate write plan: {e}"))?;
 
-    let backup = vapourfly_core::write::commit_with_retention(
-        &plan,
-        allow_steam_running,
-        retention,
-    )
-    .map_err(|e| format!("Write failed: {e}"))?;
+    let backup =
+        vapourfly_core::write::commit_with_retention(&plan, allow_steam_running, retention)
+            .map_err(|e| format!("Write failed: {e}"))?;
 
     Ok(format!(
         "Applied {} junk games to collection '{}'. Backup: {}",
@@ -1686,12 +1777,9 @@ fn execute_junk_hide(
     let plan = vapourfly_core::write::preview(&cloud, vec![op], cloud_path.clone())
         .map_err(|e| format!("Failed to generate write plan: {e}"))?;
 
-    let backup = vapourfly_core::write::commit_with_retention(
-        &plan,
-        allow_steam_running,
-        retention,
-    )
-    .map_err(|e| format!("Write failed: {e}"))?;
+    let backup =
+        vapourfly_core::write::commit_with_retention(&plan, allow_steam_running, retention)
+            .map_err(|e| format!("Write failed: {e}"))?;
 
     Ok(format!(
         "Added {} junk games to Hidden collection. Backup: {}",
@@ -1781,6 +1869,9 @@ impl eframe::App for VapourflyApp {
                 }
             }
         }
+
+        // -- Generator choosers (Playlists Dynamic / Mood) ---------------------
+        self.render_playlist_choosers(&ctx);
 
         // -- Confirmation dialog -----------------------------------------------
         // Poll background dry-run result.
@@ -2196,12 +2287,10 @@ impl VapourflyApp {
                 if ui
                     .add_enabled(
                         !self.loading,
-                        egui::Button::new(
-                            RichText::new("Refresh").size(TS_SM).color(TEXT_INVERSE),
-                        )
-                        .fill(ACCENT)
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(CORNER_SM),
+                        egui::Button::new(RichText::new("Refresh").size(TS_SM).color(TEXT_INVERSE))
+                            .fill(ACCENT)
+                            .stroke(egui::Stroke::NONE)
+                            .corner_radius(CORNER_SM),
                     )
                     .clicked()
                 {
@@ -2463,12 +2552,8 @@ impl VapourflyApp {
                         };
                         if let Some(games) = self.prepared_games(mode.clone()) {
                             let overrides = load_default_manual_overrides();
-                            self.junk_results = evaluate_junk(
-                                &games,
-                                &JunkRules::default(),
-                                &mode,
-                                &overrides,
-                            );
+                            self.junk_results =
+                                evaluate_junk(&games, &JunkRules::default(), &mode, &overrides);
                             self.junk_selected.clear();
                         }
                     }
@@ -2631,14 +2716,10 @@ impl VapourflyApp {
 
                     if ui
                         .add_enabled(!busy, {
-                            egui::Button::new(
-                                RichText::new("Hide")
-                                    .size(TS_SM)
-                                    .color(TEXT_PRIMARY),
-                            )
-                            .fill(SURFACE)
-                            .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
-                            .corner_radius(CORNER_SM)
+                            egui::Button::new(RichText::new("Hide").size(TS_SM).color(TEXT_PRIMARY))
+                                .fill(SURFACE)
+                                .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                                .corner_radius(CORNER_SM)
                         })
                         .clicked()
                     {
@@ -2683,8 +2764,7 @@ impl VapourflyApp {
                 form_field(ui, "Available minutes", |ui| {
                     ui.add_sized(
                         [88.0, 28.0],
-                        egui::TextEdit::singleline(&mut self.recommend_minutes)
-                            .hint_text("120"),
+                        egui::TextEdit::singleline(&mut self.recommend_minutes).hint_text("120"),
                     );
                 });
                 form_field(ui, "Count", |ui| {
@@ -2696,8 +2776,7 @@ impl VapourflyApp {
                 form_field(ui, "Seed AppID", |ui| {
                     ui.add_sized(
                         [100.0, 28.0],
-                        egui::TextEdit::singleline(&mut self.recommend_seed)
-                            .hint_text("optional"),
+                        egui::TextEdit::singleline(&mut self.recommend_seed).hint_text("optional"),
                     );
                 });
             });
@@ -2767,9 +2846,11 @@ impl VapourflyApp {
             }
         });
         ui.label(
-            RichText::new("Requires dry-run confirmation. Targets the vapourfly-picks Steam Collection.")
-                .size(TS_XS)
-                .color(TEXT_MUTED),
+            RichText::new(
+                "Requires dry-run confirmation. Targets the vapourfly-picks Steam Collection.",
+            )
+            .size(TS_XS)
+            .color(TEXT_MUTED),
         );
         ui.add_space(SP_3);
 
@@ -2779,12 +2860,7 @@ impl VapourflyApp {
                 ui.horizontal(|ui| {
                     app_id_tag(ui, rec.app_id);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        status_badge(
-                            ui,
-                            &format!("{:.2}", rec.score),
-                            ACCENT_SOFT,
-                            ACCENT_TEXT,
-                        );
+                        status_badge(ui, &format!("{:.2}", rec.score), ACCENT_SOFT, ACCENT_TEXT);
                     });
                 });
                 if !rec.reasons.is_empty() {
@@ -2813,108 +2889,167 @@ impl VapourflyApp {
     // -- Playlists view -----------------------------------------------------
 
     fn render_playlists(&mut self, ui: &mut egui::Ui) {
-        view_header(
+        // Refresh store list once when first entering Playlists (or after generate/save).
+        if !self.playlist_store_ids_loaded {
+            self.refresh_playlist_store_ids();
+        }
+
+        view_header_with_actions(
             ui,
             "Playlists",
-            "Create, import, and sync curated game playlists to your Steam collections.",
+            "Create, load, match, and sync Vapourfly playlists. Dynamic and Mood generate into stable store slots.",
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_1);
+                    if secondary_button(ui, "Dynamic").clicked() {
+                        self.playlist_chooser = PlaylistChooser::Dynamic;
+                    }
+                    if secondary_button(ui, "Mood").clicked() {
+                        self.playlist_chooser = PlaylistChooser::Mood;
+                    }
+                });
+            },
         );
 
-        section_card(ui, "Create / Edit Playlist", |ui| {
-            form_field(ui, "ID:", |ui| {
+        // -- Load existing ---------------------------------------------------
+        section_card(ui, "Load existing", |ui| {
+            if self.playlist_store_ids.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(
+                            "No playlists in the local store yet. Save, import, or generate one.",
+                        )
+                        .size(TS_SM)
+                        .color(TEXT_MUTED),
+                    );
+                    if ghost_button(ui, "Refresh list").clicked() {
+                        self.refresh_playlist_store_ids();
+                    }
+                });
+            } else {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                    egui::ComboBox::from_id_salt("playlist_load_combo")
+                        .selected_text(if self.playlist_load_selected.is_empty() {
+                            "Select playlist…".to_string()
+                        } else {
+                            self.playlist_load_selected.clone()
+                        })
+                        .width(220.0)
+                        .show_ui(ui, |ui| {
+                            for id in &self.playlist_store_ids {
+                                ui.selectable_value(
+                                    &mut self.playlist_load_selected,
+                                    id.clone(),
+                                    id,
+                                );
+                            }
+                        });
+                    if secondary_button(ui, "Load").clicked() {
+                        let id = self.playlist_load_selected.clone();
+                        if id.is_empty() {
+                            self.error = Some("Select a playlist id to load.".into());
+                        } else {
+                            match self.load_playlist_from_store(&id) {
+                                Ok(()) => {
+                                    self.success_msg =
+                                        Some(format!("Loaded playlist '{id}' from store."));
+                                }
+                                Err(e) => self.error = Some(e),
+                            }
+                        }
+                    }
+                    if ghost_button(ui, "Refresh list").clicked() {
+                        self.refresh_playlist_store_ids();
+                    }
+                });
+            }
+        });
+
+        // -- Create / Edit ---------------------------------------------------
+        section_card(ui, "Create / Edit", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_2);
+                form_field(ui, "ID", |ui| {
+                    ui.add_sized(
+                        [160.0, 28.0],
+                        egui::TextEdit::singleline(&mut self.playlist_edit_id).hint_text("my-list"),
+                    );
+                });
+                form_field(ui, "Name", |ui| {
+                    ui.add_sized(
+                        [180.0, 28.0],
+                        egui::TextEdit::singleline(&mut self.playlist_edit_name)
+                            .hint_text("Display name"),
+                    );
+                });
+            });
+            ui.add_space(SP_2);
+            form_field(ui, "Description", |ui| {
                 ui.add_sized(
-                    [200.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.playlist_edit_id),
+                    [360.0, 28.0],
+                    egui::TextEdit::singleline(&mut self.playlist_edit_description)
+                        .hint_text("Optional"),
                 );
             });
-            form_field(ui, "Name:", |ui| {
+            ui.add_space(SP_2);
+            form_field(ui, "App IDs", |ui| {
                 ui.add_sized(
-                    [200.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.playlist_edit_name),
-                );
-            });
-            form_field(ui, "Description:", |ui| {
-                ui.add_sized(
-                    [300.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.playlist_edit_description),
-                );
-            });
-            form_field(ui, "App IDs:", |ui| {
-                ui.add_sized(
-                    [300.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.playlist_edit_app_ids),
+                    [360.0, 28.0],
+                    egui::TextEdit::singleline(&mut self.playlist_edit_app_ids)
+                        .hint_text("730, 440, …"),
                 );
             });
             ui.label(
                 RichText::new("Comma-separated Steam AppIDs for manual playlists.")
-                    .size(TS_SM)
+                    .size(TS_XS)
                     .color(TEXT_MUTED),
             );
             ui.add_space(SP_2);
-            form_field(ui, "Rules JSON:", |ui| {
+            form_field(ui, "Rules JSON", |ui| {
                 ui.add_sized(
-                    [360.0, 80.0],
+                    [360.0, 72.0],
                     egui::TextEdit::multiline(&mut self.playlist_edit_rules)
                         .code_editor()
-                        .desired_width(360.0),
+                        .desired_width(360.0)
+                        .hint_text(r#"[{\"op\":\"Installed\"}]"#),
                 );
             });
             ui.label(
                 RichText::new(
-                    "Optional. A JSON rules array (e.g. \
-                     `[{\"op\":\"Installed\"},{\"op\":\"NotHidden\"}]`). When \
-                     provided, App IDs are ignored and a rule-based playlist is \
-                     created.",
+                    "Optional. When provided, App IDs are ignored and a rule-based playlist is created.",
                 )
-                .size(TS_SM)
+                .size(TS_XS)
                 .color(TEXT_MUTED),
             );
-            ui.add_space(SP_2);
-            if ui
-                .add(
-                    egui::Button::new(
-                        RichText::new("Save Playlist")
-                            .size(TS_SM)
-                            .color(TEXT_INVERSE),
-                    )
-                    .fill(ACCENT)
-                    .stroke(egui::Stroke::NONE)
-                    .corner_radius(CORNER_SM),
-                )
-                .clicked()
-            {
+            ui.add_space(SP_3);
+            if primary_button(ui, "Save Playlist").clicked() {
                 match self.build_playlist_from_edit_fields() {
                     Ok(pf) => match self.store_playlist(&pf) {
                         Ok(()) => {
                             self.playlist_last_import = Some(pf.clone());
                             self.match_playlist_against_library(&pf);
+                            self.refresh_playlist_store_ids();
+                            self.playlist_load_selected = pf.playlist.id.clone();
                             self.success_msg =
                                 Some(format!("Saved playlist '{}'", pf.playlist.name));
                         }
                         Err(e) => self.error = Some(e),
                     },
-                    Err(e) => {
-                        self.error = Some(e);
-                    }
+                    Err(e) => self.error = Some(e),
                 }
             }
         });
 
-        section_card(ui, "Import Playlist", |ui| {
-            form_field(ui, "Path:", |ui| {
+        // -- Import ----------------------------------------------------------
+        section_card(ui, "Import", |ui| {
+            form_field(ui, "File path", |ui| {
                 ui.add_sized(
-                    [300.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.playlist_import_path),
+                    [280.0, 28.0],
+                    egui::TextEdit::singleline(&mut self.playlist_import_path)
+                        .hint_text("/path/to/playlist.json"),
                 );
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new("Import File").size(TS_SM).color(TEXT_PRIMARY),
-                        )
-                        .fill(SURFACE)
-                        .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
-                        .corner_radius(CORNER_SM),
-                    )
-                    .clicked()
+                if secondary_button(ui, "Import File").clicked()
                     && !self.playlist_import_path.is_empty()
                 {
                     match playlist::import_playlist(Path::new(&self.playlist_import_path)) {
@@ -2922,34 +3057,25 @@ impl VapourflyApp {
                             if let Err(e) = self.store_playlist(&pf) {
                                 self.error = Some(e);
                             } else {
-                                self.playlist_last_import = Some(pf.clone());
-                                self.match_playlist_against_library(&pf);
-                                self.playlist_edit_id = pf.playlist.id.clone();
-                                self.playlist_edit_name = pf.playlist.name.clone();
-                                self.playlist_edit_description = pf.playlist.description.clone();
-                                self.playlist_edit_app_ids = manual_playlist_app_ids_csv(&pf);
-                                self.playlist_edit_rules = playlist_rules_json(&pf);
+                                self.adopt_playlist_for_edit(&pf);
+                                self.refresh_playlist_store_ids();
+                                self.playlist_load_selected = pf.playlist.id.clone();
+                                self.success_msg =
+                                    Some(format!("Imported playlist '{}'", pf.playlist.name));
                             }
                         }
                         Err(e) => self.error = Some(format!("Import failed: {e}")),
                     }
                 }
             });
-            form_field(ui, "Share code:", |ui| {
+            ui.add_space(SP_2);
+            form_field(ui, "Share code", |ui| {
                 ui.add_sized(
-                    [300.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.playlist_share_code_input),
+                    [280.0, 28.0],
+                    egui::TextEdit::singleline(&mut self.playlist_share_code_input)
+                        .hint_text("VF1:…"),
                 );
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new("Import Code").size(TS_SM).color(TEXT_PRIMARY),
-                        )
-                        .fill(SURFACE)
-                        .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
-                        .corner_radius(CORNER_SM),
-                    )
-                    .clicked()
+                if secondary_button(ui, "Import Code").clicked()
                     && !self.playlist_share_code_input.is_empty()
                 {
                     match share_code::decode_share_code(&self.playlist_share_code_input) {
@@ -2957,13 +3083,11 @@ impl VapourflyApp {
                             if let Err(e) = self.store_playlist(&pf) {
                                 self.error = Some(e);
                             } else {
-                                self.playlist_last_import = Some(pf.clone());
-                                self.match_playlist_against_library(&pf);
-                                self.playlist_edit_id = pf.playlist.id.clone();
-                                self.playlist_edit_name = pf.playlist.name.clone();
-                                self.playlist_edit_description = pf.playlist.description.clone();
-                                self.playlist_edit_app_ids = manual_playlist_app_ids_csv(&pf);
-                                self.playlist_edit_rules = playlist_rules_json(&pf);
+                                self.adopt_playlist_for_edit(&pf);
+                                self.refresh_playlist_store_ids();
+                                self.playlist_load_selected = pf.playlist.id.clone();
+                                self.success_msg =
+                                    Some(format!("Imported share code as '{}'", pf.playlist.name));
                             }
                         }
                         Err(e) => self.error = Some(format!("Share code import failed: {e}")),
@@ -2972,185 +3096,75 @@ impl VapourflyApp {
             });
         });
 
-        // Dynamic templates stay on Playlists; Discover is its own top-level view.
-        section_card(ui, "Dynamic Templates", |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_1);
-                ui.label(RichText::new("Template:").size(TS_SM).color(TEXT_SECONDARY));
-                ui.add_sized(
-                    [120.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.dynamic_template),
-                );
-                ui.label(RichText::new("Minutes:").size(TS_SM).color(TEXT_SECONDARY));
-                ui.add_sized(
-                    [60.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.dynamic_minutes),
-                );
-            });
-            ui.add_space(SP_2);
-            if ui
-                .add(
-                    egui::Button::new(
-                        RichText::new("Compile Dynamic Template")
-                            .size(TS_SM)
-                            .color(TEXT_INVERSE),
-                    )
-                    .fill(ACCENT)
-                    .stroke(egui::Stroke::NONE)
-                    .corner_radius(CORNER_SM),
-                )
-                .clicked()
-            {
-                if let Some(template) = DynamicTemplate::parse(&self.dynamic_template) {
-                    if let Some(games) = self.prepared_games(JunkMode::Default) {
-                        let pf = dynamic::compile_dynamic_template(
-                            template,
-                            &games,
-                            &DynamicTemplateOptions {
-                                session_minutes: self.dynamic_minutes.parse().unwrap_or(90),
-                                count: 25,
-                            },
-                        );
-                        match self.store_generator_playlist(
-                            GeneratorIdentity::Dynamic(template),
-                            pf,
-                        ) {
-                            Ok(pf) => {
-                                self.adopt_playlist_for_edit(&pf);
-                                self.success_msg = Some(format!(
-                                    "Compiled dynamic template '{}' (slot {})",
-                                    pf.playlist.name, pf.playlist.id
-                                ));
-                            }
-                            Err(e) => self.error = Some(e),
-                        }
-                    }
-                } else {
-                    self.error = Some("Unknown template. Use deck-session or finish-it.".into());
-                }
-            }
-        });
-
-        // Editorial Moods (ADR-0004): named, curated playlists with hidden
-        // selection criteria. The user picks a vibe; Vapourfly compiles the
-        // playlist. Criteria are opaque to the user.
-        section_card(ui, "Editorial Moods", |ui| {
-            ui.label(
-                RichText::new(
-                    "Named, curated playlists with hidden selection criteria — \
-                     pick a vibe and Vapourfly does the rest.",
-                )
-                .size(TS_SM)
-                .color(TEXT_MUTED),
-            );
-            ui.add_space(SP_2);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_1);
-                ui.label(RichText::new("Mood:").size(TS_SM).color(TEXT_SECONDARY));
-                egui::ComboBox::from_id_salt("editorial_mood_combo")
-                    .selected_text(
-                        EditorialMood::parse(&self.editorial_mood)
-                            .map_or("Select mood", |m| m.name()),
-                    )
-                    .width(180.0)
-                    .show_ui(ui, |ui| {
-                        for m in EditorialMood::all() {
-                            ui.selectable_value(&mut self.editorial_mood, m.id().into(), m.name());
-                        }
-                    });
-            });
-            ui.add_space(SP_2);
-            if let Some(mood) = EditorialMood::parse(&self.editorial_mood) {
-                ui.label(
-                    RichText::new(mood.description())
-                        .size(TS_SM)
-                        .color(TEXT_SECONDARY),
-                );
-                ui.add_space(SP_2);
-            }
-            if ui
-                .add(
-                    egui::Button::new(
-                        RichText::new("Compile Editorial Mood")
-                            .size(TS_SM)
-                            .color(TEXT_INVERSE),
-                    )
-                    .fill(ACCENT)
-                    .stroke(egui::Stroke::NONE)
-                    .corner_radius(CORNER_SM),
-                )
-                .clicked()
-            {
-                if let Some(mood) = EditorialMood::parse(&self.editorial_mood) {
-                    if let Some(games) = self.prepared_games(JunkMode::Default) {
-                        let pf = mood::compile_editorial_mood(mood, &games, 25);
-                        match self
-                            .store_generator_playlist(GeneratorIdentity::Mood(mood), pf)
-                        {
-                            Ok(pf) => {
-                                self.adopt_playlist_for_edit(&pf);
-                                self.success_msg = Some(format!(
-                                    "Compiled editorial mood '{}' (slot {})",
-                                    pf.playlist.name, pf.playlist.id
-                                ));
-                            }
-                            Err(e) => self.error = Some(e),
-                        }
-                    }
-                } else {
-                    self.error = Some("Unknown mood. Pick one from the dropdown.".into());
-                }
-            }
-        });
-
-        // Show imported playlist info
+        // -- Loaded playlist actions + match ---------------------------------
         if let Some(pf) = self.playlist_last_import.clone() {
-            section_card(ui, &format!("Playlist: {}", pf.playlist.name), |ui| {
-                stat_inline(ui, "ID:", &pf.playlist.id);
-                stat_inline(ui, "Description:", &pf.playlist.description);
-                stat_inline(ui, "Schema:", &pf.vapourfly_schema);
-
+            section_card(ui, &format!("Loaded: {}", pf.playlist.name), |ui| {
+                stat_inline(ui, "ID", &pf.playlist.id);
+                if !pf.playlist.description.is_empty() {
+                    stat_inline(ui, "Description", &pf.playlist.description);
+                }
                 match &pf.playlist.content {
                     PlaylistContent::Manual { app_ids } => {
-                        stat_inline(
-                            ui,
-                            "Type:",
-                            &format!("Manual playlist with {} AppIDs", app_ids.len()),
-                        );
+                        stat_inline(ui, "Type", &format!("Manual · {} AppIDs", app_ids.len()));
                     }
                     PlaylistContent::Rules { rules } => {
-                        stat_inline(
-                            ui,
-                            "Type:",
-                            &format!("Rule-based playlist with {} rules", rules.len()),
-                        );
+                        stat_inline(ui, "Type", &format!("Rules · {} rules", rules.len()));
                     }
                 }
 
-                ui.add_space(SP_2);
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new("Copy Share Code")
-                                .size(TS_SM)
-                                .color(TEXT_PRIMARY),
-                        )
-                        .fill(SURFACE)
-                        .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
-                        .corner_radius(CORNER_SM),
-                    )
-                    .clicked()
-                {
-                    match share_code::encode_share_code(&pf) {
-                        Ok(code) => {
-                            self.playlist_share_code_output = Some(code.clone());
-                            ui.ctx().copy_text(code);
-                            self.success_msg = Some("Share code copied to clipboard.".into());
+                ui.add_space(SP_3);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                    if secondary_button(ui, "Copy Share Code").clicked() {
+                        match share_code::encode_share_code(&pf) {
+                            Ok(code) => {
+                                self.playlist_share_code_output = Some(code.clone());
+                                ui.ctx().copy_text(code);
+                                self.success_msg =
+                                    Some("Share code copied to clipboard (VF1).".into());
+                            }
+                            Err(e) => self.error = Some(format!("Share code failed: {e}")),
                         }
-                        Err(e) => self.error = Some(format!("Share code failed: {e}")),
                     }
-                }
+                    if secondary_button(ui, "Export…").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_file_name(format!("{}.json", pf.playlist.id))
+                            .add_filter("JSON", &["json"])
+                            .save_file()
+                        {
+                            self.playlist_export_path = path.display().to_string();
+                            match self.export_loaded_playlist() {
+                                Ok(()) => {
+                                    self.success_msg = Some(format!(
+                                        "Exported playlist '{}' to {}",
+                                        pf.playlist.name,
+                                        self.playlist_export_path.trim()
+                                    ));
+                                }
+                                Err(e) => self.error = Some(format!("Export failed: {e}")),
+                            }
+                        }
+                    }
+                    let busy = self.write_loading || self.dry_run_loading;
+                    if ui
+                        .add_enabled(
+                            !busy,
+                            egui::Button::new(
+                                RichText::new("Sync to Steam Collection")
+                                    .size(TS_SM)
+                                    .color(TEXT_INVERSE),
+                            )
+                            .fill(ACCENT)
+                            .stroke(egui::Stroke::NONE)
+                            .corner_radius(CORNER_SM),
+                        )
+                        .clicked()
+                    {
+                        self.start_dry_run(PendingAction::PlaylistSync(pf.clone()));
+                    }
+                });
                 if let Some(code) = &self.playlist_share_code_output {
+                    ui.add_space(SP_2);
                     ui.label(
                         RichText::new(format!("Share code: {code}"))
                             .size(TS_SM)
@@ -3158,73 +3172,29 @@ impl VapourflyApp {
                             .monospace(),
                     );
                 }
-
-                ui.add_space(SP_2);
-                form_field(ui, "Export path:", |ui| {
-                    ui.add_sized(
-                        [250.0, 20.0],
-                        egui::TextEdit::singleline(&mut self.playlist_export_path),
-                    );
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new("Export Playlist")
-                                    .size(TS_SM)
-                                    .color(TEXT_PRIMARY),
-                            )
-                            .fill(SURFACE)
-                            .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
-                            .corner_radius(CORNER_SM),
-                        )
-                        .clicked()
-                    {
-                        match self.export_loaded_playlist() {
-                            Ok(()) => {
-                                self.success_msg = Some(format!(
-                                    "Exported playlist '{}' to {}",
-                                    pf.playlist.name,
-                                    self.playlist_export_path.trim()
-                                ));
-                            }
-                            Err(e) => self.error = Some(format!("Export failed: {e}")),
-                        }
-                    }
-                });
-
-                ui.add_space(SP_2);
-                let busy = self.write_loading || self.dry_run_loading;
-                if ui
-                    .add_enabled(
-                        !busy,
-                        egui::Button::new(
-                            RichText::new("Sync to Steam Collection")
-                                .size(TS_SM)
-                                .color(TEXT_INVERSE),
-                        )
-                        .fill(ACCENT)
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(CORNER_SM),
-                    )
-                    .clicked()
-                {
-                    self.start_dry_run(PendingAction::PlaylistSync(pf.clone()));
-                }
                 if self.dry_run_loading {
+                    ui.add_space(SP_2);
                     ui.horizontal(|ui| {
                         ui.spinner();
                         ui.label(
-                            RichText::new("Preparing diff")
+                            RichText::new("Preparing dry-run diff")
                                 .size(TS_SM)
                                 .color(TEXT_SECONDARY),
                         );
                     });
                 }
+                ui.label(
+                    RichText::new(
+                        "Sync always shows a dry-run diff before writing Steam cloud storage.",
+                    )
+                    .size(TS_XS)
+                    .color(TEXT_MUTED),
+                );
             });
         }
 
-        // Match report
         if let Some(report) = &self.playlist_match_report {
-            section_card(ui, "Match Report", |ui| {
+            section_card(ui, "Match report", |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
                     metric_pill(ui, "Owned", report.owned.len().to_string());
@@ -3245,15 +3215,54 @@ impl VapourflyApp {
                     ui.add_space(SP_2);
                     ui.label(
                         RichText::new(
-                            "Completion price: (no Steam Store price cached; run \
-                             'vapourfly cache refresh --source steam-store')",
+                            "Completion price unavailable — run cache refresh --source steam-store when online.",
                         )
                         .size(TS_SM)
                         .color(TEXT_MUTED),
                     );
                 }
+
+                // Preview matched owned games (names when library is scanned).
+                if !report.owned.is_empty() {
+                    let owned_ids = report.owned.clone();
+                    ui.add_space(SP_3);
+                    ui.label(
+                        RichText::new("Owned preview")
+                            .size(TS_SM)
+                            .strong()
+                            .color(TEXT_PRIMARY),
+                    );
+                    ui.add_space(SP_1);
+                    let names = self.playlist_owned_preview_labels(&owned_ids);
+                    for line in names {
+                        ui.label(RichText::new(line).size(TS_SM).color(TEXT_SECONDARY));
+                    }
+                }
             });
+        } else if self.playlist_last_import.is_none() {
+            empty_state(
+                ui,
+                "\u{1F3B5}",
+                "No playlist loaded",
+                "Create and Save, Load existing, Import a file or VF1 share code, or open Dynamic / Mood.",
+            );
         }
+    }
+
+    /// Human-readable preview lines for owned match AppIDs (max 12).
+    fn playlist_owned_preview_labels(&self, owned_ids: &[u32]) -> Vec<String> {
+        let games = self.scan_result.as_ref().map(|s| s.games.as_slice());
+        owned_ids
+            .iter()
+            .take(12)
+            .map(|id| {
+                let name = games
+                    .and_then(|gs| gs.iter().find(|g| g.app_id == *id))
+                    .map(|g| g.name.as_str())
+                    .unwrap_or("unknown");
+                format!("{id} · {name}")
+            })
+            .collect()
     }
 
     // -- Discover view (top-level; ADR-0005 / ADR-0006) ----------------------
@@ -3262,46 +3271,31 @@ impl VapourflyApp {
         view_header(
             ui,
             "Discover",
-            "Generate similar-game playlists from taste similarity with an optional seed AppID.",
+            "Generate similar unplayed picks from an optional seed AppID. Results write the stable discover playlist slot.",
         );
 
         section_card(ui, "Generate", |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_1);
-                ui.label(
-                    RichText::new("Seed AppID:")
-                        .size(TS_SM)
-                        .color(TEXT_SECONDARY),
-                );
-                ui.add_sized(
-                    [80.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.discover_seed),
-                );
-                ui.label(RichText::new("Count:").size(TS_SM).color(TEXT_SECONDARY));
-                ui.add_sized(
-                    [60.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.discover_count),
-                );
-                if primary_button(ui, "Generate Discover").clicked() {
-                    match self.discover_options_from_inputs() {
-                        Ok(options) => {
-                            if let Some(games) = self.prepared_games(JunkMode::Default) {
-                                let pf = discover::generate_discover_playlist(&games, &options);
-                                match self
-                                    .store_generator_playlist(GeneratorIdentity::Discover, pf)
-                                {
-                                    Ok(pf) => {
-                                        self.discover_last_playlist = Some(pf.clone());
-                                        // Also load into Playlists state so "Open in Playlists" is seamless.
-                                        self.adopt_playlist_for_edit(&pf);
-                                        self.success_msg = Some(format!(
-                                            "Generated Discover playlist '{}' (slot {})",
-                                            pf.playlist.name, pf.playlist.id
-                                        ));
-                                    }
-                                    Err(e) => self.error = Some(e),
-                                }
-                            }
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_2);
+                form_field(ui, "Seed AppID", |ui| {
+                    ui.add_sized(
+                        [100.0, 28.0],
+                        egui::TextEdit::singleline(&mut self.discover_seed).hint_text("optional"),
+                    );
+                });
+                form_field(ui, "Count", |ui| {
+                    ui.add_sized(
+                        [64.0, 28.0],
+                        egui::TextEdit::singleline(&mut self.discover_count).hint_text("20"),
+                    );
+                });
+                if primary_button(ui, "Generate").clicked() {
+                    match self.run_discover_generate() {
+                        Ok(pf) => {
+                            self.success_msg = Some(format!(
+                                "Generated Discover playlist '{}' (slot {})",
+                                pf.playlist.name, pf.playlist.id
+                            ));
                         }
                         Err(e) => self.error = Some(e),
                     }
@@ -3310,66 +3304,322 @@ impl VapourflyApp {
             ui.add_space(SP_2);
             ui.label(
                 RichText::new(
-                    "Results overwrite the stable 'discover' playlist slot in the local store. Open Playlists to edit, share, or sync — change id/name and Save to keep a copy.",
+                    "Regenerate overwrites the stable discover slot. Change id/name and Save in Playlists to keep a long-term copy.",
                 )
-                .size(TS_SM)
+                .size(TS_XS)
                 .color(TEXT_MUTED),
             );
-            if self.discover_last_playlist.is_some() {
-                ui.add_space(SP_2);
-                if secondary_button(ui, "Open in Playlists").clicked() {
-                    self.current_view = View::Playlists;
+        });
+
+        if self.discover_results.is_empty() && self.discover_last_playlist.is_none() {
+            empty_state(
+                ui,
+                "\u{1F50D}",
+                "No Discover results yet",
+                "Set an optional seed AppID and count, then Generate.",
+            );
+            return;
+        }
+
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+            metric_pill(ui, "Results", self.discover_results.len().to_string());
+            if let Some(pf) = &self.discover_last_playlist {
+                metric_pill(ui, "Slot", pf.playlist.id.clone());
+            }
+        });
+        ui.add_space(SP_3);
+
+        // Continuation into Playlists; optional sync remains confirmation-gated.
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+            if secondary_button(ui, "Open in Playlists").clicked() {
+                if let Some(pf) = self.discover_last_playlist.clone() {
+                    self.adopt_playlist_for_edit(&pf);
+                }
+                self.current_view = View::Playlists;
+            }
+            if let Some(pf) = self.discover_last_playlist.clone() {
+                let busy = self.write_loading || self.dry_run_loading;
+                if ui
+                    .add_enabled(
+                        !busy,
+                        egui::Button::new(
+                            RichText::new("Sync to Steam Collection")
+                                .size(TS_SM)
+                                .color(TEXT_PRIMARY),
+                        )
+                        .fill(SURFACE)
+                        .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                        .corner_radius(CORNER_SM),
+                    )
+                    .clicked()
+                {
+                    self.start_dry_run(PendingAction::PlaylistSync(pf));
                 }
             }
         });
+        ui.label(
+            RichText::new("Sync requires dry-run confirmation before any Steam write.")
+                .size(TS_XS)
+                .color(TEXT_MUTED),
+        );
+        ui.add_space(SP_3);
 
-        if let Some(pf) = self.discover_last_playlist.clone() {
-            section_card(ui, &format!("Playlist: {}", pf.playlist.name), |ui| {
-                stat_inline(ui, "ID:", &pf.playlist.id);
-                match &pf.playlist.content {
-                    PlaylistContent::Manual { app_ids } => {
-                        stat_inline(
-                            ui,
-                            "Type:",
-                            &format!("Manual playlist with {} AppIDs", app_ids.len()),
-                        );
-                        if !app_ids.is_empty() {
-                            ui.add_space(SP_1);
-                            ui.label(
-                                RichText::new(format!(
-                                    "AppIDs: {}",
-                                    app_ids
-                                        .iter()
-                                        .map(ToString::to_string)
-                                        .collect::<Vec<_>>()
-                                        .join(", ")
-                                ))
-                                .size(TS_SM)
-                                .color(TEXT_SECONDARY),
-                            );
-                        }
-                    }
-                    PlaylistContent::Rules { rules } => {
-                        stat_inline(
-                            ui,
-                            "Type:",
-                            &format!("Rule-based playlist with {} rules", rules.len()),
-                        );
-                    }
-                }
-            });
-
-            if let Some(report) = &self.playlist_match_report {
-                section_card(ui, "Match Report", |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
-                        metric_pill(ui, "Owned", report.owned.len().to_string());
-                        metric_pill(ui, "Missing", report.missing.len().to_string());
-                        metric_pill(ui, "Played", report.played.len().to_string());
-                        metric_pill(ui, "Unplayed", report.unplayed.len().to_string());
+        // Result cards: name, score, reason codes (same structural pattern as Recommendations).
+        for pick in &self.discover_results {
+            section_card(ui, &pick.name, |ui| {
+                ui.horizontal(|ui| {
+                    app_id_tag(ui, pick.app_id);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        status_badge(ui, &format!("{:.2}", pick.score), ACCENT_SOFT, ACCENT_TEXT);
                     });
                 });
-            }
+                if !pick.reasons.is_empty() {
+                    ui.add_space(SP_1);
+                    ui.indent("discover_reasons", |ui| {
+                        for reason in &pick.reasons {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = egui::vec2(SP_1, SP_1);
+                                status_badge(ui, reason.code, SURFACE_MUTED, TEXT_SECONDARY);
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} ({:+.2})",
+                                        reason.description, reason.weight
+                                    ))
+                                    .size(TS_SM)
+                                    .color(TEXT_SECONDARY),
+                                );
+                            });
+                        }
+                    });
+                }
+            });
+        }
+    }
+
+    // -- Playlist generator chooser modals ----------------------------------
+
+    fn render_playlist_choosers(&mut self, ctx: &egui::Context) {
+        match self.playlist_chooser {
+            PlaylistChooser::None => {}
+            PlaylistChooser::Dynamic => self.render_dynamic_chooser(ctx),
+            PlaylistChooser::Mood => self.render_mood_chooser(ctx),
+        }
+    }
+
+    fn render_dynamic_chooser(&mut self, ctx: &egui::Context) {
+        let mut open = true;
+        egui::Window::new("Dynamic template")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .frame(
+                egui::Frame::NONE
+                    .fill(SURFACE_RAISED)
+                    .stroke(egui::Stroke::new(1.0, BORDER))
+                    .corner_radius(CORNER_LG)
+                    .inner_margin(egui::Margin::same(m(SP_4))),
+            )
+            .show(ctx, |ui| {
+                ui.set_min_width(360.0);
+                ui.label(
+                    RichText::new("Dynamic")
+                        .size(TS_XL)
+                        .strong()
+                        .color(TEXT_PRIMARY),
+                );
+                ui.add_space(SP_1);
+                ui.label(
+                    RichText::new(
+                        "Pick deck-session or finish-it, set parameters, then generate into a stable store slot.",
+                    )
+                    .size(TS_SM)
+                    .color(TEXT_SECONDARY),
+                );
+                ui.add_space(SP_3);
+
+                ui.label(
+                    RichText::new("Template")
+                        .size(TS_SM)
+                        .strong()
+                        .color(TEXT_PRIMARY),
+                );
+                ui.add_space(SP_1);
+                for template in [DynamicTemplate::DeckSession, DynamicTemplate::FinishIt] {
+                    let selected = self.dynamic_template == template.id();
+                    let btn = egui::Button::new(
+                        RichText::new(template.label()).size(TS_SM).color(if selected {
+                            TEXT_INVERSE
+                        } else {
+                            TEXT_SECONDARY
+                        }),
+                    )
+                    .fill(if selected { ACCENT } else { SURFACE })
+                    .stroke(if selected {
+                        egui::Stroke::NONE
+                    } else {
+                        egui::Stroke::new(1.0, BORDER_SOFT)
+                    })
+                    .corner_radius(CORNER_PILL);
+                    if ui.add(btn).clicked() {
+                        self.dynamic_template = template.id().into();
+                    }
+                }
+
+                ui.add_space(SP_3);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_2);
+                    form_field(ui, "Session minutes", |ui| {
+                        ui.add_sized(
+                            [80.0, 28.0],
+                            egui::TextEdit::singleline(&mut self.dynamic_minutes).hint_text("90"),
+                        );
+                    });
+                    form_field(ui, "Count", |ui| {
+                        ui.add_sized(
+                            [64.0, 28.0],
+                            egui::TextEdit::singleline(&mut self.dynamic_count).hint_text("25"),
+                        );
+                    });
+                });
+                ui.label(
+                    RichText::new(
+                        "Session minutes applies to Deck Session (HLTB cap). Count caps Finish It results.",
+                    )
+                    .size(TS_XS)
+                    .color(TEXT_MUTED),
+                );
+
+                ui.add_space(SP_4);
+                ui.horizontal(|ui| {
+                    if primary_button(ui, "Generate").clicked() {
+                        match self.run_dynamic_generate() {
+                            Ok(pf) => {
+                                self.success_msg = Some(format!(
+                                    "Compiled dynamic template '{}' (slot {})",
+                                    pf.playlist.name, pf.playlist.id
+                                ));
+                                self.playlist_chooser = PlaylistChooser::None;
+                            }
+                            Err(e) => self.error = Some(e),
+                        }
+                    }
+                    if ghost_button(ui, "Cancel").clicked() {
+                        self.playlist_chooser = PlaylistChooser::None;
+                    }
+                });
+                if let Some(err) = &self.error {
+                    ui.add_space(SP_2);
+                    ui.label(RichText::new(err).size(TS_SM).color(ERROR));
+                }
+            });
+        if !open {
+            self.playlist_chooser = PlaylistChooser::None;
+        }
+    }
+
+    fn render_mood_chooser(&mut self, ctx: &egui::Context) {
+        let mut open = true;
+        egui::Window::new("Editorial Mood")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .frame(
+                egui::Frame::NONE
+                    .fill(SURFACE_RAISED)
+                    .stroke(egui::Stroke::new(1.0, BORDER))
+                    .corner_radius(CORNER_LG)
+                    .inner_margin(egui::Margin::same(m(SP_4))),
+            )
+            .show(ctx, |ui| {
+                ui.set_min_width(380.0);
+                ui.label(
+                    RichText::new("Mood")
+                        .size(TS_XL)
+                        .strong()
+                        .color(TEXT_PRIMARY),
+                );
+                ui.add_space(SP_1);
+                ui.label(
+                    RichText::new(
+                        "Seven canonical Editorial Moods with opaque criteria (ADR-0004). Generates into mood-<id>.",
+                    )
+                    .size(TS_SM)
+                    .color(TEXT_SECONDARY),
+                );
+                ui.add_space(SP_3);
+
+                egui::ScrollArea::vertical()
+                    .max_height(280.0)
+                    .show(ui, |ui| {
+                        for mood in EditorialMood::all() {
+                            let selected = self.editorial_mood == mood.id();
+                            let fill = if selected {
+                                ACCENT_SOFT
+                            } else {
+                                SURFACE_SUNKEN
+                            };
+                            let stroke = if selected {
+                                egui::Stroke::new(1.0, ACCENT)
+                            } else {
+                                egui::Stroke::new(1.0, BORDER_SOFT)
+                            };
+                            let response = egui::Frame::NONE
+                                .fill(fill)
+                                .stroke(stroke)
+                                .inner_margin(egui::Margin::same(m(SP_3)))
+                                .corner_radius(CORNER_MD)
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.label(
+                                        RichText::new(mood.name())
+                                            .size(TS_MD)
+                                            .strong()
+                                            .color(TEXT_PRIMARY),
+                                    );
+                                    ui.label(
+                                        RichText::new(mood.description())
+                                            .size(TS_SM)
+                                            .color(TEXT_SECONDARY),
+                                    );
+                                })
+                                .response
+                                .interact(egui::Sense::click());
+                            if response.clicked() {
+                                self.editorial_mood = mood.id().into();
+                            }
+                            ui.add_space(SP_2);
+                        }
+                    });
+
+                ui.add_space(SP_3);
+                ui.horizontal(|ui| {
+                    if primary_button(ui, "Generate").clicked() {
+                        match self.run_mood_generate() {
+                            Ok(pf) => {
+                                self.success_msg = Some(format!(
+                                    "Compiled editorial mood '{}' (slot {})",
+                                    pf.playlist.name, pf.playlist.id
+                                ));
+                                self.playlist_chooser = PlaylistChooser::None;
+                            }
+                            Err(e) => self.error = Some(e),
+                        }
+                    }
+                    if ghost_button(ui, "Cancel").clicked() {
+                        self.playlist_chooser = PlaylistChooser::None;
+                    }
+                });
+                if let Some(err) = &self.error {
+                    ui.add_space(SP_2);
+                    ui.label(RichText::new(err).size(TS_SM).color(ERROR));
+                }
+            });
+        if !open {
+            self.playlist_chooser = PlaylistChooser::None;
         }
     }
 
@@ -3707,11 +3957,9 @@ impl VapourflyApp {
     fn render_backups_section(&mut self, ui: &mut egui::Ui) {
         section_card(ui, "Backups", |ui| {
             ui.label(
-                RichText::new(
-                    "Browse and restore safety backups of your Steam cloud storage.",
-                )
-                .size(TS_SM)
-                .color(TEXT_SECONDARY),
+                RichText::new("Browse and restore safety backups of your Steam cloud storage.")
+                    .size(TS_SM)
+                    .color(TEXT_SECONDARY),
             );
             ui.add_space(SP_2);
             if primary_button(ui, "Refresh Backups").clicked() {
@@ -4904,6 +5152,62 @@ mod tests {
         );
     }
 
+    #[test]
+    fn playlist_chooser_has_no_discover_variant() {
+        // Ticket 06: Dynamic + Mood only. Discover is top-level (ticket 07).
+        assert_eq!(PlaylistChooser::default(), PlaylistChooser::None);
+        let _ = PlaylistChooser::Dynamic;
+        let _ = PlaylistChooser::Mood;
+        // Compile-time exhaustiveness: only None / Dynamic / Mood.
+        match PlaylistChooser::None {
+            PlaylistChooser::None | PlaylistChooser::Dynamic | PlaylistChooser::Mood => {}
+        }
+    }
+
+    #[test]
+    fn load_playlist_from_store_adopts_edit_fields() {
+        let dir = TempDir::new().unwrap();
+        let mut app = VapourflyApp::new(None);
+        app.playlist_store_dir = Some(dir.path().to_path_buf());
+
+        let pf = sample_generator_playlist("my-list", vec![730, 440]);
+        playlist_store::put(dir.path(), &pf).unwrap();
+
+        app.load_playlist_from_store("my-list").unwrap();
+        assert_eq!(app.playlist_edit_id, "my-list");
+        assert_eq!(app.playlist_edit_name, "Generated");
+        // Store export sorts AppIDs ascending.
+        assert_eq!(app.playlist_edit_app_ids, "440, 730");
+        assert_eq!(app.playlist_load_selected, "my-list");
+        assert!(app.playlist_last_import.is_some());
+    }
+
+    #[test]
+    fn run_discover_generate_writes_slot_and_results() {
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
+        let dir = TempDir::new().unwrap();
+        let mut app = VapourflyApp::new(Some(fixtures));
+        app.playlist_store_dir = Some(dir.path().to_path_buf());
+
+        // Minimal scan so prepared_games has data (empty is fine for empty picks).
+        app.scan_result = Some(ScanResult {
+            steam_dir: "/tmp".into(),
+            account: "test".into(),
+            games: Vec::new(),
+            warnings: Vec::new(),
+        });
+        app.discover_count = "5".into();
+
+        let pf = app.run_discover_generate().unwrap();
+        assert_eq!(pf.playlist.id, "discover");
+        assert!(dir.path().join("discover.json").is_file());
+        assert!(app.discover_last_playlist.is_some());
+        // Empty library → empty results, but still a written slot.
+        assert!(app.discover_results.is_empty());
+        assert_eq!(app.playlist_edit_id, "discover");
+    }
+
     // -- Generator playlist slots (ADR-0007) --------------------------------
 
     fn sample_generator_playlist(id: &str, app_ids: Vec<u32>) -> PlaylistFile {
@@ -4967,7 +5271,11 @@ mod tests {
         .unwrap();
         assert_eq!(second.playlist.id, "discover");
         let ids = playlist_store::list_ids(store).unwrap();
-        assert_eq!(ids, vec!["discover"], "regenerate must not create a second id");
+        assert_eq!(
+            ids,
+            vec!["discover"],
+            "regenerate must not create a second id"
+        );
         let reloaded = playlist_store::get(store, "discover").unwrap();
         match reloaded.playlist.content {
             PlaylistContent::Manual { app_ids } => assert_eq!(app_ids, vec![30, 40, 50]),
@@ -5017,11 +5325,7 @@ mod tests {
         all.sort();
         assert_eq!(
             all,
-            vec![
-                "discover",
-                "dynamic-deck-session",
-                "mood-quick-round"
-            ]
+            vec!["discover", "dynamic-deck-session", "mood-quick-round"]
         );
     }
 

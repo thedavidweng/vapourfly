@@ -88,7 +88,8 @@ mod tests {
     fn commit_returns_real_backup_path_that_exists() {
         set_steam_running_override(Some(false));
         let tmp = tempfile::tempdir().unwrap();
-        let target = write_cloud_to_file(&empty_cloud(), tmp.path(), "cloud-storage-namespace-1.json");
+        let target =
+            write_cloud_to_file(&empty_cloud(), tmp.path(), "cloud-storage-namespace-1.json");
 
         let cloud = steam::read_cloud_storage(&target).unwrap();
         let plan = preview(
@@ -122,9 +123,7 @@ mod tests {
         let after: CloudStorageFile =
             serde_json::from_str(&fs::read_to_string(&target).unwrap()).unwrap();
         assert!(
-            after
-                .iter()
-                .any(|(k, _)| k == "user-collections.test"),
+            after.iter().any(|(k, _)| k == "user-collections.test"),
             "target should contain new collection"
         );
 
@@ -191,13 +190,13 @@ mod tests {
 
         let plan = preview(
             &cloud,
-            vec![WriteOp::AddToHidden {
-                app_ids: vec![99],
-            }],
+            vec![WriteOp::AddToHidden { app_ids: vec![99] }],
             target,
         )
         .unwrap();
         assert!(!plan.after_content.is_empty());
-        assert!(!plan.diff.hidden_app_ids_added.is_empty() || plan.after_sha256 != plan.before_sha256);
+        assert!(
+            !plan.diff.hidden_app_ids_added.is_empty() || plan.after_sha256 != plan.before_sha256
+        );
     }
 }

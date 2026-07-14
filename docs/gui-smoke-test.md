@@ -92,28 +92,32 @@ Shell uses a dark design-token theme and monochrome line icons (not emoji).
 
 ### 5. Playlists
 
-1. Navigate to Playlists view via the left sidebar.
-2. Fill Create / Edit Playlist with an ID, name, description, and comma-separated AppIDs. Leave the Rules JSON field empty.
-3. Click "Save Playlist" and verify a match report appears.
-4. Click "Copy Share Code" and verify a `VF1:` code is shown.
-5. Paste the code into Share code and click "Import Code"; verify the same playlist is loaded.
-6. Enter an export path and click "Export Playlist"; verify a Vapourfly playlist JSON file is written.
-7. Click "Sync to Steam Collection"; verify a dry-run diff modal appears before any file is written and targets the slugged playlist ID as the Steam collection.
-8. Cancel the sync modal and verify the Steam cloud storage file is unchanged.
-9. Confirm the sync modal and verify a backup is created before the Steam collection is written.
-10. Confirm Playlists has **no** Discover seed/Generate Discover control (Discover is a top-level view).
-11. Compile `deck-session` and `finish-it` templates and verify each produces a playlist or rule summary without errors, and that each is saved under the stable slot ids `dynamic-deck-session` / `dynamic-finish-it` (a second compile overwrites the same slot).
-12. Pick an Editorial Mood from the dropdown (e.g. "Quick Round") and click "Compile Editorial Mood"; verify a playlist is written under `mood-quick-round` without errors (regenerate overwrites that slot).
-13. Clear the edit fields, enter a new ID and name, and paste a JSON rules array (e.g. `[{"op":"Installed"},{"op":"NotHidden"}]`) into the Rules JSON field. Click "Save Playlist" and verify a rule-based playlist is saved and the match report appears.
-14. Enter invalid JSON in the Rules JSON field and click "Save Playlist"; verify an error is shown and no playlist is saved.
-15. Verify the match report shows "Completion price:" with a formatted price when Steam Store cache data exists, or a hint to run `cache refresh --source steam-store` when no price data is cached.
+1. Navigate to Playlists via the left sidebar.
+2. Confirm the page header has **Dynamic** and **Mood** actions only among generators — **no** Discover seed/Generate control.
+3. Under **Load existing**, refresh/list shows store ids after saves (may be empty on first run).
+4. Fill **Create / Edit** with an ID, name, description, and comma-separated AppIDs. Leave Rules JSON empty.
+5. Click **Save Playlist** and verify a match report appears (owned/missing/… pills + owned preview when games are known).
+6. Click **Copy Share Code** and verify a `VF1:` code is shown.
+7. Paste the code into **Share code** and click **Import Code**; verify the same playlist is loaded into edit fields.
+8. Click **Export…**, choose a path in the file dialog, and verify a Vapourfly playlist JSON file is written.
+9. Click **Sync to Steam Collection**; verify a dry-run diff modal appears before any write and targets the slugged playlist ID as the Steam collection.
+10. Cancel the sync modal and verify the Steam cloud storage file is unchanged.
+11. Confirm the sync modal and verify a backup is created before the Steam collection is written.
+12. Click **Dynamic** → chooser opens for `deck-session` / `finish-it` with session minutes and count → **Generate**. Verify a playlist is written under `dynamic-deck-session` or `dynamic-finish-it` and loads into the edit surface (regenerate overwrites the same slot).
+13. Click **Mood** → chooser lists the seven Editorial Moods → pick e.g. Quick Round → **Generate**. Verify a playlist is written under `mood-quick-round` (regenerate overwrites that slot).
+14. Use **Load existing** to select a stored id and **Load**; verify edit fields and match report update.
+15. Clear the edit fields, enter a new ID and name, paste a JSON rules array (e.g. `[{"op":"Installed"},{"op":"NotHidden"}]`) into Rules JSON, **Save Playlist**, and verify a rule-based playlist is saved.
+16. Enter invalid JSON in Rules JSON and Save; verify an error is shown and no playlist is saved.
+17. Verify match report completion price when Steam Store cache exists, or the cache-refresh hint when not.
 
 ### 6. Discover
 
 1. Navigate to **Discover** via the left sidebar (not via Playlists).
-2. Set Discover seed AppID and Count, click "Generate Discover", and verify a Discover playlist is created with the requested count when enough candidates exist and is stored under the stable id `discover`.
-3. Clear Discover seed AppID, rerun generation, and verify the taste-based Discover playlist still works and **overwrites** the same `discover` slot (no second playlist id).
-4. Optionally click "Open in Playlists" and verify the generated playlist is available for edit/sync. To keep a long-term copy, change id/name and Save again.
+2. Confirm seed AppID, count, and **Generate** controls on this page.
+3. Set seed AppID and Count, click **Generate**, and verify on-page **result cards** show names, scores, and reason codes when candidates exist; the playlist is stored under stable id `discover`.
+4. Clear seed AppID, regenerate, and verify the taste-based playlist **overwrites** the same `discover` slot (no second playlist id).
+5. Click **Open in Playlists** and verify the generated playlist is loaded for edit/share/sync. To keep a long-term copy, change id/name and Save again.
+6. Optionally click **Sync to Steam Collection** on Discover and verify dry-run confirmation before any Steam write.
 
 ### 7. Collections
 

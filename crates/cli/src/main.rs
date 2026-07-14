@@ -30,17 +30,15 @@ mod format;
 
 use vapourfly_core::config::{self, ConfigField, VapourflyConfig};
 use vapourfly_core::discover::{self, DiscoverOptions};
+use vapourfly_core::disposition;
 use vapourfly_core::dynamic::{self, DynamicTemplate, DynamicTemplateOptions};
-use vapourfly_core::junk::{
-    JunkPreviewResult, evaluate_junk, load_default_manual_overrides,
-};
+use vapourfly_core::junk::{JunkPreviewResult, evaluate_junk, load_default_manual_overrides};
 use vapourfly_core::models::{
     JunkMode, JunkRules, PlaylistContent, PlaylistFile, PlaylistRule, RecommendRequest, ScanResult,
     VAPOURFLY_JUNK_PREVIEW_SCHEMA, VAPOURFLY_PLAYLIST_SCHEMA, VAPOURFLY_RECOMMENDATIONS_SCHEMA,
     VAPOURFLY_SCAN_SCHEMA, WriteOp,
 };
 use vapourfly_core::mood::{self, EditorialMood};
-use vapourfly_core::disposition;
 use vapourfly_core::playlist;
 use vapourfly_core::playlist_store;
 use vapourfly_core::recommend;
@@ -1226,7 +1224,8 @@ fn cmd_junk_apply(
         println!();
         println!("Dry run complete. No changes made.");
     } else {
-        let backup = write::commit_with_retention(&plan, cli.allow_steam_running, backup_retention())?;
+        let backup =
+            write::commit_with_retention(&plan, cli.allow_steam_running, backup_retention())?;
         println!();
         println!("Write complete.");
         println!("  Backup: {}", backup.display());
@@ -1273,7 +1272,8 @@ fn cmd_junk_hide(
         println!();
         println!("Dry run complete. No changes made.");
     } else {
-        let backup = write::commit_with_retention(&plan, cli.allow_steam_running, backup_retention())?;
+        let backup =
+            write::commit_with_retention(&plan, cli.allow_steam_running, backup_retention())?;
         println!();
         println!("Write complete.");
         println!("  Backup: {}", backup.display());
@@ -1281,7 +1281,6 @@ fn cmd_junk_hide(
 
     Ok(())
 }
-
 
 fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::error::Error>> {
     let RecommendArgs {
@@ -1345,7 +1344,8 @@ fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::erro
             return Ok(());
         }
 
-        let backup = write::commit_with_retention(&plan, cli.allow_steam_running, backup_retention())?;
+        let backup =
+            write::commit_with_retention(&plan, cli.allow_steam_running, backup_retention())?;
         println!();
         println!("Write complete.");
         println!("  Backup: {}", backup.display());
@@ -1694,7 +1694,8 @@ fn cmd_sync_collection(
         println!();
         println!("Dry run complete. No changes made.");
     } else {
-        let backup = write::commit_with_retention(&plan, cli.allow_steam_running, backup_retention())?;
+        let backup =
+            write::commit_with_retention(&plan, cli.allow_steam_running, backup_retention())?;
         println!();
         println!("Write complete.");
         println!("  Backup: {}", backup.display());

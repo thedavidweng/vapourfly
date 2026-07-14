@@ -28,12 +28,7 @@ pub fn junk_app_ids_from_games(games: &[Game]) -> Vec<u32> {
 
 /// AppIDs marked junk from junk decisions.
 pub fn junk_app_ids_from_decisions(decisions: &[JunkDecision]) -> Vec<u32> {
-    normalize_app_ids(
-        decisions
-            .iter()
-            .filter(|d| d.is_junk)
-            .map(|d| d.app_id),
-    )
+    normalize_app_ids(decisions.iter().filter(|d| d.is_junk).map(|d| d.app_id))
 }
 
 /// Upsert junk games into a named Steam Collection.
@@ -213,9 +208,7 @@ mod tests {
                 id: "My Cool List!".into(),
                 name: "x".into(),
                 description: String::new(),
-                content: PlaylistContent::Manual {
-                    app_ids: vec![730],
-                },
+                content: PlaylistContent::Manual { app_ids: vec![730] },
             },
         };
         let app_ids = playlist_sync_app_ids(&pf, None).unwrap();
