@@ -29,6 +29,7 @@ eframe = { version = "0.35", default-features = false, features = ["accesskit", 
 egui = "0.35"
 egui_extras = { version = "0.35", features = ["http", "image"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+rfd = "0.15"
 base64 = "0.22"
 flate2 = "1"
 

@@ -20,15 +20,16 @@ feature row, the command reference, and the relevant GUI smoke test.
 | Steam directory detection | Yes | Yes | Uses platform defaults, `--steam-dir`, `VAPOURFLY_STEAM_DIR`, or the standard config file path. |
 | Steam account selection | Yes | Yes | CLI supports `--account` and `accounts list`; GUI has an Account Override setting plus a detected accounts list with a one-click override action. If unset, Vapourfly selects the most recent Steam account or the only account. |
 | Setup diagnostics | Yes | Yes | CLI `vapourfly doctor` and GUI Settings setup check report Steam paths, accounts, library folders, cloud storage, cache path, and credential status. |
-| Library scan | Yes | Yes | CLI `scan`; GUI scans on startup and via Refresh. Both read installed games, playtime, hidden state, and Steam collections. GUI Library presents scanned games as poster cards with search and filters. |
-| Enriched scan output | Yes | Yes | CLI `vapourfly scan --enrich` adds external metadata to that command's output and cache. GUI Library hydrates cached metadata and shows it on poster cards when cache entries exist. |
-| Collections list | Yes | Yes | CLI lists Steam collections; GUI displays collection names, counts, and hidden status after scan. |
-| Collections export | Yes | Yes | CLI `vapourfly collections export --out <file>` and GUI Collections export write the same Steam collection JSON export. |
-| Junk preview | Yes | Yes | Evaluates Default, Strict, or Aggressive junk modes after hydrating cached external metadata into scanned game records. GUI opens Junk from the Library toolbar (`Junk…` panel), not a sidebar item (ADR-0006). |
-| Junk apply to collection | Yes | Yes | Writes junk candidates to a Steam collection after dry-run/confirmation and backup. GUI action lives in the Library Junk panel. |
-| Junk hide | Yes | Yes | Adds junk candidates to Steam's hidden collection after dry-run/confirmation and backup. GUI action lives in the Library Junk panel. |
-| Recommendations | Yes | Yes | Recommends from hydrated scanned game records by available minutes, count, installed-only, Deck mode, and optional seed. GUI top-level view is labeled **Recommendations**. |
-| Temporary recommendation collection | Yes | Yes | CLI `recommend --to-collection --dry-run|--confirm` and GUI Recommendations view write to `vapourfly-picks` after dry-run confirmation. |
+| Library scan | Yes | Yes | CLI `scan`; GUI scans on startup and via Refresh. Both read installed games, playtime, hidden state, and Steam collections. GUI Library presents scanned games as poster cards with search and three filters: Installed only, Not hidden, Not junk. Summary shows matching / installed / library counts. |
+| Enriched scan output | Yes | Yes | CLI `vapourfly scan --enrich` adds external metadata to that command's output and cache. GUI Library hydrates cached metadata and shows Proton/Deck badges and detail on poster cards when cache entries exist. |
+| Library hover Recommend | — | Yes | Hovering or selecting a Library poster card reveals a Recommend shortcut that opens Recommendations with that AppID as seed (approved ADR-0006 deviation). |
+| Collections list | Yes | Yes | CLI lists Steam collections; GUI shows a read-only card grid with name, game count, optional poster collage, and hidden badge when applicable. No member drill-in editor in v1. |
+| Collections export | Yes | Yes | CLI `vapourfly collections export --out <file>` and GUI Collections **Export all** (native save dialog) write the same Steam collection JSON export. |
+| Junk preview | Yes | Yes | Evaluates Default, Strict, or Aggressive junk modes after hydrating cached external metadata into scanned game records. GUI opens Junk from the Library toolbar (`Junk…` panel), not a sidebar item (ADR-0006). Panel: mode → Preview → apply/hide. |
+| Junk apply to collection | Yes | Yes | Writes junk candidates to a Steam collection after dry-run/confirmation and backup. GUI action lives in the Library Junk panel (**Apply to collection**). |
+| Junk hide | Yes | Yes | Adds junk candidates to Steam's hidden collection after dry-run/confirmation and backup. GUI action lives in the Library Junk panel (**Hide**). |
+| Recommendations | Yes | Yes | Recommends from hydrated scanned game records by available minutes, count, installed-only, Deck mode, and optional seed AppID. GUI top-level view is labeled **Recommendations**; Preview shows score and human-readable reason codes. |
+| Temporary recommendation collection | Yes | Yes | CLI `recommend --to-collection --dry-run|--confirm` and GUI Recommendations **Write to vapourfly-picks** write to `vapourfly-picks` after dry-run confirmation. |
 | Playlist import | Yes | Yes | Imports Vapourfly JSON playlist files. CLI stores imported playlists under the app data playlist directory. |
 | Playlist export | Yes | Yes | CLI exports a stored playlist by ID. GUI exports the currently loaded playlist to a selected JSON path. |
 | Playlist match report | Yes | Yes | Reports owned, missing, played, unplayed, hidden, and junk counts for a playlist. |

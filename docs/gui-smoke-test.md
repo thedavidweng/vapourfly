@@ -48,25 +48,27 @@ Shell uses a dark design-token theme and monochrome line icons (not emoji).
 9. Confirm Factorio shows Installed and playtime `17h 18m`.
 10. Confirm app 999 remains in the grid with a library/non-installed status and playtime `5m`; if Steam has no poster for it, the card should keep a stable poster-sized image area without layout shift.
 11. Type a title or AppID in Search and verify the card grid filters immediately.
-12. Toggle Installed, Unplayed, Hidden, and Junk filters and verify the matching count and grid update.
-13. Click a card's "Recommend" button and verify the **Recommendations** view opens with that AppID filled as the seed.
-14. If cached external metadata exists, verify cards show hydrated values such as Proton tier, HLTB time, rating, or genre; otherwise cards should show a plain playable/library state without errors.
+12. Confirm the filter bar offers **only** three toggles: **Installed only**, **Not hidden**, and **Not junk** (no Unplayed / include-only Hidden or Junk toggles).
+13. Toggle each filter and verify the Matching / Installed summary pills and grid update.
+14. Hover a game card (or click to select it) and verify a **Recommend** control appears; without hover/selection it should not clutter the card.
+15. Click **Recommend** and verify the **Recommendations** view opens with that AppID filled as the seed.
+16. If cached external metadata exists, verify cards show Proton tier and Deck badges when available, plus playtime; otherwise cards should show a plain playable/library state without errors.
 
 ### 2. Junk Preview (from Library)
 
 1. From Library, click **Junk…** in the toolbar (not the sidebar).
 2. Choose Default, Strict, or Aggressive mode.
-3. Click "Run Junk Detection".
-4. Verify the evaluation table is displayed with confidence scores and signal text.
-5. If the active fixture/cache has candidates, verify the candidate count is nonzero.
-6. If using bare `steam_minimal`, verify the table reports zero candidates without errors.
-7. Switch modes, run detection again, and confirm the table updates without errors.
+3. Click **Preview**.
+4. Verify the preview table is displayed with confidence scores and signal text.
+5. If the active fixture/cache has candidates, verify the Candidates metric is nonzero and **Apply to collection** / **Hide** actions appear.
+6. If using bare `steam_minimal`, verify the table reports zero candidates without errors and write actions stay unavailable.
+7. Switch modes, preview again, and confirm the table updates without errors.
 8. Click **Back to Library** and confirm the Library grid returns.
 
 ### 3. Write Dry-Run Modal
 
-1. From Library → Junk…, run junk detection with a fixture/cache that produces at least one candidate.
-2. Click the "Apply to Collection" or "Add to Hidden" action button.
+1. From Library → Junk…, run Preview with a fixture/cache that produces at least one candidate.
+2. Click **Apply to collection** or **Hide**.
 3. Verify a dry-run diff modal appears before any file is written.
 4. Confirm the modal shows the target `cloud-storage-namespace-1.json` path.
 5. Verify added/removed AppID counts match the junk candidates.
@@ -75,17 +77,18 @@ Shell uses a dark design-token theme and monochrome line icons (not emoji).
 
 ### 4. Recommendation Result
 
-1. Navigate to **Recommendations** via the left sidebar.
-2. Set available time (e.g., 60 minutes).
-3. Set Count and optionally enter a numeric Seed.
-4. Click "Get Recommendations".
-5. Verify recommendations are displayed sorted by score.
-6. Confirm each recommendation shows name, AppID, score, and reason lines.
-7. Clear Seed, rerun recommendations, and confirm the result set updates without errors.
-8. Enter a non-numeric value in Available minutes and verify the UI shows a validation error instead of silently using a default.
-9. Toggle Deck mode and Installed only, rerun recommendations, and confirm the result set updates without errors.
-10. Click "Save to Steam Collection".
-11. Verify the dry-run diff targets the `vapourfly-picks` collection and requires confirmation before writing.
+1. Navigate to **Recommendations** via the left sidebar (or arrive via Library card Recommend with seed filled).
+2. Set available minutes (e.g., 60).
+3. Set Count and optionally enter a numeric Seed AppID.
+4. Toggle **Installed only** and **Deck mode** as needed.
+5. Click **Preview**.
+6. Verify recommendations are displayed sorted by score.
+7. Confirm each recommendation shows name, AppID, score badge, and human-readable reason codes (code pill + description).
+8. Clear Seed, preview again, and confirm the result set updates without errors.
+9. Enter a non-numeric value in Available minutes and verify the UI shows a validation error instead of silently using a default.
+10. Toggle Deck mode and Installed only, preview again, and confirm the result set updates without errors.
+11. Click **Write to vapourfly-picks**.
+12. Verify the dry-run diff targets the `vapourfly-picks` collection and requires confirmation before writing.
 
 ### 5. Playlists
 
@@ -115,10 +118,11 @@ Shell uses a dark design-token theme and monochrome line icons (not emoji).
 ### 7. Collections
 
 1. Navigate to Collections view via the left sidebar.
-2. Verify collection names, game counts, and hidden status appear after scan.
-3. Confirm `Favorites` reports `2` games against `steam_minimal`.
-4. Enter an export path and click "Export Collections"; verify a JSON file is written.
-5. Open the exported JSON and confirm it contains the `favorite` collection with AppIDs `730` and `427520`.
+2. Verify collections appear as a **card grid** (not a dense table): each card shows name, game count, and a poster collage when member AppIDs resolve art.
+3. Confirm there is **no** member drill-in / edit UI on cards.
+4. Confirm `Favorites` reports `2` games against `steam_minimal` (collage may show CS2 and Factorio posters).
+5. Click **Export all**, choose a save location in the file dialog, and verify a JSON file is written.
+6. Open the exported JSON and confirm it contains the `favorite` collection with AppIDs `730` and `427520`.
 
 ### 8. Data Sources
 
