@@ -28,59 +28,44 @@ use vapourfly_core::steam::{
 // View enum
 // ---------------------------------------------------------------------------
 
+/// Top-level destinations shown in the sidebar (ADR-0006).
+/// Junk and Backups are intentionally absent — they live under Library and
+/// Settings respectively.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum View {
     Library,
-    Junk,
-    Recommend,
-    Playlists,
     Collections,
+    Recommendations,
+    Playlists,
+    Discover,
     DataSources,
-    Backups,
     Settings,
 }
 
 impl View {
+    /// Canonical sidebar order. Tests lock this set and ordering.
     const ALL: &'static [View] = &[
         View::Library,
-        View::Junk,
-        View::Recommend,
-        View::Playlists,
         View::Collections,
+        View::Recommendations,
+        View::Playlists,
+        View::Discover,
         View::DataSources,
-        View::Backups,
         View::Settings,
     ];
 
     fn label(self) -> &'static str {
         match self {
             View::Library => "Library",
-            View::Junk => "Junk",
-            View::Recommend => "Recommend",
-            View::Playlists => "Playlists",
             View::Collections => "Collections",
+            View::Recommendations => "Recommendations",
+            View::Playlists => "Playlists",
+            View::Discover => "Discover",
             View::DataSources => "Data Sources",
-            View::Backups => "Backups",
             View::Settings => "Settings",
         }
     }
 
-    fn nav_label(self) -> &'static str {
-        self.label()
-    }
-
-    fn icon(self) -> &'static str {
-        match self {
-            View::Library => "\u{1F3AE}",
-            View::Junk => "\u{1F9F9}",
-            View::Recommend => "\u{1F3AF}",
-            View::Playlists => "\u{1F3B5}",
-            View::Collections => "\u{1F4C2}",
-            View::DataSources => "\u{1F310}",
-            View::Backups => "\u{1F4BE}",
-            View::Settings => "\u{2699}",
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -129,32 +114,32 @@ static DRY_RUN_RESULT: Mutex<Option<Result<vapourfly_core::models::WritePlan, St
     Mutex::new(None);
 
 // ---------------------------------------------------------------------------
-// Visual system — design tokens
+// Visual system — dark design tokens (ADR-0006)
 // ---------------------------------------------------------------------------
 
-// Color palette: warm-tinted neutrals with a deep violet accent.
+// Dark surface hierarchy with a cool violet brand accent.
 
-const SURFACE: Color32 = Color32::from_rgb(243, 244, 247);
-const SURFACE_RAISED: Color32 = Color32::from_rgb(252, 250, 248);
-const SURFACE_MUTED: Color32 = Color32::from_rgb(228, 231, 237);
-const SURFACE_SUNKEN: Color32 = Color32::from_rgb(235, 237, 242);
-const BORDER: Color32 = Color32::from_rgb(214, 219, 226);
-const BORDER_SOFT: Color32 = Color32::from_rgb(224, 228, 234);
+const SURFACE: Color32 = Color32::from_rgb(18, 20, 26);
+const SURFACE_RAISED: Color32 = Color32::from_rgb(26, 29, 36);
+const SURFACE_MUTED: Color32 = Color32::from_rgb(34, 38, 48);
+const SURFACE_SUNKEN: Color32 = Color32::from_rgb(14, 16, 22);
+const BORDER: Color32 = Color32::from_rgb(52, 58, 70);
+const BORDER_SOFT: Color32 = Color32::from_rgb(42, 46, 56);
 
-const TEXT_PRIMARY: Color32 = Color32::from_rgb(28, 31, 38);
-const TEXT_SECONDARY: Color32 = Color32::from_rgb(82, 89, 99);
-const TEXT_MUTED: Color32 = Color32::from_rgb(132, 140, 150);
-const TEXT_INVERSE: Color32 = Color32::from_rgb(252, 250, 248);
+const TEXT_PRIMARY: Color32 = Color32::from_rgb(236, 238, 244);
+const TEXT_SECONDARY: Color32 = Color32::from_rgb(158, 166, 180);
+const TEXT_MUTED: Color32 = Color32::from_rgb(110, 118, 132);
+const TEXT_INVERSE: Color32 = Color32::from_rgb(18, 20, 26);
 
-const ACCENT: Color32 = Color32::from_rgb(122, 63, 168);
-const ACCENT_SOFT: Color32 = Color32::from_rgb(237, 224, 246);
-const ACCENT_TEXT: Color32 = Color32::from_rgb(88, 42, 132);
+const ACCENT: Color32 = Color32::from_rgb(156, 110, 220);
+const ACCENT_SOFT: Color32 = Color32::from_rgb(48, 36, 72);
+const ACCENT_TEXT: Color32 = Color32::from_rgb(196, 168, 255);
 
-const SUCCESS: Color32 = Color32::from_rgb(38, 127, 82);
-const SUCCESS_SOFT: Color32 = Color32::from_rgb(216, 238, 228);
-const ERROR: Color32 = Color32::from_rgb(186, 62, 62);
-const ERROR_SOFT: Color32 = Color32::from_rgb(250, 228, 228);
-const WARNING: Color32 = Color32::from_rgb(168, 116, 37);
+const SUCCESS: Color32 = Color32::from_rgb(72, 180, 120);
+const SUCCESS_SOFT: Color32 = Color32::from_rgb(28, 52, 40);
+const ERROR: Color32 = Color32::from_rgb(220, 90, 90);
+const ERROR_SOFT: Color32 = Color32::from_rgb(56, 28, 28);
+const WARNING: Color32 = Color32::from_rgb(220, 170, 70);
 
 // Type scale (8px grid aligned, 1.25 ratio between steps)
 
@@ -215,14 +200,16 @@ struct VapourflyApp {
     filter_unplayed: bool,
     filter_hidden: bool,
     filter_junk: bool,
+    /// Junk is a Library panel (not a sidebar destination).
+    show_junk_panel: bool,
 
-    // Junk view
+    // Junk panel (opened from Library)
     junk_mode: JunkModeChoice,
     junk_results: Vec<JunkDecision>,
     junk_selected: std::collections::HashSet<u32>,
     junk_collection_name: String,
 
-    // Recommend view
+    // Recommendations view
     recommend_minutes: String,
     recommend_count: String,
     recommend_seed: String,
@@ -244,11 +231,15 @@ struct VapourflyApp {
     playlist_edit_rules: String,
     playlist_last_import: Option<PlaylistFile>,
     playlist_match_report: Option<PlaylistMatchReport>,
-    playlist_discover_seed: String,
-    playlist_discover_count: String,
     dynamic_template: String,
     dynamic_minutes: String,
     editorial_mood: String,
+
+    // Discover view (top-level; no longer nested under Playlists)
+    discover_seed: String,
+    discover_count: String,
+    /// Last playlist generated from the Discover view (owned by Discover UI).
+    discover_last_playlist: Option<PlaylistFile>,
 
     // Collections view
     collections: Vec<SteamCollection>,
@@ -264,7 +255,7 @@ struct VapourflyApp {
     source_statuses: Vec<vapourfly_api::enrichment::SourceStatus>,
     offline_mode: bool,
 
-    // Backups view
+    // Backups (listed under Settings; not a top-level view)
     backups: Vec<BackupInfo>,
 
     // Settings view
@@ -576,6 +567,199 @@ fn form_field(ui: &mut egui::Ui, label: &str, field: impl FnOnce(&mut egui::Ui))
     });
 }
 
+// ---------------------------------------------------------------------------
+// Shared chrome primitives (primary / secondary / ghost buttons)
+// ---------------------------------------------------------------------------
+
+fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(RichText::new(label).size(TS_SM).color(TEXT_INVERSE))
+            .fill(ACCENT)
+            .stroke(egui::Stroke::NONE)
+            .corner_radius(CORNER_SM),
+    )
+}
+
+fn secondary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(RichText::new(label).size(TS_SM).color(TEXT_PRIMARY))
+            .fill(SURFACE)
+            .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+            .corner_radius(CORNER_SM),
+    )
+}
+
+fn ghost_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(RichText::new(label).size(TS_SM).color(TEXT_SECONDARY))
+            .fill(Color32::TRANSPARENT)
+            .stroke(egui::Stroke::NONE)
+            .corner_radius(CORNER_SM),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Monochrome line icons for sidebar navigation
+// ---------------------------------------------------------------------------
+
+const NAV_ICON_SIZE: f32 = 16.0;
+
+/// Draw a monochrome stroke icon for a top-level nav destination.
+fn paint_nav_icon(painter: &egui::Painter, rect: egui::Rect, view: View, color: Color32) {
+    let stroke = egui::Stroke::new(1.4, color);
+    let c = rect.center();
+    let s = rect.width().min(rect.height()) * 0.42;
+
+    match view {
+        View::Library => {
+            // 2×2 grid of small squares
+            let gap = s * 0.28;
+            let cell = (s * 2.0 - gap) / 2.0;
+            let origin = c - egui::vec2(s, s);
+            for (dx, dy) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+                let min = origin + egui::vec2(dx * (cell + gap), dy * (cell + gap));
+                painter.rect_stroke(
+                    egui::Rect::from_min_size(min, egui::vec2(cell, cell)),
+                    1.0,
+                    stroke,
+                    egui::StrokeKind::Middle,
+                );
+            }
+        }
+        View::Collections => {
+            // Folder outline
+            let left = c.x - s;
+            let right = c.x + s;
+            let top = c.y - s * 0.55;
+            let bottom = c.y + s * 0.75;
+            let tab_w = s * 0.7;
+            let tab_h = s * 0.35;
+            let points = vec![
+                egui::pos2(left, top + tab_h),
+                egui::pos2(left, top),
+                egui::pos2(left + tab_w, top),
+                egui::pos2(left + tab_w + tab_h * 0.5, top + tab_h),
+                egui::pos2(right, top + tab_h),
+                egui::pos2(right, bottom),
+                egui::pos2(left, bottom),
+                egui::pos2(left, top + tab_h),
+            ];
+            painter.add(egui::Shape::closed_line(points, stroke));
+        }
+        View::Recommendations => {
+            // Target: concentric circles + centre dot
+            painter.circle_stroke(c, s, stroke);
+            painter.circle_stroke(c, s * 0.55, stroke);
+            painter.circle_filled(c, s * 0.18, color);
+        }
+        View::Playlists => {
+            // Three horizontal lines (list)
+            for i in 0..3 {
+                let y = c.y - s * 0.7 + i as f32 * s * 0.7;
+                painter.line_segment(
+                    [egui::pos2(c.x - s, y), egui::pos2(c.x + s, y)],
+                    stroke,
+                );
+            }
+        }
+        View::Discover => {
+            // Compass: circle + diagonal needle
+            painter.circle_stroke(c, s, stroke);
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - s * 0.35, c.y + s * 0.35),
+                    egui::pos2(c.x + s * 0.45, c.y - s * 0.45),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - s * 0.15, c.y - s * 0.15),
+                    egui::pos2(c.x + s * 0.15, c.y + s * 0.15),
+                ],
+                stroke,
+            );
+        }
+        View::DataSources => {
+            // Stacked horizontal layers
+            for i in 0..3 {
+                let y = c.y - s * 0.65 + i as f32 * s * 0.65;
+                let half = s * (1.0 - i as f32 * 0.08);
+                painter.line_segment(
+                    [egui::pos2(c.x - half, y), egui::pos2(c.x + half, y)],
+                    stroke,
+                );
+            }
+        }
+        View::Settings => {
+            // Simple gear: outer circle + inner circle + four spokes
+            painter.circle_stroke(c, s, stroke);
+            painter.circle_stroke(c, s * 0.35, stroke);
+            for (dx, dy) in [(0.0, 1.0), (1.0, 0.0), (0.0, -1.0), (-1.0, 0.0)] {
+                painter.line_segment(
+                    [
+                        c + egui::vec2(dx, dy) * s * 0.45,
+                        c + egui::vec2(dx, dy) * s * 1.05,
+                    ],
+                    stroke,
+                );
+            }
+        }
+    }
+}
+
+/// Sidebar nav row: monochrome line icon + label, with selected accent fill.
+fn nav_item(ui: &mut egui::Ui, view: View, selected: bool) -> egui::Response {
+    let label = view.label();
+    let row_width = SIDEBAR_WIDTH - f32::from(m(SP_3)) * 2.0 - SP_3;
+    let desired = egui::vec2(row_width, 32.0);
+    let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        let hovered = response.hovered() && !selected;
+        let fill = if selected {
+            ACCENT
+        } else if hovered {
+            SURFACE_MUTED
+        } else {
+            Color32::TRANSPARENT
+        };
+        let text_color = if selected {
+            TEXT_INVERSE
+        } else if hovered {
+            TEXT_PRIMARY
+        } else {
+            TEXT_SECONDARY
+        };
+        let icon_color = if selected {
+            TEXT_INVERSE
+        } else if hovered {
+            TEXT_SECONDARY
+        } else {
+            TEXT_MUTED
+        };
+
+        let painter = ui.painter();
+        painter.rect_filled(rect, CORNER_SM, fill);
+
+        let icon_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.left() + SP_3 + NAV_ICON_SIZE * 0.5, rect.center().y),
+            egui::vec2(NAV_ICON_SIZE, NAV_ICON_SIZE),
+        );
+        paint_nav_icon(painter, icon_rect, view, icon_color);
+
+        painter.text(
+            egui::pos2(rect.left() + SP_3 + NAV_ICON_SIZE + SP_2, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(TS_BODY),
+            text_color,
+        );
+    }
+
+    response
+}
+
 impl VapourflyApp {
     fn new(fixtures_path: Option<PathBuf>) -> Self {
         // Load configuration
@@ -630,6 +814,7 @@ impl VapourflyApp {
             filter_unplayed: false,
             filter_hidden: false,
             filter_junk: false,
+            show_junk_panel: false,
 
             junk_mode: JunkModeChoice::Default,
             junk_results: Vec::new(),
@@ -654,11 +839,13 @@ impl VapourflyApp {
             playlist_edit_rules: String::new(),
             playlist_last_import: None,
             playlist_match_report: None,
-            playlist_discover_seed: String::new(),
-            playlist_discover_count: "20".into(),
             dynamic_template: "deck-session".into(),
             dynamic_minutes: "90".into(),
             editorial_mood: EditorialMood::all().first().map_or("", |m| m.id()).into(),
+
+            discover_seed: String::new(),
+            discover_count: "20".into(),
+            discover_last_playlist: None,
 
             collections: Vec::new(),
             collections_export_path: String::new(),
@@ -1159,8 +1346,8 @@ impl VapourflyApp {
 
     fn discover_options_from_inputs(&self) -> Result<DiscoverOptions, String> {
         Ok(DiscoverOptions {
-            seed_app_id: parse_optional_u32("Discover seed AppID", &self.playlist_discover_seed)?,
-            count: parse_required_usize("Discover count", &self.playlist_discover_count)?,
+            seed_app_id: parse_optional_u32("Discover seed AppID", &self.discover_seed)?,
+            count: parse_required_usize("Discover count", &self.discover_count)?,
         })
     }
 
@@ -1529,38 +1716,13 @@ impl eframe::App for VapourflyApp {
                 );
                 ui.add_space(SP_4);
 
-                // Navigation items
+                // Navigation items (dark shell + monochrome line icons)
                 for &view in View::ALL {
                     let selected = self.current_view == view;
-                    let icon = view.icon();
-                    let label = view.nav_label();
-                    let text_color = if selected {
-                        TEXT_INVERSE
-                    } else {
-                        TEXT_SECONDARY
-                    };
-                    let fill = if selected {
-                        ACCENT
-                    } else {
-                        Color32::TRANSPARENT
-                    };
-
-                    let btn = egui::Button::new(
-                        RichText::new(format!("{icon}  {label}"))
-                            .size(TS_BODY)
-                            .color(text_color),
-                    )
-                    .fill(fill)
-                    .stroke(egui::Stroke::NONE)
-                    .corner_radius(CORNER_SM)
-                    .min_size(egui::vec2(
-                        SIDEBAR_WIDTH - f32::from(m(SP_3)) * 2.0 - SP_3,
-                        0.0,
-                    ));
-                    if ui.add(btn).clicked() {
+                    if nav_item(ui, view, selected).clicked() {
                         self.current_view = view;
                     }
-                    ui.add_space(SP_2);
+                    ui.add_space(SP_1);
                 }
 
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
@@ -1615,19 +1777,7 @@ impl eframe::App for VapourflyApp {
                         if let Some(err) = self.error.clone() {
                             ui.horizontal(|ui| {
                                 error_banner(ui, &format!("Error: {err}"));
-                                if ui
-                                    .add(
-                                        egui::Button::new(
-                                            RichText::new("Dismiss")
-                                                .size(TS_SM)
-                                                .color(TEXT_SECONDARY),
-                                        )
-                                        .fill(SURFACE)
-                                        .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
-                                        .corner_radius(CORNER_SM),
-                                    )
-                                    .clicked()
-                                {
+                                if ghost_button(ui, "Dismiss").clicked() {
                                     dismiss_error = true;
                                 }
                             });
@@ -1636,19 +1786,7 @@ impl eframe::App for VapourflyApp {
                         if let Some(msg) = self.success_msg.clone() {
                             ui.horizontal(|ui| {
                                 success_banner(ui, &msg);
-                                if ui
-                                    .add(
-                                        egui::Button::new(
-                                            RichText::new("Dismiss")
-                                                .size(TS_SM)
-                                                .color(TEXT_SECONDARY),
-                                        )
-                                        .fill(SURFACE)
-                                        .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
-                                        .corner_radius(CORNER_SM),
-                                    )
-                                    .clicked()
-                                {
+                                if ghost_button(ui, "Dismiss").clicked() {
                                     dismiss_success = true;
                                 }
                             });
@@ -1662,13 +1800,18 @@ impl eframe::App for VapourflyApp {
                         }
 
                         match self.current_view {
-                            View::Library => self.render_library(ui, &ctx),
-                            View::Junk => self.render_junk(ui),
-                            View::Recommend => self.render_recommend(ui),
-                            View::Playlists => self.render_playlists(ui),
+                            View::Library => {
+                                if self.show_junk_panel {
+                                    self.render_junk(ui);
+                                } else {
+                                    self.render_library(ui, &ctx);
+                                }
+                            }
                             View::Collections => self.render_collections(ui),
+                            View::Recommendations => self.render_recommend(ui),
+                            View::Playlists => self.render_playlists(ui),
+                            View::Discover => self.render_discover(ui),
                             View::DataSources => self.render_data_sources(ui, &ctx),
-                            View::Backups => self.render_backups(ui),
                             View::Settings => self.render_settings(ui),
                         }
                     });
@@ -1925,6 +2068,7 @@ impl VapourflyApp {
             "Library",
             "Browse your Steam games visually, then turn that library into clean playlists and recommendations.",
             |ui| {
+                // right_to_left: first widget is rightmost
                 if ui
                     .add_enabled(
                         !self.loading,
@@ -1940,6 +2084,9 @@ impl VapourflyApp {
                     .clicked()
                 {
                     self.start_scan(ctx);
+                }
+                if secondary_button(ui, "Junk\u{2026}").clicked() {
+                    self.show_junk_panel = true;
                 }
                 if self.loading {
                     ui.spinner();
@@ -2093,7 +2240,7 @@ impl VapourflyApp {
                                         .clicked()
                                     {
                                         self.recommend_seed = game.app_id.to_string();
-                                        self.current_view = View::Recommend;
+                                        self.current_view = View::Recommendations;
                                     }
                                 },
                             );
@@ -2103,13 +2250,18 @@ impl VapourflyApp {
         );
     }
 
-    // -- Junk view ----------------------------------------------------------
+    // -- Junk panel (opened from Library toolbar) ---------------------------
 
     fn render_junk(&mut self, ui: &mut egui::Ui) {
-        view_header(
+        view_header_with_actions(
             ui,
             "Junk Detection",
             "Identify games you'll never play and file them away for a cleaner library.",
+            |ui| {
+                if secondary_button(ui, "Back to Library").clicked() {
+                    self.show_junk_panel = false;
+                }
+            },
         );
 
         section_card(ui, "Detection Mode", |ui| {
@@ -2654,57 +2806,8 @@ impl VapourflyApp {
             });
         });
 
-        section_card(ui, "Discover & Dynamic Templates", |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_1);
-                ui.label(
-                    RichText::new("Discover seed AppID:")
-                        .size(TS_SM)
-                        .color(TEXT_SECONDARY),
-                );
-                ui.add_sized(
-                    [80.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.playlist_discover_seed),
-                );
-                ui.label(RichText::new("Count:").size(TS_SM).color(TEXT_SECONDARY));
-                ui.add_sized(
-                    [60.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.playlist_discover_count),
-                );
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new("Generate Discover")
-                                .size(TS_SM)
-                                .color(TEXT_INVERSE),
-                        )
-                        .fill(ACCENT)
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(CORNER_SM),
-                    )
-                    .clicked()
-                {
-                    match self.discover_options_from_inputs() {
-                        Ok(options) => {
-                            if let Some(games) = self.prepared_games(JunkMode::Default) {
-                                let pf = discover::generate_discover_playlist(&games, &options);
-                                if let Err(e) = self.store_playlist(&pf) {
-                                    self.error = Some(e);
-                                } else {
-                                    self.playlist_last_import = Some(pf.clone());
-                                    self.match_playlist_against_library(&pf);
-                                    self.success_msg = Some(format!(
-                                        "Generated Discover playlist '{}'",
-                                        pf.playlist.name
-                                    ));
-                                }
-                            }
-                        }
-                        Err(e) => self.error = Some(e),
-                    }
-                }
-            });
-            ui.add_space(SP_2);
+        // Dynamic templates stay on Playlists; Discover is its own top-level view.
+        section_card(ui, "Dynamic Templates", |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_1);
                 ui.label(RichText::new("Template:").size(TS_SM).color(TEXT_SECONDARY));
@@ -2975,6 +3078,126 @@ impl VapourflyApp {
                     );
                 }
             });
+        }
+    }
+
+    // -- Discover view (top-level; ADR-0005 / ADR-0006) ----------------------
+
+    fn render_discover(&mut self, ui: &mut egui::Ui) {
+        view_header(
+            ui,
+            "Discover",
+            "Generate similar-game playlists from taste similarity with an optional seed AppID.",
+        );
+
+        section_card(ui, "Generate", |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_1);
+                ui.label(
+                    RichText::new("Seed AppID:")
+                        .size(TS_SM)
+                        .color(TEXT_SECONDARY),
+                );
+                ui.add_sized(
+                    [80.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.discover_seed),
+                );
+                ui.label(RichText::new("Count:").size(TS_SM).color(TEXT_SECONDARY));
+                ui.add_sized(
+                    [60.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.discover_count),
+                );
+                if primary_button(ui, "Generate Discover").clicked() {
+                    match self.discover_options_from_inputs() {
+                        Ok(options) => {
+                            if let Some(games) = self.prepared_games(JunkMode::Default) {
+                                let pf = discover::generate_discover_playlist(&games, &options);
+                                if let Err(e) = self.store_playlist(&pf) {
+                                    self.error = Some(e);
+                                } else {
+                                    self.discover_last_playlist = Some(pf.clone());
+                                    // Also load into Playlists state so "Open in Playlists" is seamless.
+                                    self.playlist_last_import = Some(pf.clone());
+                                    self.playlist_edit_id = pf.playlist.id.clone();
+                                    self.playlist_edit_name = pf.playlist.name.clone();
+                                    self.playlist_edit_description = pf.playlist.description.clone();
+                                    self.playlist_edit_app_ids = manual_playlist_app_ids_csv(&pf);
+                                    self.playlist_edit_rules = playlist_rules_json(&pf);
+                                    self.match_playlist_against_library(&pf);
+                                    self.success_msg = Some(format!(
+                                        "Generated Discover playlist '{}'",
+                                        pf.playlist.name
+                                    ));
+                                }
+                            }
+                        }
+                        Err(e) => self.error = Some(e),
+                    }
+                }
+            });
+            ui.add_space(SP_2);
+            ui.label(
+                RichText::new(
+                    "Results write a Manual playlist to the local store. Open Playlists to edit, share, or sync.",
+                )
+                .size(TS_SM)
+                .color(TEXT_MUTED),
+            );
+            if self.discover_last_playlist.is_some() {
+                ui.add_space(SP_2);
+                if secondary_button(ui, "Open in Playlists").clicked() {
+                    self.current_view = View::Playlists;
+                }
+            }
+        });
+
+        if let Some(pf) = self.discover_last_playlist.clone() {
+            section_card(ui, &format!("Playlist: {}", pf.playlist.name), |ui| {
+                stat_inline(ui, "ID:", &pf.playlist.id);
+                match &pf.playlist.content {
+                    PlaylistContent::Manual { app_ids } => {
+                        stat_inline(
+                            ui,
+                            "Type:",
+                            &format!("Manual playlist with {} AppIDs", app_ids.len()),
+                        );
+                        if !app_ids.is_empty() {
+                            ui.add_space(SP_1);
+                            ui.label(
+                                RichText::new(format!(
+                                    "AppIDs: {}",
+                                    app_ids
+                                        .iter()
+                                        .map(ToString::to_string)
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ))
+                                .size(TS_SM)
+                                .color(TEXT_SECONDARY),
+                            );
+                        }
+                    }
+                    PlaylistContent::Rules { rules } => {
+                        stat_inline(
+                            ui,
+                            "Type:",
+                            &format!("Rule-based playlist with {} rules", rules.len()),
+                        );
+                    }
+                }
+            });
+
+            if let Some(report) = &self.playlist_match_report {
+                section_card(ui, "Match Report", |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                        metric_pill(ui, "Owned", report.owned.len().to_string());
+                        metric_pill(ui, "Missing", report.missing.len().to_string());
+                        metric_pill(ui, "Played", report.played.len().to_string());
+                        metric_pill(ui, "Unplayed", report.unplayed.len().to_string());
+                    });
+                });
+            }
         }
     }
 
@@ -3353,166 +3576,153 @@ impl VapourflyApp {
         });
     }
 
-    // -- Backups view -------------------------------------------------------
+    // -- Backups section (embedded under Settings; ADR-0006) ----------------
 
-    fn render_backups(&mut self, ui: &mut egui::Ui) {
-        view_header_with_actions(
-            ui,
-            "Backups",
-            "Browse and restore safety backups of your Steam cloud storage.",
-            |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new("Refresh Backups")
-                                .size(TS_SM)
-                                .color(TEXT_INVERSE),
-                        )
-                        .fill(ACCENT)
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(CORNER_SM),
-                    )
-                    .clicked()
-                {
-                    self.backups.clear();
-                    match self.cloud_storage_path() {
-                        Ok(cloud_path) => {
-                            if cloud_path.exists() {
-                                match list_backups(&cloud_path) {
-                                    Ok(backups) => {
-                                        self.backups = backups;
-                                    }
-                                    Err(e) => {
-                                        self.error = Some(format!("Failed to list backups: {e}"));
-                                    }
+    fn render_backups_section(&mut self, ui: &mut egui::Ui) {
+        section_card(ui, "Backups", |ui| {
+            ui.label(
+                RichText::new(
+                    "Browse and restore safety backups of your Steam cloud storage.",
+                )
+                .size(TS_SM)
+                .color(TEXT_SECONDARY),
+            );
+            ui.add_space(SP_2);
+            if primary_button(ui, "Refresh Backups").clicked() {
+                self.backups.clear();
+                match self.cloud_storage_path() {
+                    Ok(cloud_path) => {
+                        if cloud_path.exists() {
+                            match list_backups(&cloud_path) {
+                                Ok(backups) => {
+                                    self.backups = backups;
+                                }
+                                Err(e) => {
+                                    self.error = Some(format!("Failed to list backups: {e}"));
                                 }
                             }
                         }
-                        Err(e) => {
-                            self.error = Some(e);
-                        }
+                    }
+                    Err(e) => {
+                        self.error = Some(e);
                     }
                 }
-            },
-        );
+            }
 
-        if self.backups.is_empty() {
-            empty_state(
-                ui,
-                "\u{1F4BE}",
-                "No backups found",
-                "Click 'Refresh Backups' to scan for available backups.",
-            );
-            return;
-        }
+            if self.backups.is_empty() {
+                ui.add_space(SP_2);
+                ui.label(
+                    RichText::new(
+                        "No backups found. Click Refresh Backups after a write creates one.",
+                    )
+                    .size(TS_BODY)
+                    .color(TEXT_MUTED),
+                );
+                return;
+            }
 
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
-            metric_pill(ui, "Backups", self.backups.len().to_string());
-        });
-        ui.add_space(SP_3);
-
-        let text_height = TS_BODY;
-        egui_extras::TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
-            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(egui_extras::Column::remainder().at_least(250.0))
-            .column(egui_extras::Column::auto().at_least(140.0))
-            .column(egui_extras::Column::auto().at_least(100.0))
-            .column(egui_extras::Column::auto().at_least(80.0))
-            .header(text_height * 1.4, |mut header| {
-                header.col(|ui| {
-                    ui.label(
-                        RichText::new("Filename")
-                            .size(TS_SM)
-                            .strong()
-                            .color(TEXT_SECONDARY),
-                    );
-                });
-                header.col(|ui| {
-                    ui.label(
-                        RichText::new("Created")
-                            .size(TS_SM)
-                            .strong()
-                            .color(TEXT_SECONDARY),
-                    );
-                });
-                header.col(|ui| {
-                    ui.label(
-                        RichText::new("SHA256")
-                            .size(TS_SM)
-                            .strong()
-                            .color(TEXT_SECONDARY),
-                    );
-                });
-                header.col(|ui| {
-                    ui.label(
-                        RichText::new("Action")
-                            .size(TS_SM)
-                            .strong()
-                            .color(TEXT_SECONDARY),
-                    );
-                });
-            })
-            .body(|mut body| {
-                for backup in &self.backups {
-                    let filename = backup
-                        .path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    body.row(text_height * 1.2, |mut row| {
-                        row.col(|ui| {
-                            ui.label(RichText::new(&filename).size(TS_BODY).color(TEXT_PRIMARY));
-                        });
-                        row.col(|ui| {
-                            ui.label(
-                                RichText::new(
-                                    backup.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
-                                )
-                                .size(TS_BODY)
-                                .color(TEXT_PRIMARY),
-                            );
-                        });
-                        row.col(|ui| {
-                            ui.label(
-                                RichText::new(&backup.sha256[..8])
-                                    .size(TS_BODY)
-                                    .color(TEXT_MUTED)
-                                    .monospace(),
-                            );
-                        });
-                        row.col(|ui| {
-                            let enabled = !self.write_loading;
-                            if ui
-                                .add_enabled(
-                                    enabled,
-                                    egui::Button::new(
-                                        RichText::new("Restore").size(TS_SM).color(TEXT_PRIMARY),
-                                    )
-                                    .fill(SURFACE)
-                                    .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
-                                    .corner_radius(CORNER_SM),
-                                )
-                                .clicked()
-                            {
-                                self.pending_action =
-                                    Some(PendingAction::BackupRestore(backup.path.clone()));
-                                self.show_confirm_dialog = true;
-                            }
-                        });
-                    });
-                }
-            });
-
-        if self.write_loading {
             ui.add_space(SP_2);
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(RichText::new("Restoring").size(TS_SM).color(TEXT_SECONDARY));
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                metric_pill(ui, "Backups", self.backups.len().to_string());
             });
-        }
+            ui.add_space(SP_2);
+
+            let text_height = TS_BODY;
+            egui_extras::TableBuilder::new(ui)
+                .striped(true)
+                .resizable(true)
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .column(egui_extras::Column::remainder().at_least(250.0))
+                .column(egui_extras::Column::auto().at_least(140.0))
+                .column(egui_extras::Column::auto().at_least(100.0))
+                .column(egui_extras::Column::auto().at_least(80.0))
+                .header(text_height * 1.4, |mut header| {
+                    header.col(|ui| {
+                        ui.label(
+                            RichText::new("Filename")
+                                .size(TS_SM)
+                                .strong()
+                                .color(TEXT_SECONDARY),
+                        );
+                    });
+                    header.col(|ui| {
+                        ui.label(
+                            RichText::new("Created")
+                                .size(TS_SM)
+                                .strong()
+                                .color(TEXT_SECONDARY),
+                        );
+                    });
+                    header.col(|ui| {
+                        ui.label(
+                            RichText::new("SHA256")
+                                .size(TS_SM)
+                                .strong()
+                                .color(TEXT_SECONDARY),
+                        );
+                    });
+                    header.col(|ui| {
+                        ui.label(
+                            RichText::new("Action")
+                                .size(TS_SM)
+                                .strong()
+                                .color(TEXT_SECONDARY),
+                        );
+                    });
+                })
+                .body(|mut body| {
+                    for backup in &self.backups {
+                        let filename = backup
+                            .path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        body.row(text_height * 1.2, |mut row| {
+                            row.col(|ui| {
+                                ui.label(
+                                    RichText::new(&filename).size(TS_BODY).color(TEXT_PRIMARY),
+                                );
+                            });
+                            row.col(|ui| {
+                                ui.label(
+                                    RichText::new(
+                                        backup.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+                                    )
+                                    .size(TS_BODY)
+                                    .color(TEXT_PRIMARY),
+                                );
+                            });
+                            row.col(|ui| {
+                                ui.label(
+                                    RichText::new(&backup.sha256[..8])
+                                        .size(TS_BODY)
+                                        .color(TEXT_MUTED)
+                                        .monospace(),
+                                );
+                            });
+                            row.col(|ui| {
+                                let enabled = !self.write_loading;
+                                ui.add_enabled_ui(enabled, |ui| {
+                                    if secondary_button(ui, "Restore").clicked() {
+                                        self.pending_action =
+                                            Some(PendingAction::BackupRestore(backup.path.clone()));
+                                        self.show_confirm_dialog = true;
+                                    }
+                                });
+                            });
+                        });
+                    }
+                });
+
+            if self.write_loading {
+                ui.add_space(SP_2);
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(RichText::new("Restoring").size(TS_SM).color(TEXT_SECONDARY));
+                });
+            }
+        });
     }
 
     // -- Settings view ------------------------------------------------------
@@ -3521,7 +3731,7 @@ impl VapourflyApp {
         view_header(
             ui,
             "Settings",
-            "Configure Steam directory, accounts, locale, and write safety.",
+            "Configure Steam directory, accounts, locale, write safety, and backups.",
         );
 
         section_card(ui, "Steam Directory", |ui| {
@@ -3815,6 +4025,9 @@ impl VapourflyApp {
             });
         });
 
+        // Backups / restore live under Settings (not a top-level nav item).
+        self.render_backups_section(ui);
+
         section_card(ui, "About", |ui| {
             stat_inline(ui, "Version:", &format!("v{}", env!("CARGO_PKG_VERSION")));
             ui.label(
@@ -3906,20 +4119,20 @@ impl VapourflyApp {
 // ---------------------------------------------------------------------------
 
 fn configure_ui(ctx: &egui::Context) {
-    let mut style = (*ctx.style_of(egui::Theme::Light)).clone();
+    let mut style = (*ctx.style_of(egui::Theme::Dark)).clone();
     style.spacing.item_spacing = egui::vec2(SP_2, 7.0);
     style.spacing.button_padding = egui::vec2(SP_3, SP_1);
     style.spacing.window_margin = egui::Margin::same(m(SP_3));
     style.spacing.indent = SP_3;
 
-    let mut visuals = egui::Visuals::light();
+    let mut visuals = egui::Visuals::dark();
     visuals.panel_fill = SURFACE;
     visuals.window_fill = SURFACE_RAISED;
     visuals.faint_bg_color = SURFACE_RAISED;
     visuals.extreme_bg_color = SURFACE_SUNKEN;
     visuals.hyperlink_color = ACCENT;
     visuals.selection.bg_fill = ACCENT_SOFT;
-    visuals.selection.stroke.color = TEXT_PRIMARY;
+    visuals.selection.stroke.color = ACCENT_TEXT;
     visuals.widgets.noninteractive.bg_fill = SURFACE;
     visuals.widgets.noninteractive.fg_stroke.color = TEXT_SECONDARY;
     visuals.widgets.inactive.bg_fill = SURFACE_MUTED;
@@ -3929,9 +4142,11 @@ fn configure_ui(ctx: &egui::Context) {
     visuals.widgets.active.bg_fill = ACCENT_SOFT;
     visuals.widgets.active.fg_stroke.color = TEXT_PRIMARY;
     visuals.override_text_color = Some(TEXT_PRIMARY);
+    visuals.dark_mode = true;
     style.visuals = visuals;
 
-    ctx.set_style_of(egui::Theme::Light, style);
+    ctx.set_style_of(egui::Theme::Dark, style);
+    ctx.set_theme(egui::Theme::Dark);
 }
 
 fn game_primary_badge(game: &Game) -> (&'static str, Color32, Color32) {
@@ -4129,15 +4344,42 @@ mod tests {
 
     #[test]
     fn view_all_contains_every_variant() {
-        assert_eq!(View::ALL.len(), 8);
+        assert_eq!(View::ALL.len(), 7);
         assert!(View::ALL.contains(&View::Library));
-        assert!(View::ALL.contains(&View::Junk));
-        assert!(View::ALL.contains(&View::Recommend));
-        assert!(View::ALL.contains(&View::Playlists));
         assert!(View::ALL.contains(&View::Collections));
+        assert!(View::ALL.contains(&View::Recommendations));
+        assert!(View::ALL.contains(&View::Playlists));
+        assert!(View::ALL.contains(&View::Discover));
         assert!(View::ALL.contains(&View::DataSources));
-        assert!(View::ALL.contains(&View::Backups));
         assert!(View::ALL.contains(&View::Settings));
+    }
+
+    #[test]
+    fn navigation_contract_matches_design_ia() {
+        // Sidebar destinations only — Junk and Backups are relocated (ADR-0006).
+        let labels: Vec<&str> = View::ALL.iter().map(|v| v.label()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "Library",
+                "Collections",
+                "Recommendations",
+                "Playlists",
+                "Discover",
+                "Data Sources",
+                "Settings",
+            ]
+        );
+        assert!(!labels.contains(&"Junk"));
+        assert!(!labels.contains(&"Backups"));
+        assert!(!labels.contains(&"Recommend"));
+    }
+
+    #[test]
+    fn default_landing_view_is_library() {
+        let app = VapourflyApp::new(None);
+        assert_eq!(app.current_view, View::Library);
+        assert!(!app.show_junk_panel);
     }
 
     #[test]
@@ -4172,12 +4414,12 @@ mod tests {
     #[test]
     fn nav_labels_are_plain_text() {
         for view in View::ALL {
-            let label = view.nav_label();
+            let label = view.label();
             assert!(
                 label.is_ascii(),
                 "{label} should not depend on emoji glyphs"
             );
-            assert!(label.contains(view.label()));
+            assert!(!label.chars().any(|c| c > '\u{007f}'));
         }
     }
 
@@ -4297,15 +4539,15 @@ mod tests {
     #[test]
     fn discover_options_use_count_and_seed_inputs() {
         let mut app = VapourflyApp::new(None);
-        app.playlist_discover_seed = "367520".into();
-        app.playlist_discover_count = "12".into();
+        app.discover_seed = "367520".into();
+        app.discover_count = "12".into();
 
         let options = app.discover_options_from_inputs().unwrap();
 
         assert_eq!(options.seed_app_id, Some(367520));
         assert_eq!(options.count, 12);
 
-        app.playlist_discover_seed.clear();
+        app.discover_seed.clear();
         assert_eq!(
             app.discover_options_from_inputs().unwrap().seed_app_id,
             None

@@ -24,11 +24,11 @@ feature row, the command reference, and the relevant GUI smoke test.
 | Enriched scan output | Yes | Yes | CLI `vapourfly scan --enrich` adds external metadata to that command's output and cache. GUI Library hydrates cached metadata and shows it on poster cards when cache entries exist. |
 | Collections list | Yes | Yes | CLI lists Steam collections; GUI displays collection names, counts, and hidden status after scan. |
 | Collections export | Yes | Yes | CLI `vapourfly collections export --out <file>` and GUI Collections export write the same Steam collection JSON export. |
-| Junk preview | Yes | Yes | Evaluates Default, Strict, or Aggressive junk modes after hydrating cached external metadata into scanned game records. |
-| Junk apply to collection | Yes | Yes | Writes junk candidates to a Steam collection after dry-run/confirmation and backup. |
-| Junk hide | Yes | Yes | Adds junk candidates to Steam's hidden collection after dry-run/confirmation and backup. |
-| Recommendations | Yes | Yes | Recommends from hydrated scanned game records by available minutes, count, installed-only, Deck mode, and optional seed. |
-| Temporary recommendation collection | Yes | Yes | CLI `recommend --to-collection --dry-run|--confirm` and GUI Recommend view write to `vapourfly-picks` after dry-run confirmation. |
+| Junk preview | Yes | Yes | Evaluates Default, Strict, or Aggressive junk modes after hydrating cached external metadata into scanned game records. GUI opens Junk from the Library toolbar (`Junk…` panel), not a sidebar item (ADR-0006). |
+| Junk apply to collection | Yes | Yes | Writes junk candidates to a Steam collection after dry-run/confirmation and backup. GUI action lives in the Library Junk panel. |
+| Junk hide | Yes | Yes | Adds junk candidates to Steam's hidden collection after dry-run/confirmation and backup. GUI action lives in the Library Junk panel. |
+| Recommendations | Yes | Yes | Recommends from hydrated scanned game records by available minutes, count, installed-only, Deck mode, and optional seed. GUI top-level view is labeled **Recommendations**. |
+| Temporary recommendation collection | Yes | Yes | CLI `recommend --to-collection --dry-run|--confirm` and GUI Recommendations view write to `vapourfly-picks` after dry-run confirmation. |
 | Playlist import | Yes | Yes | Imports Vapourfly JSON playlist files. CLI stores imported playlists under the app data playlist directory. |
 | Playlist export | Yes | Yes | CLI exports a stored playlist by ID. GUI exports the currently loaded playlist to a selected JSON path. |
 | Playlist match report | Yes | Yes | Reports owned, missing, played, unplayed, hidden, and junk counts for a playlist. |
@@ -38,13 +38,14 @@ feature row, the command reference, and the relevant GUI smoke test.
 | Data source cache refresh | Yes | Yes | CLI `cache refresh --source <source>` and GUI Data Sources refresh support `igdb`, `rawg`, `protondb`, `pcgw`, `hltb`, `steam-store`, and `all`. |
 | Data source status | Yes | Yes | CLI `sources status`; GUI Data Sources table. Shows credential state, cache entries, stale entries, and last success. |
 | Offline mode | Yes | Yes | CLI `--offline` blocks network calls and uses cache during enrichment. GUI has an offline toggle that blocks cache refresh network calls while library workflows continue to hydrate cached metadata. |
-| Backup list | Yes | Yes | Lists backups next to the Steam cloud storage file. |
-| Backup restore | Yes | Yes | Restores a selected backup after confirmation. |
+| Backup list | Yes | Yes | Lists backups next to the Steam cloud storage file. GUI lists backups under **Settings** (not a top-level sidebar item; ADR-0006). |
+| Backup restore | Yes | Yes | Restores a selected backup after confirmation. GUI restore lives under Settings → Backups. |
 | Diagnostics export | Yes | Yes | CLI `vapourfly diagnostics export --out <file>` and GUI Settings diagnostics export write sanitized support data. |
-| Settings | Yes | Yes | CLI `settings show` displays resolved config; `settings set <field> <value>` and `settings unset <field>` edit `config.toml`. GUI edits Steam directory, account, store locale, backup retention, and write safety. Settable fields: `steam_dir`, `account`, `cc`, `lang`, `backup_retention_count`. |
+| Settings | Yes | Yes | CLI `settings show` displays resolved config; `settings set <field> <value>` and `settings unset <field>` edit `config.toml`. GUI edits Steam directory, account, store locale, backup retention, write safety, and hosts backup list/restore. Settable fields: `steam_dir`, `account`, `cc`, `lang`, `backup_retention_count`. |
+| GUI navigation (sidebar) | — | Yes | Top-level destinations: Library, Collections, Recommendations, Playlists, Discover, Data Sources, Settings. Default landing view is Library. Dark design-token shell with monochrome line icons (ADR-0006). Junk is a Library panel; backups live under Settings. |
 | Playlist creation/editing UI | Yes | Yes | CLI `playlist create`; GUI Playlists view supports create/edit fields and save to the local playlist store. |
 | Share codes | Yes | Yes | `VF1:` compact binary playlist codes (ADR-0003) via CLI `playlist share` / `playlist import --code` and GUI copy/import controls. The payload carries content + name + description, DEFLATE-compressed and base64url-encoded. No backward compatibility with the old base64url(JSON) format. |
-| Discover / similar-game playlist generation | Yes | Yes | CLI `playlist discover`; GUI Playlists view generates a Discover playlist from taste similarity with optional seed AppID and count controls. Discover owns the entire "similar picks" surface (ADR-0005). |
+| Discover / similar-game playlist generation | Yes | Yes | CLI `playlist discover`; GUI **Discover** top-level view generates a Discover playlist from taste similarity with optional seed AppID and count controls. Discover owns the entire "similar picks" surface (ADR-0005); Playlists no longer hosts a Discover control (ADR-0006). |
 | Dynamic collection templates | Yes | Yes | CLI `collections dynamic <template>`; GUI Playlists view compiles deck-session and finish-it templates. Deck Session requires installed, not hidden, not junk, ProtonDB Gold-or-better, PCGW full controller support, and HLTB within the requested session length. |
 | Editorial Moods | Yes | Yes | CLI `collections mood [name]`; GUI Playlists view compiles named, curated playlists with hidden selection criteria (ADR-0004). Seven canonical moods: Today's Biggest Hits, Indie Rising, Friday Party, Deck Guardians, Unopened Treasures, Weekend Marathon, Quick Round. |
 
