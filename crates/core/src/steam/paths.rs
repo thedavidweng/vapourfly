@@ -250,12 +250,12 @@ pub fn detect_library_folders(steam_dir: &Path) -> Result<Vec<PathBuf>> {
             // Library folder entries are keyed by numeric index ("0", "1", ...)
             // and contain a "path" sub-key. Skip metadata keys like
             // "TimeNextStatsReport" and "ContentStatsID".
-            if key.chars().all(|c| c.is_ascii_digit()) {
-                if let Some(path_val) = value.first_string("path") {
-                    let p = PathBuf::from(path_val);
-                    if p.exists() && !folders.contains(&p) {
-                        folders.push(p);
-                    }
+            if key.chars().all(|c| c.is_ascii_digit())
+                && let Some(path_val) = value.first_string("path")
+            {
+                let p = PathBuf::from(path_val);
+                if p.exists() && !folders.contains(&p) {
+                    folders.push(p);
                 }
             }
         }
@@ -327,10 +327,10 @@ pub fn parse_appmanifests(library_folder: &Path) -> Result<Vec<AppManifest>> {
         let state = root.child_object(&["AppState"]).unwrap_or(&root);
 
         let app_id_str = state.first_string("appid").ok_or_else(|| {
-            VapourflyError::InvalidInput(format!("{name_str}: missing \"appid\"",))
+            VapourflyError::InvalidInput(format!("{name_str}: missing \"appid\""))
         })?;
         let app_id: u32 = app_id_str.parse().map_err(|_| {
-            VapourflyError::InvalidInput(format!("{name_str}: invalid appid \"{app_id_str}\"",))
+            VapourflyError::InvalidInput(format!("{name_str}: invalid appid \"{app_id_str}\""))
         })?;
 
         let name = state.first_string("name").unwrap_or("").to_string();
@@ -396,10 +396,10 @@ mod tests {
 
     #[test]
     fn detect_steam_dirs_platform_returns_nonempty() {
-        let dirs = detect_steam_dirs(None);
+        let _dirs = detect_steam_dirs(None);
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         assert!(
-            !dirs.is_empty(),
+            !_dirs.is_empty(),
             "should find at least one candidate on macOS/Linux"
         );
     }

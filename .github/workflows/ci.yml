@@ -8,6 +8,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Keep CI aligned with rust-toolchain.toml and regular local cargo commands.
+  VAPOURFLY_CI_TOOLCHAIN: "1.96"
 
 jobs:
   ci:
@@ -21,10 +23,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust 1.88
+      - name: Install Rust ${{ env.VAPOURFLY_CI_TOOLCHAIN }}
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.88"
+          toolchain: ${{ env.VAPOURFLY_CI_TOOLCHAIN }}
           components: rustfmt, clippy
 
       - name: Cache cargo registry and target
@@ -39,13 +41,13 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Format check
-        run: cargo fmt --all -- --check
+        run: cargo +${{ env.VAPOURFLY_CI_TOOLCHAIN }} fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo +${{ env.VAPOURFLY_CI_TOOLCHAIN }} clippy --workspace --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo +${{ env.VAPOURFLY_CI_TOOLCHAIN }} test --workspace
 
       - name: Install cargo-deny
         if: runner.os == 'Linux'

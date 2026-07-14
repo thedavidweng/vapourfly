@@ -29,15 +29,15 @@ pub fn effective_rating(
     game: &Game,
     overrides: Option<&HashMap<u32, f32>>,
 ) -> Option<(f32, RatingSource)> {
-    if let Some(overrides) = overrides {
-        if let Some(&rating) = overrides.get(&game.app_id) {
-            return Some((rating, RatingSource::ManualOverride));
-        }
+    if let Some(overrides) = overrides
+        && let Some(&rating) = overrides.get(&game.app_id)
+    {
+        return Some((rating, RatingSource::ManualOverride));
     }
-    if let Some(rawg) = &game.rawg {
-        if let Some(r) = rawg.rating_0_5 {
-            return Some((r, RatingSource::Rawg));
-        }
+    if let Some(rawg) = &game.rawg
+        && let Some(r) = rawg.rating_0_5
+    {
+        return Some((r, RatingSource::Rawg));
     }
     if let Some(igdb) = &game.igdb {
         if let Some(r) = igdb.rating_0_100 {
@@ -84,11 +84,11 @@ pub fn keywords_lower(game: &Game) -> Vec<String> {
         kws.extend(igdb.themes.iter().map(|s| s.to_lowercase()));
         kws.extend(igdb.genres.iter().map(|s| s.to_lowercase()));
     }
-    if kws.is_empty() {
-        if let Some(rawg) = &game.rawg {
-            kws.extend(rawg.tags.iter().map(|s| s.to_lowercase()));
-            kws.extend(rawg.genres.iter().map(|s| s.to_lowercase()));
-        }
+    if kws.is_empty()
+        && let Some(rawg) = &game.rawg
+    {
+        kws.extend(rawg.tags.iter().map(|s| s.to_lowercase()));
+        kws.extend(rawg.genres.iter().map(|s| s.to_lowercase()));
     }
     kws.sort();
     kws.dedup();
