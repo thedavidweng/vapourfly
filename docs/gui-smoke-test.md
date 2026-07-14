@@ -131,26 +131,30 @@ Shell uses a dark design-token theme and monochrome line icons (not emoji).
 ### 8. Data Sources
 
 1. Navigate to Data Sources via the left sidebar.
-2. Enable "Offline mode (cache only)".
-3. Verify cache refresh buttons are disabled and the UI states that cache refresh is disabled while offline mode is on.
-4. Disable offline mode.
-5. Click a source refresh button and verify the refresh begins only after a library scan is available.
+2. Verify the page shows an **Offline mode** control and a unified **Sources** table with columns for Source, Credential, Entries, Stale, Last success, and Action (Refresh).
+3. Confirm the table lists IGDB, RAWG, ProtonDB, PCGW, HLTB, and Steam Store (display names).
+4. Enable "Offline mode (cache only)".
+5. Verify **Refresh All** and per-row Refresh actions are disabled and the UI states that cache refresh is disabled while offline mode is on.
+6. Disable offline mode.
+7. Click a source Refresh button and verify the refresh begins only after a library scan is available (or the UI prompts to scan first).
 
 ### 9. Settings Diagnostics
 
-1. Navigate to Settings view via the left sidebar.
-2. Click "Refresh Accounts".
-3. Verify detected accounts appear with persona, account name, masked Steam ID, and most-recent status.
-4. Click "Use" on an account and verify Account Override is populated with that account name.
-5. Click "Run Setup Check".
-6. Verify a diagnostics report appears with redacted Steam path, account count, cloud storage status, cache root, and IGDB/RAWG credential state.
-7. Enter a diagnostics export path and click "Export Diagnostics".
-8. Verify a sanitized JSON file is written with version, platform, arch, source credential state, and timestamp.
+1. Navigate to Settings via the left sidebar.
+2. Verify Configuration fields: Steam directory, account override, store country/language, backup retention, and Save Settings.
+3. Click "Refresh Accounts".
+4. Verify detected accounts appear with persona, account name, masked Steam ID, and most-recent status.
+5. Click "Use" on an account and verify Account override is populated with that account name.
+6. Click "Run Setup Check".
+7. Verify a diagnostics report appears with redacted Steam path, account count, cloud storage status, cache root, and IGDB/RAWG credential state.
+8. Enter a diagnostics export path and click "Export Diagnostics".
+9. Verify a sanitized JSON file is written with version, platform, arch, source credential state, and timestamp.
+10. Confirm offline mode is **not** required on Settings (it lives on Data Sources).
 
 ### 10. Backup List (under Settings)
 
 1. Navigate to Settings via the left sidebar (Backups is **not** a top-level item).
-2. Find the **Backups** section.
+2. Find the **Backups** section (maintenance home for list/restore).
 3. Verify the backup list is displayed (empty for a fresh install).
 4. If no backups exist, create one by confirming a Junk write against fixture data.
 5. Click "Refresh Backups".

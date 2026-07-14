@@ -195,6 +195,7 @@ const SUCCESS_SOFT: Color32 = Color32::from_rgb(28, 52, 40);
 const ERROR: Color32 = Color32::from_rgb(220, 90, 90);
 const ERROR_SOFT: Color32 = Color32::from_rgb(56, 28, 28);
 const WARNING: Color32 = Color32::from_rgb(220, 170, 70);
+const WARNING_SOFT: Color32 = Color32::from_rgb(56, 44, 24);
 
 // Type scale (8px grid aligned, 1.25 ratio between steps)
 
@@ -518,6 +519,90 @@ fn playlist_rules_json(pf: &PlaylistFile) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Data Sources presentation helpers (ticket 08)
+// ---------------------------------------------------------------------------
+
+/// Human-facing label for an enrichment source id (`igdb` → `IGDB`).
+fn source_display_name(source_id: &str) -> &'static str {
+    match source_id {
+        "igdb" => "IGDB",
+        "rawg" => "RAWG",
+        "protondb" => "ProtonDB",
+        "pcgw" => "PCGW",
+        "hltb" => "HLTB",
+        "steam-store" => "Steam Store",
+        _ => "Unknown",
+    }
+}
+
+/// Credential readiness signal for the Data Sources table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CredentialSignal {
+    /// IGDB/RAWG env credentials are present.
+    Configured,
+    /// IGDB/RAWG env credentials are missing.
+    Missing,
+    /// Source never needs credentials (ProtonDB, PCGW, Steam Store).
+    NotRequired,
+    /// HLTB is optional / feature-gated — not a hard credential failure.
+    Optional,
+}
+
+impl CredentialSignal {
+    fn label(self) -> &'static str {
+        match self {
+            CredentialSignal::Configured => "Configured",
+            CredentialSignal::Missing => "Missing",
+            CredentialSignal::NotRequired => "None needed",
+            CredentialSignal::Optional => "Optional",
+        }
+    }
+}
+
+/// Map a source id to its credential signal given current env state.
+fn source_credential_signal(source_id: &str, has_igdb: bool, has_rawg: bool) -> CredentialSignal {
+    match source_id {
+        "igdb" => {
+            if has_igdb {
+                CredentialSignal::Configured
+            } else {
+                CredentialSignal::Missing
+            }
+        }
+        "rawg" => {
+            if has_rawg {
+                CredentialSignal::Configured
+            } else {
+                CredentialSignal::Missing
+            }
+        }
+        "hltb" => CredentialSignal::Optional,
+        "protondb" | "pcgw" | "steam-store" => CredentialSignal::NotRequired,
+        _ => CredentialSignal::NotRequired,
+    }
+}
+
+/// Whether a per-source refresh action should be enabled (credentials + offline).
+#[allow(clippy::fn_params_excessive_bools)] // pure gate over discrete UI flags
+fn source_refresh_enabled(
+    source_id: &str,
+    has_igdb: bool,
+    has_rawg: bool,
+    offline: bool,
+    loading: bool,
+) -> bool {
+    if offline || loading {
+        return false;
+    }
+    match source_credential_signal(source_id, has_igdb, has_rawg) {
+        CredentialSignal::Missing => false,
+        CredentialSignal::Configured
+        | CredentialSignal::NotRequired
+        | CredentialSignal::Optional => true,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Reusable UI helpers (design-token based)
 // ---------------------------------------------------------------------------
 
@@ -709,6 +794,41 @@ fn form_field(ui: &mut egui::Ui, label: &str, field: impl FnOnce(&mut egui::Ui))
         ui.label(RichText::new(label).size(TS_BODY).color(TEXT_SECONDARY));
         field(ui);
     });
+}
+
+/// Stacked label + control + optional hint for Settings-style forms.
+fn labeled_field(
+    ui: &mut egui::Ui,
+    label: &str,
+    hint: Option<&str>,
+    field: impl FnOnce(&mut egui::Ui),
+) {
+    ui.vertical(|ui| {
+        ui.label(RichText::new(label).size(TS_SM).strong().color(TEXT_SECONDARY));
+        ui.add_space(SP_1);
+        field(ui);
+        if let Some(hint) = hint {
+            ui.add_space(SP_1);
+            ui.label(RichText::new(hint).size(TS_XS).color(TEXT_MUTED));
+        }
+    });
+}
+
+fn credential_badge(ui: &mut egui::Ui, signal: CredentialSignal) {
+    match signal {
+        CredentialSignal::Configured => {
+            status_badge(ui, signal.label(), SUCCESS_SOFT, SUCCESS);
+        }
+        CredentialSignal::Missing => {
+            status_badge(ui, signal.label(), ERROR_SOFT, ERROR);
+        }
+        CredentialSignal::NotRequired => {
+            status_badge(ui, signal.label(), SURFACE_SUNKEN, TEXT_MUTED);
+        }
+        CredentialSignal::Optional => {
+            status_badge(ui, signal.label(), ACCENT_SOFT, ACCENT_TEXT);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1079,8 +1199,8 @@ impl VapourflyApp {
 
         std::thread::spawn(move || {
             // Use the Workflow module (ADR-0002 lazy hydration + junk classification).
-            // When the user has enabled offline mode in Settings, the workflow
-            // skips network fetches and uses cached metadata only.
+            // When offline mode is on (Data Sources toggle), the workflow skips
+            // network fetches and uses cached metadata only.
             let opts = vapourfly_api::workflow::WorkflowOptions {
                 steam_dir,
                 account,
@@ -1106,6 +1226,12 @@ impl VapourflyApp {
         };
 
         self.show_confirm_dialog = false;
+
+        // Backup restore never uses a dry-run WritePlan. Clear any leftover plan
+        // so a prior junk/playlist confirm cannot be mis-committed here.
+        if matches!(action, PendingAction::BackupRestore(_)) {
+            self.dry_run_plan = None;
+        }
 
         // If we have a pre-computed plan from the dry-run step, execute it
         // directly.  Otherwise fall through to the legacy path (backup
@@ -2250,6 +2376,14 @@ impl VapourflyApp {
                 }
             });
 
+        // Closing via the window chrome (X) must clear confirm state the same
+        // way Cancel does, so a leftover dry_run_plan cannot hijack a later
+        // BackupRestore confirm.
+        if !open && !self.write_loading {
+            self.pending_action = None;
+            self.dry_run_plan = None;
+            self.dry_run_error = None;
+        }
         self.show_confirm_dialog = open;
     }
 }
@@ -3694,154 +3828,97 @@ impl VapourflyApp {
         }
     }
 
-    // -- Data Sources view --------------------------------------------------
+    // -- Data Sources view (ticket 08) --------------------------------------
 
     fn render_data_sources(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        view_header(
+        let refresh_all_enabled = !self.cache_refresh_loading && !self.offline_mode;
+        let mut refresh_all = false;
+        view_header_with_actions(
             ui,
             "Data Sources",
-            "Manage enrichment API credentials, cache refresh, and offline mode.",
+            "Credential, cache, and refresh status for enrichment APIs. Offline uses cache-only hydration (ADR-0002).",
+            |ui| {
+                if ui
+                    .add_enabled(refresh_all_enabled, {
+                        egui::Button::new(
+                            RichText::new("Refresh All")
+                                .size(TS_SM)
+                                .color(if refresh_all_enabled {
+                                    TEXT_INVERSE
+                                } else {
+                                    TEXT_MUTED
+                                }),
+                        )
+                        .fill(if refresh_all_enabled {
+                            ACCENT
+                        } else {
+                            SURFACE_MUTED
+                        })
+                        .stroke(egui::Stroke::NONE)
+                        .corner_radius(CORNER_SM)
+                    })
+                    .clicked()
+                {
+                    refresh_all = true;
+                }
+            },
         );
+        if refresh_all {
+            self.start_cache_refresh(None, ctx);
+        }
 
-        // Source credentials
-        section_card(ui, "API Credentials", |ui| {
-            let sources = [
-                (
-                    "IGDB (Twitch OAuth)",
-                    self.has_igdb,
-                    "VAPOURFLY_IGDB_CLIENT_ID + VAPOURFLY_IGDB_CLIENT_SECRET",
-                ),
-                ("RAWG", self.has_rawg, "VAPOURFLY_RAWG_KEY"),
-                ("ProtonDB", true, "No credentials needed"),
-                ("PCGamingWiki", true, "No credentials needed"),
-                ("Steam Store", true, "No credentials needed"),
-                (
-                    "HLTB",
-                    false,
-                    "Feature gate: hltb_scrape (compile with --features hltb_scrape)",
-                ),
-            ];
-
-            for (name, available, note) in &sources {
-                ui.horizontal(|ui| {
-                    if *available {
-                        status_badge(ui, "Configured", SUCCESS_SOFT, SUCCESS);
-                    } else {
-                        status_badge(ui, "Missing", ERROR_SOFT, ERROR);
-                    }
-                    ui.label(RichText::new(*name).size(TS_BODY).color(TEXT_PRIMARY));
-                    ui.add_space(SP_2);
-                    ui.label(RichText::new(*note).size(TS_SM).color(TEXT_MUTED));
-                });
-            }
-
-            ui.add_space(SP_2);
+        // Offline control — primary home for cache-only mode (issue 08).
+        section_card(ui, "Offline mode", |ui| {
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.offline_mode, "Offline mode (cache only)");
+                if self.offline_mode {
+                    status_badge(ui, "Cache only", WARNING_SOFT, WARNING);
+                } else {
+                    status_badge(ui, "Network allowed", SUCCESS_SOFT, SUCCESS);
+                }
+            });
+            ui.add_space(SP_1);
             ui.label(
-                RichText::new(
-                    "Set credentials via environment variables before launching Vapourfly.",
-                )
+                RichText::new(if self.offline_mode {
+                    "Cache refresh is disabled while offline mode is on. Library workflows hydrate from cache only."
+                } else {
+                    "When offline is enabled, network refresh and workflow hydration skip the network and use cache only."
+                })
                 .size(TS_SM)
-                .color(TEXT_SECONDARY),
+                .color(TEXT_MUTED),
             );
         });
 
-        // Cache refresh section
-        section_card(ui, "Cache Refresh", |ui| {
-            ui.checkbox(&mut self.offline_mode, "Offline mode (cache only)");
-            if self.offline_mode {
-                ui.label(
-                    RichText::new("Cache refresh is disabled while offline mode is on.")
-                        .size(TS_SM)
-                        .color(TEXT_MUTED),
-                );
-            }
+        // Unified source table: credential + entries + stale + last success + refresh.
+        let has_igdb = self.has_igdb;
+        let has_rawg = self.has_rawg;
+        let offline = self.offline_mode;
+        let loading = self.cache_refresh_loading;
+        let mut refresh_source: Option<String> = None;
 
-            ui.add_space(SP_2);
-            let refresh_enabled = !self.cache_refresh_loading && !self.offline_mode;
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
-                let primary_btn = |label: &str| {
-                    egui::Button::new(RichText::new(label).size(TS_SM).color(TEXT_INVERSE))
-                        .fill(ACCENT)
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(CORNER_SM)
-                };
-                let secondary_btn = |label: &str| {
-                    egui::Button::new(RichText::new(label).size(TS_SM).color(TEXT_PRIMARY))
-                        .fill(SURFACE)
-                        .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
-                        .corner_radius(CORNER_SM)
-                };
-                if ui
-                    .add_enabled(refresh_enabled, primary_btn("Refresh All"))
-                    .clicked()
-                {
-                    self.start_cache_refresh(None, ctx);
-                }
-                if ui
-                    .add_enabled(refresh_enabled, secondary_btn("ProtonDB"))
-                    .clicked()
-                {
-                    self.start_cache_refresh(Some("protondb".into()), ctx);
-                }
-                if ui
-                    .add_enabled(refresh_enabled, secondary_btn("PCGW"))
-                    .clicked()
-                {
-                    self.start_cache_refresh(Some("pcgw".into()), ctx);
-                }
-                if ui
-                    .add_enabled(refresh_enabled, secondary_btn("HLTB"))
-                    .clicked()
-                {
-                    self.start_cache_refresh(Some("hltb".into()), ctx);
-                }
-                if ui
-                    .add_enabled(refresh_enabled, secondary_btn("Steam Store"))
-                    .clicked()
-                {
-                    self.start_cache_refresh(Some("steam-store".into()), ctx);
-                }
-                if self.has_igdb
-                    && ui
-                        .add_enabled(refresh_enabled, secondary_btn("IGDB"))
-                        .clicked()
-                {
-                    self.start_cache_refresh(Some("igdb".into()), ctx);
-                }
-                if self.has_rawg
-                    && ui
-                        .add_enabled(refresh_enabled, secondary_btn("RAWG"))
-                        .clicked()
-                {
-                    self.start_cache_refresh(Some("rawg".into()), ctx);
-                }
-            });
-
-            if self.cache_refresh_loading {
-                ui.add_space(SP_2);
+        section_card(ui, "Sources", |ui| {
+            if loading {
                 ui.horizontal(|ui| {
                     ui.spinner();
                     ui.label(
-                        RichText::new("Refreshing cache")
+                        RichText::new("Refreshing cache…")
                             .size(TS_SM)
                             .color(TEXT_SECONDARY),
                     );
                 });
+                ui.add_space(SP_2);
             }
             if let Some(msg) = &self.cache_refresh_msg {
-                ui.add_space(SP_2);
                 ui.label(RichText::new(msg).size(TS_SM).color(TEXT_SECONDARY));
+                ui.add_space(SP_2);
             }
-        });
 
-        // Source cache status
-        section_card(ui, "Source Cache Status", |ui| {
             if self.source_statuses.is_empty() {
-                ui.label(
-                    RichText::new("No cache data found. Run a scan and refresh to populate cache.")
-                        .size(TS_BODY)
-                        .color(TEXT_SECONDARY),
+                empty_state(
+                    ui,
+                    "\u{1F4E1}",
+                    "No source status yet",
+                    "Statuses load from the local cache root. Scan and refresh to populate entries.",
                 );
             } else {
                 let text_height = TS_BODY;
@@ -3851,140 +3928,147 @@ impl VapourflyApp {
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                     .column(egui_extras::Column::auto().at_least(100.0))
                     .column(egui_extras::Column::auto().at_least(100.0))
+                    .column(egui_extras::Column::auto().at_least(70.0))
+                    .column(egui_extras::Column::auto().at_least(60.0))
+                    .column(egui_extras::Column::auto().at_least(120.0))
                     .column(egui_extras::Column::auto().at_least(80.0))
-                    .column(egui_extras::Column::auto().at_least(60.0))
-                    .column(egui_extras::Column::auto().at_least(60.0))
-                    .header(text_height * 1.4, |mut header| {
-                        header.col(|ui| {
-                            ui.label(
-                                RichText::new("Source")
-                                    .size(TS_SM)
-                                    .strong()
-                                    .color(TEXT_SECONDARY),
-                            );
-                        });
-                        header.col(|ui| {
-                            ui.label(
-                                RichText::new("Last Success")
-                                    .size(TS_SM)
-                                    .strong()
-                                    .color(TEXT_SECONDARY),
-                            );
-                        });
-                        header.col(|ui| {
-                            ui.label(
-                                RichText::new("Entries")
-                                    .size(TS_SM)
-                                    .strong()
-                                    .color(TEXT_SECONDARY),
-                            );
-                        });
-                        header.col(|ui| {
-                            ui.label(
-                                RichText::new("Stale")
-                                    .size(TS_SM)
-                                    .strong()
-                                    .color(TEXT_SECONDARY),
-                            );
-                        });
-                        header.col(|ui| {
-                            ui.label(
-                                RichText::new("Cached")
-                                    .size(TS_SM)
-                                    .strong()
-                                    .color(TEXT_SECONDARY),
-                            );
-                        });
+                    .header(text_height * 1.5, |mut header| {
+                        for title in [
+                            "Source",
+                            "Credential",
+                            "Entries",
+                            "Stale",
+                            "Last success",
+                            "Action",
+                        ] {
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new(title)
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(TEXT_SECONDARY),
+                                );
+                            });
+                        }
                     })
                     .body(|mut body| {
                         for status in &self.source_statuses {
-                            body.row(text_height * 1.2, |mut row| {
+                            let source_id = status.name.as_str();
+                            let display = source_display_name(source_id);
+                            let signal =
+                                source_credential_signal(source_id, has_igdb, has_rawg);
+                            let can_refresh = source_refresh_enabled(
+                                source_id, has_igdb, has_rawg, offline, loading,
+                            );
+                            let last = status.last_success.map_or_else(
+                                || "—".into(),
+                                |dt| dt.format("%Y-%m-%d %H:%M").to_string(),
+                            );
+                            let entries = status.cache_entries;
+                            let stale = status.stale_entries;
+                            let source_id_owned = status.name.clone();
+
+                            body.row(text_height * 1.6, |mut row| {
                                 row.col(|ui| {
                                     ui.label(
-                                        RichText::new(&status.name)
+                                        RichText::new(display)
+                                            .size(TS_BODY)
+                                            .strong()
+                                            .color(TEXT_PRIMARY),
+                                    );
+                                });
+                                row.col(|ui| {
+                                    credential_badge(ui, signal);
+                                });
+                                row.col(|ui| {
+                                    ui.label(
+                                        RichText::new(entries.to_string())
                                             .size(TS_BODY)
                                             .color(TEXT_PRIMARY),
                                     );
                                 });
                                 row.col(|ui| {
-                                    let last = status.last_success.map_or_else(
-                                        || "n/a".into(),
-                                        |dt| dt.format("%Y-%m-%d %H:%M").to_string(),
-                                    );
-                                    ui.label(RichText::new(last).size(TS_BODY).color(TEXT_PRIMARY));
-                                });
-                                row.col(|ui| {
+                                    let color = if stale > 0 { WARNING } else { TEXT_PRIMARY };
                                     ui.label(
-                                        RichText::new(status.cache_entries.to_string())
+                                        RichText::new(stale.to_string())
                                             .size(TS_BODY)
-                                            .color(TEXT_PRIMARY),
+                                            .color(color),
                                     );
                                 });
                                 row.col(|ui| {
                                     ui.label(
-                                        RichText::new(status.stale_entries.to_string())
-                                            .size(TS_BODY)
-                                            .color(TEXT_PRIMARY),
+                                        RichText::new(last)
+                                            .size(TS_SM)
+                                            .color(TEXT_SECONDARY)
+                                            .monospace(),
                                     );
                                 });
                                 row.col(|ui| {
-                                    if status.cache_dir_exists {
-                                        status_badge(ui, "Yes", SUCCESS_SOFT, SUCCESS);
-                                    } else {
-                                        status_badge(ui, "No", SURFACE_SUNKEN, TEXT_MUTED);
+                                    if ui
+                                        .add_enabled(
+                                            can_refresh,
+                                            egui::Button::new(
+                                                RichText::new("Refresh")
+                                                    .size(TS_SM)
+                                                    .color(if can_refresh {
+                                                        TEXT_PRIMARY
+                                                    } else {
+                                                        TEXT_MUTED
+                                                    }),
+                                            )
+                                            .fill(SURFACE)
+                                            .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                                            .corner_radius(CORNER_SM),
+                                        )
+                                        .clicked()
+                                    {
+                                        refresh_source = Some(source_id_owned.clone());
                                     }
                                 });
                             });
                         }
                     });
             }
-        });
 
-        // Offline mode
-        section_card(ui, "Offline Mode", |ui| {
+            ui.add_space(SP_2);
             ui.label(
                 RichText::new(
-                    "Use `--offline` CLI flag to prohibit network calls and use cached data only.",
+                    "Credentials: VAPOURFLY_IGDB_CLIENT_ID + VAPOURFLY_IGDB_CLIENT_SECRET, VAPOURFLY_RAWG_KEY. Set env vars before launch.",
                 )
-                .size(TS_BODY)
-                .color(TEXT_SECONDARY),
+                .size(TS_XS)
+                .color(TEXT_MUTED),
             );
         });
+
+        if let Some(source) = refresh_source {
+            self.start_cache_refresh(Some(source), ctx);
+        }
     }
 
-    // -- Backups section (embedded under Settings; ADR-0006) ----------------
+    // -- Backups section (embedded under Settings; ADR-0006 / ticket 09) ----
 
     fn render_backups_section(&mut self, ui: &mut egui::Ui) {
+        let mut refresh = false;
+        let mut restore_path: Option<PathBuf> = None;
+
         section_card(ui, "Backups", |ui| {
-            ui.label(
-                RichText::new("Browse and restore safety backups of your Steam cloud storage.")
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(
+                        "Safety backups of Steam cloud storage. Restore is confirmation-gated.",
+                    )
                     .size(TS_SM)
                     .color(TEXT_SECONDARY),
-            );
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if secondary_button(ui, "Refresh Backups").clicked() {
+                        refresh = true;
+                    }
+                });
+            });
             ui.add_space(SP_2);
-            if primary_button(ui, "Refresh Backups").clicked() {
-                self.backups.clear();
-                match self.cloud_storage_path() {
-                    Ok(cloud_path) => {
-                        if cloud_path.exists() {
-                            match list_backups(&cloud_path) {
-                                Ok(backups) => {
-                                    self.backups = backups;
-                                }
-                                Err(e) => {
-                                    self.error = Some(format!("Failed to list backups: {e}"));
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        self.error = Some(e);
-                    }
-                }
-            }
 
             if self.backups.is_empty() {
-                ui.add_space(SP_2);
                 ui.label(
                     RichText::new(
                         "No backups found. Click Refresh Backups after a write creates one.",
@@ -3992,215 +4076,230 @@ impl VapourflyApp {
                     .size(TS_BODY)
                     .color(TEXT_MUTED),
                 );
-                return;
-            }
+            } else {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                    metric_pill(ui, "Backups", self.backups.len().to_string());
+                });
+                ui.add_space(SP_2);
 
-            ui.add_space(SP_2);
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
-                metric_pill(ui, "Backups", self.backups.len().to_string());
-            });
-            ui.add_space(SP_2);
+                let text_height = TS_BODY;
+                let write_loading = self.write_loading;
+                egui_extras::TableBuilder::new(ui)
+                    .striped(true)
+                    .resizable(true)
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .column(egui_extras::Column::remainder().at_least(220.0))
+                    .column(egui_extras::Column::auto().at_least(140.0))
+                    .column(egui_extras::Column::auto().at_least(90.0))
+                    .column(egui_extras::Column::auto().at_least(80.0))
+                    .header(text_height * 1.5, |mut header| {
+                        for title in ["Filename", "Created", "SHA256", "Action"] {
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new(title)
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(TEXT_SECONDARY),
+                                );
+                            });
+                        }
+                    })
+                    .body(|mut body| {
+                        for backup in &self.backups {
+                            let filename = backup
+                                .path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            let created =
+                                backup.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
+                            let sha = backup.sha256[..8.min(backup.sha256.len())].to_string();
+                            let path = backup.path.clone();
 
-            let text_height = TS_BODY;
-            egui_extras::TableBuilder::new(ui)
-                .striped(true)
-                .resizable(true)
-                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(egui_extras::Column::remainder().at_least(250.0))
-                .column(egui_extras::Column::auto().at_least(140.0))
-                .column(egui_extras::Column::auto().at_least(100.0))
-                .column(egui_extras::Column::auto().at_least(80.0))
-                .header(text_height * 1.4, |mut header| {
-                    header.col(|ui| {
-                        ui.label(
-                            RichText::new("Filename")
-                                .size(TS_SM)
-                                .strong()
-                                .color(TEXT_SECONDARY),
-                        );
-                    });
-                    header.col(|ui| {
-                        ui.label(
-                            RichText::new("Created")
-                                .size(TS_SM)
-                                .strong()
-                                .color(TEXT_SECONDARY),
-                        );
-                    });
-                    header.col(|ui| {
-                        ui.label(
-                            RichText::new("SHA256")
-                                .size(TS_SM)
-                                .strong()
-                                .color(TEXT_SECONDARY),
-                        );
-                    });
-                    header.col(|ui| {
-                        ui.label(
-                            RichText::new("Action")
-                                .size(TS_SM)
-                                .strong()
-                                .color(TEXT_SECONDARY),
-                        );
-                    });
-                })
-                .body(|mut body| {
-                    for backup in &self.backups {
-                        let filename = backup
-                            .path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        body.row(text_height * 1.2, |mut row| {
-                            row.col(|ui| {
-                                ui.label(
-                                    RichText::new(&filename).size(TS_BODY).color(TEXT_PRIMARY),
-                                );
-                            });
-                            row.col(|ui| {
-                                ui.label(
-                                    RichText::new(
-                                        backup.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
-                                    )
-                                    .size(TS_BODY)
-                                    .color(TEXT_PRIMARY),
-                                );
-                            });
-                            row.col(|ui| {
-                                ui.label(
-                                    RichText::new(&backup.sha256[..8])
-                                        .size(TS_BODY)
-                                        .color(TEXT_MUTED)
-                                        .monospace(),
-                                );
-                            });
-                            row.col(|ui| {
-                                let enabled = !self.write_loading;
-                                ui.add_enabled_ui(enabled, |ui| {
-                                    if secondary_button(ui, "Restore").clicked() {
-                                        self.pending_action =
-                                            Some(PendingAction::BackupRestore(backup.path.clone()));
-                                        self.show_confirm_dialog = true;
-                                    }
+                            body.row(text_height * 1.5, |mut row| {
+                                row.col(|ui| {
+                                    ui.label(
+                                        RichText::new(&filename)
+                                            .size(TS_BODY)
+                                            .color(TEXT_PRIMARY),
+                                    );
+                                });
+                                row.col(|ui| {
+                                    ui.label(
+                                        RichText::new(created)
+                                            .size(TS_SM)
+                                            .color(TEXT_SECONDARY)
+                                            .monospace(),
+                                    );
+                                });
+                                row.col(|ui| {
+                                    ui.label(
+                                        RichText::new(sha)
+                                            .size(TS_SM)
+                                            .color(TEXT_MUTED)
+                                            .monospace(),
+                                    );
+                                });
+                                row.col(|ui| {
+                                    ui.add_enabled_ui(!write_loading, |ui| {
+                                        if secondary_button(ui, "Restore").clicked() {
+                                            restore_path = Some(path.clone());
+                                        }
+                                    });
                                 });
                             });
-                        });
-                    }
-                });
+                        }
+                    });
+            }
 
             if self.write_loading {
                 ui.add_space(SP_2);
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label(RichText::new("Restoring").size(TS_SM).color(TEXT_SECONDARY));
+                    ui.label(
+                        RichText::new("Restoring…")
+                            .size(TS_SM)
+                            .color(TEXT_SECONDARY),
+                    );
                 });
             }
         });
+
+        if refresh {
+            self.backups.clear();
+            match self.cloud_storage_path() {
+                Ok(cloud_path) => {
+                    if cloud_path.exists() {
+                        match list_backups(&cloud_path) {
+                            Ok(backups) => self.backups = backups,
+                            Err(e) => self.error = Some(format!("Failed to list backups: {e}")),
+                        }
+                    }
+                }
+                Err(e) => self.error = Some(e),
+            }
+        }
+        if let Some(path) = restore_path {
+            // Clear any leftover dry-run plan so Confirm runs restore, not an
+            // earlier junk/playlist write (ticket 09 write-safety).
+            self.dry_run_plan = None;
+            self.dry_run_error = None;
+            self.pending_action = Some(PendingAction::BackupRestore(path));
+            self.show_confirm_dialog = true;
+        }
     }
 
-    // -- Settings view ------------------------------------------------------
+    // -- Settings view (ticket 09) ------------------------------------------
 
     fn render_settings(&mut self, ui: &mut egui::Ui) {
         view_header(
             ui,
             "Settings",
-            "Configure Steam directory, accounts, locale, write safety, and backups.",
+            "Steam install, accounts, locale, write safety, diagnostics, and backups.",
         );
 
-        section_card(ui, "Steam Directory", |ui| {
-            form_field(ui, "Path:", |ui| {
-                ui.add_sized(
-                    [300.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.steam_dir_edit),
-                );
-            });
-            ui.label(
-                RichText::new("Leave empty for auto-detection.")
-                    .size(TS_SM)
-                    .color(TEXT_MUTED),
+        // Configuration group: directory, account, locale, retention.
+        section_card(ui, "Configuration", |ui| {
+            labeled_field(
+                ui,
+                "Steam directory",
+                Some("Leave empty for auto-detection."),
+                |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.steam_dir_edit)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("/path/to/Steam"),
+                    );
+                },
             );
-        });
-
-        section_card(ui, "Account Override", |ui| {
-            form_field(ui, "Account:", |ui| {
-                ui.add_sized(
-                    [200.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.account_edit),
-                );
-            });
-            ui.label(
-                RichText::new("Leave empty for auto-selection (most recent).")
-                    .size(TS_SM)
-                    .color(TEXT_MUTED),
+            ui.add_space(SP_3);
+            labeled_field(
+                ui,
+                "Account override",
+                Some("Leave empty for auto-selection (most recent account)."),
+                |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.account_edit)
+                            .desired_width(280.0)
+                            .hint_text("account name"),
+                    );
+                },
             );
-        });
-
-        section_card(ui, "Detected Accounts", |ui| {
+            ui.add_space(SP_3);
             ui.horizontal(|ui| {
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new("Refresh Accounts")
-                                .size(TS_SM)
-                                .color(TEXT_PRIMARY),
-                        )
-                        .fill(SURFACE)
-                        .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
-                        .corner_radius(CORNER_SM),
-                    )
-                    .clicked()
-                {
-                    self.refresh_detected_accounts();
+                ui.spacing_mut().item_spacing = egui::vec2(SP_4, SP_2);
+                labeled_field(ui, "Store country (cc)", None, |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.cc_edit)
+                            .desired_width(72.0)
+                            .hint_text("us"),
+                    );
+                });
+                labeled_field(ui, "Store language", None, |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.lang_edit)
+                            .desired_width(140.0)
+                            .hint_text("english"),
+                    );
+                });
+                labeled_field(
+                    ui,
+                    "Backup retention",
+                    Some("Rolling backups kept per file."),
+                    |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.backup_retention_edit)
+                                .desired_width(64.0)
+                                .hint_text("5"),
+                        );
+                    },
+                );
+            });
+            ui.add_space(SP_3);
+            ui.horizontal(|ui| {
+                if primary_button(ui, "Save Settings").clicked() {
+                    self.save_settings();
+                }
+                if let Some(msg) = &self.settings_save_msg {
+                    ui.label(RichText::new(msg).size(TS_SM).color(SUCCESS));
                 }
             });
-            if let Some(msg) = &self.account_list_msg {
-                ui.label(RichText::new(msg).size(TS_SM).color(TEXT_SECONDARY));
-            }
+        });
+
+        // Detected accounts with one-click override.
+        section_card(ui, "Detected accounts", |ui| {
+            ui.horizontal(|ui| {
+                if secondary_button(ui, "Refresh Accounts").clicked() {
+                    self.refresh_detected_accounts();
+                }
+                if let Some(msg) = &self.account_list_msg {
+                    ui.label(RichText::new(msg).size(TS_SM).color(TEXT_SECONDARY));
+                }
+            });
+            ui.add_space(SP_2);
 
             if self.detected_accounts.is_empty() {
                 ui.label(
-                    RichText::new("No accounts loaded.")
+                    RichText::new("No accounts loaded. Set Steam directory and refresh.")
                         .size(TS_BODY)
-                        .color(TEXT_SECONDARY),
+                        .color(TEXT_MUTED),
                 );
             } else {
                 let mut selected_account = None;
                 egui::Grid::new("detected_accounts_grid")
                     .num_columns(5)
-                    .spacing([SP_3, SP_1])
+                    .spacing([SP_3, SP_2])
                     .striped(true)
                     .show(ui, |ui| {
-                        ui.label(
-                            RichText::new("Persona")
-                                .size(TS_SM)
-                                .strong()
-                                .color(TEXT_SECONDARY),
-                        );
-                        ui.label(
-                            RichText::new("Account")
-                                .size(TS_SM)
-                                .strong()
-                                .color(TEXT_SECONDARY),
-                        );
-                        ui.label(
-                            RichText::new("Steam ID")
-                                .size(TS_SM)
-                                .strong()
-                                .color(TEXT_SECONDARY),
-                        );
-                        ui.label(
-                            RichText::new("Most recent")
-                                .size(TS_SM)
-                                .strong()
-                                .color(TEXT_SECONDARY),
-                        );
-                        ui.label(
-                            RichText::new("Action")
-                                .size(TS_SM)
-                                .strong()
-                                .color(TEXT_SECONDARY),
-                        );
+                        for title in ["Persona", "Account", "Steam ID", "Most recent", "Action"] {
+                            ui.label(
+                                RichText::new(title)
+                                    .size(TS_SM)
+                                    .strong()
+                                    .color(TEXT_SECONDARY),
+                            );
+                        }
                         ui.end_row();
 
                         for account in &self.detected_accounts {
@@ -4216,7 +4315,7 @@ impl VapourflyApp {
                             );
                             ui.label(
                                 RichText::new(mask_steam_id(&account.steam_id64))
-                                    .size(TS_BODY)
+                                    .size(TS_SM)
                                     .color(TEXT_MUTED)
                                     .monospace(),
                             );
@@ -4225,17 +4324,7 @@ impl VapourflyApp {
                             } else {
                                 status_badge(ui, "no", SURFACE_SUNKEN, TEXT_MUTED);
                             }
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Use").size(TS_SM).color(TEXT_PRIMARY),
-                                    )
-                                    .fill(SURFACE)
-                                    .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
-                                    .corner_radius(CORNER_SM),
-                                )
-                                .clicked()
-                            {
+                            if secondary_button(ui, "Use").clicked() {
                                 selected_account = Some(account.account_name.clone());
                             }
                             ui.end_row();
@@ -4248,154 +4337,81 @@ impl VapourflyApp {
             }
         });
 
-        section_card(ui, "Store Locale", |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_1);
-                ui.label(
-                    RichText::new("Country code:")
-                        .size(TS_SM)
-                        .color(TEXT_SECONDARY),
-                );
-                ui.add_sized([60.0, 20.0], egui::TextEdit::singleline(&mut self.cc_edit));
-                ui.label(RichText::new("Language:").size(TS_SM).color(TEXT_SECONDARY));
-                ui.add_sized(
-                    [120.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.lang_edit),
-                );
-            });
-        });
-
-        section_card(ui, "Backup Retention", |ui| {
-            form_field(ui, "Keep backups:", |ui| {
-                ui.add_sized(
-                    [60.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.backup_retention_edit),
-                );
-            });
-            ui.label(
-                RichText::new("Number of rolling backups to keep for modified files.")
-                    .size(TS_SM)
-                    .color(TEXT_MUTED),
-            );
-        });
-
-        section_card(ui, "Write Safety", |ui| {
+        section_card(ui, "Write safety", |ui| {
             ui.checkbox(
                 &mut self.allow_steam_running,
                 "Allow writes while Steam is running",
             );
-            ui.label(
-                RichText::new("Enable with caution. Steam may overwrite changes.")
-                    .size(TS_SM)
-                    .color(WARNING),
-            );
-        });
-
-        section_card(ui, "Network", |ui| {
-            ui.checkbox(&mut self.offline_mode, "Offline mode (cache only)");
+            ui.add_space(SP_1);
             ui.label(
                 RichText::new(
-                    "Blocks all network calls: cache refresh and library scan hydration.",
+                    "Enable with caution. Steam may overwrite cloud-storage changes (ADR-0001).",
                 )
                 .size(TS_SM)
-                .color(TEXT_MUTED),
+                .color(WARNING),
             );
         });
 
-        // Save button
-        ui.horizontal(|ui| {
-            if ui
-                .add(
-                    egui::Button::new(
-                        RichText::new("Save Settings")
-                            .size(TS_SM)
-                            .color(TEXT_INVERSE),
-                    )
-                    .fill(ACCENT)
-                    .stroke(egui::Stroke::NONE)
-                    .corner_radius(CORNER_SM),
-                )
-                .clicked()
-            {
-                self.save_settings();
-            }
-            if let Some(msg) = &self.settings_save_msg {
-                ui.label(RichText::new(msg).size(TS_SM).color(TEXT_SECONDARY));
-            }
-        });
-        ui.add_space(SP_3);
-
-        section_card(ui, "Setup Diagnostics", |ui| {
+        section_card(ui, "Setup diagnostics", |ui| {
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new(
-                        "Check Steam paths, accounts, libraries, cloud storage, cache, and credentials.",
+                        "Steam paths, accounts, libraries, cloud storage, cache, and credentials.",
                     )
                     .size(TS_SM)
                     .color(TEXT_SECONDARY),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new("Run Setup Check").size(TS_SM).color(TEXT_PRIMARY),
-                            )
-                            .fill(SURFACE)
-                            .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
-                            .corner_radius(CORNER_SM),
-                        )
-                        .clicked()
-                    {
+                    if secondary_button(ui, "Run Setup Check").clicked() {
                         self.run_setup_diagnostics();
                     }
                 });
             });
             if let Some(report) = &self.setup_diagnostics {
                 ui.add_space(SP_2);
-                ui.label(
-                    RichText::new(report)
-                        .size(TS_XS)
-                        .color(TEXT_PRIMARY)
-                        .monospace(),
-                );
+                egui::Frame::NONE
+                    .fill(SURFACE_SUNKEN)
+                    .inner_margin(egui::Margin::same(m(SP_3)))
+                    .corner_radius(CORNER_SM)
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new(report)
+                                .size(TS_XS)
+                                .color(TEXT_PRIMARY)
+                                .monospace(),
+                        );
+                    });
             }
         });
 
-        section_card(ui, "Diagnostics Export", |ui| {
+        section_card(ui, "Diagnostics export", |ui| {
             ui.label(
                 RichText::new("Export sanitized support data for bug reports.")
                     .size(TS_SM)
                     .color(TEXT_SECONDARY),
             );
             ui.add_space(SP_2);
-            form_field(ui, "Export path:", |ui| {
-                ui.add_sized(
-                    [300.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.diagnostics_export_path),
-                );
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new("Export Diagnostics")
-                                .size(TS_SM)
-                                .color(TEXT_PRIMARY),
-                        )
-                        .fill(SURFACE)
-                        .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
-                        .corner_radius(CORNER_SM),
-                    )
-                    .clicked()
-                {
-                    match self.export_diagnostics() {
-                        Ok(()) => {
-                            self.success_msg = Some(format!(
-                                "Diagnostics exported to {}",
-                                self.diagnostics_export_path.trim()
-                            ));
+            labeled_field(ui, "Export path", None, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.diagnostics_export_path)
+                            .desired_width(320.0)
+                            .hint_text("diagnostics.json"),
+                    );
+                    if secondary_button(ui, "Export Diagnostics").clicked() {
+                        match self.export_diagnostics() {
+                            Ok(()) => {
+                                self.success_msg = Some(format!(
+                                    "Diagnostics exported to {}",
+                                    self.diagnostics_export_path.trim()
+                                ));
+                            }
+                            Err(e) => {
+                                self.error = Some(format!("Diagnostics export failed: {e}"));
+                            }
                         }
-                        Err(e) => self.error = Some(format!("Diagnostics export failed: {e}")),
                     }
-                }
+                });
             });
         });
 
@@ -5347,6 +5363,52 @@ mod tests {
     }
 
     #[test]
+    #[serial]
+    fn backup_restore_confirm_clears_leftover_dry_run_plan() {
+        // Ticket 09: Restore must not commit a stale junk/playlist dry-run.
+        WRITE_RESULT.lock().unwrap().take();
+
+        let temp_dir = TempDir::new().unwrap();
+        let target_path = temp_dir.path().join("cloud-storage-namespace-1.json");
+        std::fs::write(&target_path, "[]").unwrap();
+        let cloud = vapourfly_core::steam::read_cloud_storage(&target_path).unwrap();
+        let stale_plan = vapourfly_core::steam::generate_write_plan(
+            &cloud,
+            vec![WriteOp::UpsertCollection {
+                id: "junk".into(),
+                added: vec![730],
+                removed: vec![],
+            }],
+            target_path.clone(),
+        )
+        .unwrap();
+
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
+        let mut app = VapourflyApp::new(Some(fixtures));
+        app.dry_run_plan = Some(stale_plan);
+        app.pending_action = Some(PendingAction::BackupRestore(
+            temp_dir.path().join("missing-backup.json"),
+        ));
+        app.allow_steam_running = true;
+
+        app.execute_pending_action();
+
+        // Plan must be dropped so restore takes the legacy path.
+        assert!(app.dry_run_plan.is_none());
+
+        let result = poll_write_result();
+        // Must be a restore failure, not a successful plan commit of junk.
+        let err = result.expect_err("expected restore to fail for missing backup");
+        assert!(
+            err.contains("Restore failed") || err.contains("Safety check"),
+            "unexpected error: {err}"
+        );
+        // Stale plan target must remain untouched.
+        assert_eq!(std::fs::read_to_string(&target_path).unwrap(), "[]");
+    }
+
+    #[test]
     fn cache_refresh_is_blocked_in_offline_mode() {
         let mut app = VapourflyApp::new(None);
         app.offline_mode = true;
@@ -5364,6 +5426,60 @@ mod tests {
             app.cache_refresh_msg.as_deref(),
             Some("Offline mode is on. Cache refresh requires network access.")
         );
+    }
+
+    // -- Data Sources presentation helpers (ticket 08) ----------------------
+
+    #[test]
+    fn source_display_names_match_product_table() {
+        assert_eq!(source_display_name("igdb"), "IGDB");
+        assert_eq!(source_display_name("rawg"), "RAWG");
+        assert_eq!(source_display_name("protondb"), "ProtonDB");
+        assert_eq!(source_display_name("pcgw"), "PCGW");
+        assert_eq!(source_display_name("hltb"), "HLTB");
+        assert_eq!(source_display_name("steam-store"), "Steam Store");
+    }
+
+    #[test]
+    fn source_credential_signals_cover_configured_missing_and_optional() {
+        assert_eq!(
+            source_credential_signal("igdb", true, false),
+            CredentialSignal::Configured
+        );
+        assert_eq!(
+            source_credential_signal("igdb", false, true),
+            CredentialSignal::Missing
+        );
+        assert_eq!(
+            source_credential_signal("rawg", false, true),
+            CredentialSignal::Configured
+        );
+        assert_eq!(
+            source_credential_signal("rawg", true, false),
+            CredentialSignal::Missing
+        );
+        assert_eq!(
+            source_credential_signal("protondb", false, false),
+            CredentialSignal::NotRequired
+        );
+        assert_eq!(
+            source_credential_signal("hltb", false, false),
+            CredentialSignal::Optional
+        );
+        assert_eq!(
+            source_credential_signal("steam-store", false, false),
+            CredentialSignal::NotRequired
+        );
+    }
+
+    #[test]
+    fn source_refresh_enabled_respects_offline_loading_and_credentials() {
+        assert!(!source_refresh_enabled("protondb", true, true, true, false));
+        assert!(!source_refresh_enabled("protondb", true, true, false, true));
+        assert!(!source_refresh_enabled("igdb", false, true, false, false));
+        assert!(source_refresh_enabled("igdb", true, false, false, false));
+        assert!(source_refresh_enabled("hltb", false, false, false, false));
+        assert!(source_refresh_enabled("pcgw", false, false, false, false));
     }
 
     #[test]
