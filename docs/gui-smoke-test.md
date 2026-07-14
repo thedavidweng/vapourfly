@@ -31,9 +31,16 @@ Sidebar lists **only**:
 - Junk — open from Library toolbar (`Junk…`)
 - Backups — open from Settings → Backups section
 
-Shell uses a dark design-token theme and monochrome line icons (not emoji).
+Shell defaults to the light desktop token theme (warm canvas, white cards, orchid accent) and can switch to the dark design-system palette from the top chrome (macOS-style top bar + monochrome line icons in both modes).
 
 ## Test Steps
+
+### 0. Theme toggle
+
+1. Launch the GUI (fixtures or real library).
+2. Confirm the top chrome shows a **☾ Dark** control on the right.
+3. Click it and verify the shell switches to the dark palette (cool surfaces, violet accent) without changing navigation destinations.
+4. Click **☀ Light** and verify the warm light palette returns.
 
 ### 1. Fixture Scan + Library
 
@@ -170,4 +177,4 @@ Shell uses a dark design-token theme and monochrome line icons (not emoji).
 - All write operations require explicit user confirmation.
 - The left sidebar highlights the currently selected view.
 - The Refresh button re-scans and updates the Library poster grid.
-- Dark shell + monochrome line icons remain consistent across destinations.
+- Light shell, macOS-style top chrome, and monochrome line icons remain consistent across destinations.
