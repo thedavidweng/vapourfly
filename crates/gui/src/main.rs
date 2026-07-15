@@ -3841,7 +3841,8 @@ impl VapourflyApp {
             "Shape a play session, preview scored picks, then write them to vapourfly-picks after confirmation.",
         );
 
-        section_card(ui, "Session", |ui| {
+        // Session planner card.
+        section_card(ui, "Session Planner", |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_2);
                 form_field(ui, "Available minutes", |ui| {
@@ -3862,6 +3863,30 @@ impl VapourflyApp {
                         egui::TextEdit::singleline(&mut self.recommend_seed).hint_text("optional"),
                     );
                 });
+                // Seed picker: dropdown of library games for quick selection.
+                if let Some(scan) = &self.scan_result {
+                    let seed_games: Vec<(u32, String)> = scan
+                        .games
+                        .iter()
+                        .take(50)
+                        .map(|g| (g.app_id, g.name.clone()))
+                        .collect();
+                    if !seed_games.is_empty() {
+                        egui::ComboBox::from_id_salt("rec_seed_picker")
+                            .selected_text("Pick from library\u{2026}")
+                            .width(160.0)
+                            .show_ui(ui, |ui| {
+                                for (app_id, name) in seed_games {
+                                    if ui
+                                        .selectable_label(false, format!("{app_id} — {name}"))
+                                        .clicked()
+                                    {
+                                        self.recommend_seed = app_id.to_string();
+                                    }
+                                }
+                            });
+                    }
+                }
             });
             ui.add_space(SP_2);
             ui.horizontal_wrapped(|ui| {
@@ -3891,92 +3916,221 @@ impl VapourflyApp {
             return;
         }
 
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
-            metric_pill(ui, "Results", self.recommend_results.len().to_string());
-        });
-        ui.add_space(SP_3);
-
-        let busy = self.write_loading || self.dry_run_loading;
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    !busy,
-                    egui::Button::new(
-                        RichText::new("Write to vapourfly-picks")
-                            .size(TS_SM)
-                            .color(t().text_inverse),
-                    )
-                    .fill(t().accent)
-                    .stroke(egui::Stroke::NONE)
-                    .corner_radius(CORNER_SM),
-                )
-                .clicked()
-            {
-                self.start_dry_run(PendingAction::RecommendCollection);
-            }
-            if self.write_loading || self.dry_run_loading {
-                ui.spinner();
-                ui.label(
-                    RichText::new(if self.dry_run_loading {
-                        "Preparing diff"
-                    } else {
-                        "Writing"
-                    })
-                    .size(TS_SM)
-                    .color(t().text_secondary),
-                );
-            }
-        });
-        ui.label(
-            RichText::new(
-                "Requires dry-run confirmation. Targets the vapourfly-picks Steam Collection.",
-            )
-            .size(TS_XS)
-            .color(t().text_muted),
-        );
-        ui.add_space(SP_3);
-
-        // Preview list: score + human-readable reason codes.
-        for rec in &self.recommend_results {
-            section_card(ui, &rec.name, |ui| {
-                ui.horizontal(|ui| {
-                    app_id_tag(ui, rec.app_id);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        status_badge(
-                            ui,
-                            &format!("{:.2}", rec.score),
-                            t().accent_soft,
-                            t().accent_text,
-                        );
-                    });
-                });
-                if !rec.reasons.is_empty() {
-                    ui.add_space(SP_1);
-                    ui.indent("rec_reasons", |ui| {
-                        for reason in &rec.reasons {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.spacing_mut().item_spacing = egui::vec2(SP_1, SP_1);
-                                status_badge(
-                                    ui,
-                                    &reason.code,
-                                    t().surface_muted,
-                                    t().text_secondary,
-                                );
+        // Top-3 highlight cards.
+        let top3: Vec<&Recommendation> = self.recommend_results.iter().take(3).collect();
+        if !top3.is_empty() {
+            ui.add_space(SP_3);
+            ui.label(
+                RichText::new("Top picks")
+                    .size(TS_MD)
+                    .strong()
+                    .color(t().text_primary),
+            );
+            ui.add_space(SP_2);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_3);
+                for (rank, rec) in top3.iter().enumerate() {
+                    let medal = match rank {
+                        0 => "\u{1F947}", // 🥇
+                        1 => "\u{1F948}", // 🥈
+                        _ => "\u{1F949}", // 🥉
+                    };
+                    egui::Frame::group(ui.style())
+                        .fill(t().surface)
+                        .stroke(egui::Stroke::new(1.0, t().border_soft))
+                        .corner_radius(CORNER_MD)
+                        .inner_margin(egui::Margin::same(m(SP_3)))
+                        .show(ui, |ui| {
+                            ui.set_min_width(200.0);
+                            ui.vertical(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(medal).size(TS_LG));
+                                    ui.label(
+                                        RichText::new(&rec.name)
+                                            .size(TS_MD)
+                                            .strong()
+                                            .color(t().text_primary),
+                                    );
+                                });
+                                ui.add_space(SP_1);
+                                ui.horizontal(|ui| {
+                                    app_id_tag(ui, rec.app_id);
+                                    // Match percent: score relative to max possible.
+                                    let max_score = self
+                                        .recommend_results
+                                        .first()
+                                        .map(|r| r.score)
+                                        .unwrap_or(1.0);
+                                    let pct = if max_score > 0.0 {
+                                        (rec.score / max_score * 100.0).min(100.0)
+                                    } else {
+                                        0.0
+                                    };
+                                    status_badge(
+                                        ui,
+                                        &format!("{pct:.0}% match"),
+                                        t().accent_soft,
+                                        t().accent_text,
+                                    );
+                                });
+                                ui.add_space(SP_1);
                                 ui.label(
-                                    RichText::new(format!(
-                                        "{} ({:+.1})",
-                                        reason.description, reason.weight
-                                    ))
-                                    .size(TS_SM)
-                                    .color(t().text_secondary),
+                                    RichText::new(format!("Score: {:.2}", rec.score))
+                                        .size(TS_SM)
+                                        .color(t().text_secondary),
                                 );
+                            });
+                        });
+                }
+            });
+        }
+
+        ui.add_space(SP_3);
+
+        // Two-column: full results list (left) + explanation rail (right).
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                // Write action bar.
+                let busy = self.write_loading || self.dry_run_loading;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                    if ui
+                        .add_enabled(
+                            !busy,
+                            egui::Button::new(
+                                RichText::new("Write to vapourfly-picks")
+                                    .size(TS_SM)
+                                    .color(t().text_inverse),
+                            )
+                            .fill(t().accent)
+                            .stroke(egui::Stroke::NONE)
+                            .corner_radius(CORNER_SM),
+                        )
+                        .clicked()
+                    {
+                        self.start_dry_run(PendingAction::RecommendCollection);
+                    }
+                    if self.write_loading || self.dry_run_loading {
+                        ui.spinner();
+                        ui.label(
+                            RichText::new(if self.dry_run_loading {
+                                "Preparing diff"
+                            } else {
+                                "Writing"
+                            })
+                            .size(TS_SM)
+                            .color(t().text_secondary),
+                        );
+                    }
+                });
+                ui.label(
+                    RichText::new(
+                        "Requires dry-run confirmation. Targets the vapourfly-picks Steam Collection.",
+                    )
+                    .size(TS_XS)
+                    .color(t().text_muted),
+                );
+                ui.add_space(SP_3);
+
+                // Full results list: score + reason codes.
+                for rec in &self.recommend_results {
+                    section_card(ui, &rec.name, |ui| {
+                        ui.horizontal(|ui| {
+                            app_id_tag(ui, rec.app_id);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    status_badge(
+                                        ui,
+                                        &format!("{:.2}", rec.score),
+                                        t().accent_soft,
+                                        t().accent_text,
+                                    );
+                                },
+                            );
+                        });
+                        if !rec.reasons.is_empty() {
+                            ui.add_space(SP_1);
+                            ui.indent("rec_reasons", |ui| {
+                                for reason in &rec.reasons {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.spacing_mut().item_spacing =
+                                            egui::vec2(SP_1, SP_1);
+                                        status_badge(
+                                            ui,
+                                            &reason.code,
+                                            t().surface_muted,
+                                            t().text_secondary,
+                                        );
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "{} ({:+.1})",
+                                                reason.description, reason.weight
+                                            ))
+                                            .size(TS_SM)
+                                            .color(t().text_secondary),
+                                        );
+                                    });
+                                }
                             });
                         }
                     });
                 }
             });
-        }
+
+            // Explanation rail.
+            ui.add_space(SP_4);
+            ui.allocate_ui_with_layout(
+                egui::vec2(200.0, ui.available_height()),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    egui::Frame::group(ui.style())
+                        .fill(t().surface)
+                        .stroke(egui::Stroke::new(1.0, t().border_soft))
+                        .corner_radius(CORNER_MD)
+                        .inner_margin(egui::Margin::same(m(SP_3)))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new("How scoring works")
+                                    .size(TS_MD)
+                                    .strong()
+                                    .color(t().text_primary),
+                            );
+                            ui.add_space(SP_2);
+                            ui.separator();
+                            ui.add_space(SP_2);
+                            ui.spacing_mut().item_spacing.y = SP_3;
+                            insight_metric(
+                                ui,
+                                "Results",
+                                self.recommend_results.len().to_string(),
+                            );
+                            let avg_score = if self.recommend_results.is_empty() {
+                                0.0
+                            } else {
+                                self.recommend_results.iter().map(|r| r.score).sum::<f32>()
+                                    / self.recommend_results.len() as f32
+                            };
+                            insight_metric(ui, "Avg score", format!("{avg_score:.2}"));
+                            let top_score = self
+                                .recommend_results
+                                .first()
+                                .map(|r| r.score)
+                                .unwrap_or(0.0);
+                            insight_metric(ui, "Top score", format!("{top_score:.2}"));
+                            ui.separator();
+                            ui.add_space(SP_2);
+                            ui.label(
+                                RichText::new(
+                                    "Scores combine playtime fit, deck compatibility, ProtonDB tier, and rating signals. Higher is better.",
+                                )
+                                .size(TS_XS)
+                                .color(t().text_muted),
+                            );
+                        });
+                },
+            );
+        });
     }
 
     // -- Playlists view -----------------------------------------------------
