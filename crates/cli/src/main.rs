@@ -1092,6 +1092,26 @@ fn scan_library_hydrated(
     Ok(result)
 }
 
+/// Run a playlist match with cache-hydrated Steam Store details for missing
+/// entries, so `completion_price` reflects the corrected semantics (missing
+/// non-free entries only).
+fn match_playlist_with_missing(
+    pf: &PlaylistFile,
+    games: &[vapourfly_core::models::Game],
+) -> Result<vapourfly_core::models::PlaylistMatchReport, Box<dyn std::error::Error>> {
+    use std::collections::HashMap;
+    // First pass: find missing AppIDs with no store details.
+    let empty: HashMap<u32, vapourfly_core::models::SteamStoreDetails> = HashMap::new();
+    let preliminary = playlist::match_playlist(pf, games, &empty)?;
+    // Fetch cached store details for missing entries.
+    let cache = vapourfly_api::cache::DiskCache::new(vapourfly_core::config::default_cache_dir());
+    let missing_details =
+        vapourfly_api::enrichment::missing_store_details(&preliminary.missing, &cache);
+    // Second pass with store details for completion price.
+    let report = playlist::match_playlist(pf, games, &missing_details)?;
+    Ok(report)
+}
+
 fn cmd_junk_preview(
     cli: &Cli,
     format: OutputFormat,
@@ -1522,7 +1542,7 @@ fn cmd_playlist_import(
     }
 
     let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
-    let report = playlist::match_playlist(&pf, &scan_result.games)?;
+    let report = match_playlist_with_missing(&pf, &scan_result.games)?;
 
     println!();
     println!("Match summary:");
@@ -1535,7 +1555,7 @@ fn cmd_playlist_import(
     match &report.completion_price {
         Some(price) => println!("  Completion price: {}", price.format()),
         None => println!(
-            "  Completion price: (no Steam Store price cached; run 'vapourfly cache refresh --source steam-store')"
+            "  Completion price: (no priced missing entries; run 'vapourfly cache refresh --source steam-store')"
         ),
     }
     println!();
@@ -1604,7 +1624,7 @@ fn cmd_playlist_match(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pf = playlist::import_playlist(&path)?;
     let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
-    let report = playlist::match_playlist(&pf, &scan_result.games)?;
+    let report = match_playlist_with_missing(&pf, &scan_result.games)?;
 
     match format {
         OutputFormat::Table => {
@@ -1621,7 +1641,7 @@ fn cmd_playlist_match(
             match &report.completion_price {
                 Some(price) => println!("  Completion price: {}", price.format()),
                 None => println!(
-                    "  Completion price: (no Steam Store price cached; run 'vapourfly cache refresh --source steam-store')"
+                    "  Completion price: (no priced missing entries; run 'vapourfly cache refresh --source steam-store')"
                 ),
             }
         }
@@ -1653,7 +1673,11 @@ fn cmd_sync_collection(
         PlaylistContent::Manual { .. } => None,
         PlaylistContent::Rules { .. } => {
             let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
-            let report = playlist::match_playlist(&pf, &scan_result.games)?;
+            let report = playlist::match_playlist(
+                &pf,
+                &scan_result.games,
+                &std::collections::HashMap::new(),
+            )?;
             Some(report.owned)
         }
     };

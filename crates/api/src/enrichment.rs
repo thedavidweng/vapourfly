@@ -628,6 +628,34 @@ pub fn hydrate_from_cache(games: &mut [Game], cache: &DiskCache) -> HydrationSum
 }
 
 // ---------------------------------------------------------------------------
+// Missing-entry store details (for Playlist Match completion price)
+// ---------------------------------------------------------------------------
+
+/// Read cached Steam Store details for a set of AppIDs that are **not** in the
+/// owned library (missing Playlist entries).
+///
+/// Uses cache-only lookups — no network calls. When online, the caller may
+/// additionally fetch missing entries via [`SteamStoreClient`](crate::steam_store::SteamStoreClient)
+/// before calling this function to populate the cache.
+///
+/// Returns a map of AppID → SteamStoreDetails for entries that have a cache
+/// record (stale or fresh). AppIDs without a cache entry are simply absent
+/// from the map.
+pub fn missing_store_details(
+    app_ids: &[u32],
+    cache: &DiskCache,
+) -> std::collections::HashMap<u32, SteamStoreDetails> {
+    let mut map = std::collections::HashMap::new();
+    for &app_id in app_ids {
+        let key = format!("app/{app_id}");
+        if let Ok(Some(record)) = cache.get::<SteamStoreDetails>(SOURCE_STEAM_STORE, &key) {
+            map.insert(app_id, record.data);
+        }
+    }
+    map
+}
+
+// ---------------------------------------------------------------------------
 // Cache status (for `sources status` CLI command)
 // ---------------------------------------------------------------------------
 

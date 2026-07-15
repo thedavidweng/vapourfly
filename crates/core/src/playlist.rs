@@ -30,10 +30,12 @@ use std::path::Path;
 
 use crate::error::{Result, SafePath, VapourflyError};
 use crate::models::{
-    ControllerSupport, Game, Money, PlaylistContent, PlaylistFile, PlaylistMatchReport,
-    PlaylistRule, ProtonTier, VAPOURFLY_PLAYLIST_SCHEMA,
+    CompletionPrice, ControllerSupport, Game, Money, PlaylistContent, PlaylistFile,
+    PlaylistMatchReport, PlaylistRule, PriceCoverage, ProtonTier, SteamStoreDetails,
+    VAPOURFLY_PLAYLIST_SCHEMA,
 };
 use crate::signal;
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -395,11 +397,21 @@ pub fn evaluate_rules(rules: &[PlaylistRule], game: &Game) -> bool {
 /// - `unplayed`: Owned games with no playtime (or playtime == 0).
 /// - `hidden`: Owned games that are hidden.
 /// - `junk`: Owned games that are junk.
-/// - `completion_price`: Sum of Steam Store prices for owned, unplayed, non-free
-///   games. Requires `Game.steam_store` to be populated via enrichment
-///   (`scan --enrich` or `cache refresh --source steam-store`). Returns `None`
-///   when no price data is available.
-pub fn match_playlist(playlist: &PlaylistFile, games: &[Game]) -> Result<PlaylistMatchReport> {
+/// - `completion_price`: Sum of Steam Store final prices for **missing,
+///   non-free** entries with available price data. Owned/unplayed games are
+///   never included. Missing entries are not owned Games, so the caller
+///   provides their Steam Store details via `missing_store_details` (typically
+///   cache-hydrated). Rule Playlists evaluate only the owned library and have
+///   no missing entries, so their `completion_price` is `None`. Returns `None`
+///   when no priced missing entries exist.
+/// - `price_coverage`: How many missing non-free entries have price data vs.
+///   how many are missing and non-free overall. `None` when there are no
+///   missing non-free entries.
+pub fn match_playlist(
+    playlist: &PlaylistFile,
+    games: &[Game],
+    missing_store_details: &HashMap<u32, SteamStoreDetails>,
+) -> Result<PlaylistMatchReport> {
     let by_id: std::collections::HashMap<u32, &Game> =
         games.iter().map(|g| (g.app_id, g)).collect();
 
@@ -463,32 +475,79 @@ pub fn match_playlist(playlist: &PlaylistFile, games: &[Game]) -> Result<Playlis
     hidden.sort_unstable();
     junk.sort_unstable();
 
-    // completion_price: sum of Steam Store prices for owned, unplayed,
-    // non-free games that have price data available.
-    let completion_price = {
-        let mut total_cents: u64 = 0;
-        let mut currency: Option<String> = None;
-        let mut has_price = false;
-        for &id in &unplayed {
-            if let Some(game) = by_id.get(&id)
-                && let Some(store) = &game.steam_store
-                && !store.is_free
-                && let Some(price) = &store.price_overview
-            {
-                total_cents += u64::from(price.final_price_cents);
-                if currency.is_none() {
-                    currency = Some(price.currency.clone());
-                }
-                has_price = true;
-            }
-        }
-        if has_price {
-            Some(Money {
-                amount_cents: total_cents,
-                currency: currency.unwrap_or_else(|| "USD".into()),
-            })
+    // completion_price: sum of Steam Store final prices for **missing,
+    // non-free** entries. Owned/unplayed games are never included.
+    // Rule Playlists have no missing entries → completion_price is None.
+    //
+    // Mixed-currency handling: if all priced missing entries share one
+    // currency, return a Single total. If multiple currencies are
+    // encountered, do not sum them — return per-currency grouped totals.
+    let (completion_price, price_coverage) = {
+        // Only manual playlists can have missing entries.
+        let is_manual = matches!(playlist.playlist.content, PlaylistContent::Manual { .. });
+
+        if !is_manual || missing.is_empty() {
+            (None, None)
         } else {
-            None
+            // Classify each missing entry: free, non-free with price, non-free
+            // without price.
+            let mut non_free_count: usize = 0;
+            let mut priced_count: usize = 0;
+            // Per-currency totals.
+            let mut totals: HashMap<String, u64> = HashMap::new();
+
+            for &id in &missing {
+                let Some(store) = missing_store_details.get(&id) else {
+                    // No store details: if we can determine it's non-free,
+                    // count it. Without details we assume non-free (the
+                    // common case for paid games).
+                    non_free_count += 1;
+                    continue;
+                };
+
+                if store.is_free {
+                    // Free games are not counted in non_free or priced.
+                    continue;
+                }
+
+                non_free_count += 1;
+
+                if let Some(price) = &store.price_overview {
+                    priced_count += 1;
+                    *totals.entry(price.currency.clone()).or_default() +=
+                        u64::from(price.final_price_cents);
+                }
+            }
+
+            let price_coverage = if non_free_count > 0 {
+                Some(PriceCoverage {
+                    priced: priced_count,
+                    non_free: non_free_count,
+                })
+            } else {
+                None
+            };
+
+            let completion_price = if totals.is_empty() {
+                None
+            } else if totals.len() == 1 {
+                let (currency, amount) = totals.into_iter().next().unwrap();
+                Some(CompletionPrice::Single(Money {
+                    amount_cents: amount,
+                    currency,
+                }))
+            } else {
+                let grouped: Vec<Money> = totals
+                    .into_iter()
+                    .map(|(currency, amount_cents)| Money {
+                        amount_cents,
+                        currency,
+                    })
+                    .collect();
+                Some(CompletionPrice::Mixed(grouped))
+            };
+
+            (completion_price, price_coverage)
         }
     };
 
@@ -500,6 +559,7 @@ pub fn match_playlist(playlist: &PlaylistFile, games: &[Game]) -> Result<Playlis
         hidden,
         junk,
         completion_price,
+        price_coverage,
     })
 }
 
@@ -1212,7 +1272,7 @@ mod tests {
     fn match_report_manual_owned_and_missing() {
         let games = vec![make_game(730, "CS2"), make_game(440, "TF2")];
         let pf = make_manual_playlist("test", "Test", vec![730, 440, 999]);
-        let report = match_playlist(&pf, &games).unwrap();
+        let report = match_playlist(&pf, &games, &std::collections::HashMap::new()).unwrap();
         assert_eq!(report.owned, vec![440, 730]);
         assert_eq!(report.missing, vec![999]);
     }
@@ -1224,7 +1284,7 @@ mod tests {
         let tf2 = make_game(440, "TF2"); // no playtime
         let games = vec![cs2, tf2];
         let pf = make_manual_playlist("test", "Test", vec![730, 440]);
-        let report = match_playlist(&pf, &games).unwrap();
+        let report = match_playlist(&pf, &games, &std::collections::HashMap::new()).unwrap();
         assert_eq!(report.played, vec![730]);
         assert_eq!(report.unplayed, vec![440]);
     }
@@ -1238,7 +1298,7 @@ mod tests {
         let normal = make_game(3, "Normal");
         let games = vec![hidden_game, junk_game, normal];
         let pf = make_manual_playlist("test", "Test", vec![1, 2, 3]);
-        let report = match_playlist(&pf, &games).unwrap();
+        let report = match_playlist(&pf, &games, &std::collections::HashMap::new()).unwrap();
         assert_eq!(report.hidden, vec![1]);
         assert_eq!(report.junk, vec![2]);
         assert_eq!(report.owned, vec![1, 2, 3]);
@@ -1265,7 +1325,7 @@ mod tests {
             "Rules",
             vec![PlaylistRule::Installed, PlaylistRule::NotJunk],
         );
-        let report = match_playlist(&pf, &games).unwrap();
+        let report = match_playlist(&pf, &games, &std::collections::HashMap::new()).unwrap();
         assert_eq!(report.owned, vec![1]);
         assert_eq!(report.played, vec![1]);
         assert!(report.unplayed.is_empty());
@@ -1276,7 +1336,7 @@ mod tests {
     fn match_report_empty_library() {
         let games: Vec<Game> = vec![];
         let pf = make_manual_playlist("test", "Test", vec![730]);
-        let report = match_playlist(&pf, &games).unwrap();
+        let report = match_playlist(&pf, &games, &std::collections::HashMap::new()).unwrap();
         assert!(report.owned.is_empty());
         assert_eq!(report.missing, vec![730]);
     }
@@ -1285,7 +1345,7 @@ mod tests {
     fn match_report_empty_rules_match_nothing() {
         let games = vec![make_game(1, "Game")];
         let pf = make_rules_playlist("test", "Test", vec![]);
-        let report = match_playlist(&pf, &games).unwrap();
+        let report = match_playlist(&pf, &games, &std::collections::HashMap::new()).unwrap();
         // Empty rules => all pass (every rule vacuously satisfied).
         assert_eq!(report.owned, vec![1]);
     }
@@ -1294,82 +1354,26 @@ mod tests {
     fn match_report_deterministic_ordering() {
         let games = vec![make_game(3, "C"), make_game(1, "A"), make_game(2, "B")];
         let pf = make_manual_playlist("test", "Test", vec![3, 1, 2]);
-        let report = match_playlist(&pf, &games).unwrap();
+        let report = match_playlist(&pf, &games, &std::collections::HashMap::new()).unwrap();
         assert_eq!(report.owned, vec![1, 2, 3]);
     }
 
-    #[test]
-    fn match_report_completion_price_sums_unplayed() {
-        use crate::models::{PriceOverview, SteamStoreDetails, SteamStorePlatforms};
+    // -- Completion price (corrected semantics: missing non-free entries) --
 
-        fn make_game_with_price(app_id: u32, name: &str, price_cents: u32, played: bool) -> Game {
-            let mut game = make_game(app_id, name);
-            if played {
-                game.playtime_minutes = Some(100);
-            }
-            game.steam_store = Some(SteamStoreDetails {
-                app_id,
-                name: name.into(),
-                steam_store_type: "game".into(),
-                is_free: false,
-                short_description: None,
-                header_image: None,
-                developers: vec![],
-                publishers: vec![],
-                genres: vec![],
-                categories: vec![],
-                release_date: None,
-                metacritic_score: None,
-                platforms: SteamStorePlatforms {
-                    windows: true,
-                    mac: false,
-                    linux: false,
-                },
-                coming_soon: false,
-                price_overview: Some(PriceOverview {
-                    currency: "USD".into(),
-                    initial_price_cents: price_cents,
-                    final_price_cents: price_cents,
-                    discount_percent: 0,
-                }),
-            });
-            game
-        }
+    use crate::models::{CompletionPrice, PriceOverview};
 
-        let games = vec![
-            make_game_with_price(1, "Unplayed A", 2999, false),
-            make_game_with_price(2, "Unplayed B", 1999, false),
-            make_game_with_price(3, "Played", 5999, true), // should not count
-        ];
-        let pf = make_manual_playlist("test", "Test", vec![1, 2, 3]);
-        let report = match_playlist(&pf, &games).unwrap();
-
-        let price = report
-            .completion_price
-            .expect("should have completion price");
-        assert_eq!(price.currency, "USD");
-        // 2999 + 1999 = 4998 cents
-        assert_eq!(price.amount_cents, 4998);
-    }
-
-    #[test]
-    fn match_report_completion_price_none_when_no_steam_store() {
-        let games = vec![make_game(1, "No Store Data")];
-        let pf = make_manual_playlist("test", "Test", vec![1]);
-        let report = match_playlist(&pf, &games).unwrap();
-        assert!(report.completion_price.is_none());
-    }
-
-    #[test]
-    fn match_report_completion_price_skips_free_games() {
-        use crate::models::{SteamStoreDetails, SteamStorePlatforms};
-
-        let mut game = make_game(1, "Free Game");
-        game.steam_store = Some(SteamStoreDetails {
-            app_id: 1,
-            name: "Free Game".into(),
+    fn make_store_details(
+        app_id: u32,
+        name: &str,
+        is_free: bool,
+        price: Option<(u32, &str)>,
+    ) -> SteamStoreDetails {
+        use crate::models::SteamStorePlatforms;
+        SteamStoreDetails {
+            app_id,
+            name: name.into(),
             steam_store_type: "game".into(),
-            is_free: true,
+            is_free,
             short_description: None,
             header_image: None,
             developers: vec![],
@@ -1384,11 +1388,164 @@ mod tests {
                 linux: false,
             },
             coming_soon: false,
-            price_overview: None,
-        });
-        let games = vec![game];
-        let pf = make_manual_playlist("test", "Test", vec![1]);
-        let report = match_playlist(&pf, &games).unwrap();
+            price_overview: price.map(|(cents, currency)| PriceOverview {
+                currency: currency.into(),
+                initial_price_cents: cents,
+                final_price_cents: cents,
+                discount_percent: 0,
+            }),
+        }
+    }
+
+    #[test]
+    fn completion_price_sums_missing_non_free_entries() {
+        // Playlist has AppIDs 1 (owned) and 100, 101 (missing).
+        // Missing 100 costs 2999 USD, missing 101 costs 1999 USD.
+        let games = vec![make_game(1, "Owned")];
+        let pf = make_manual_playlist("test", "Test", vec![1, 100, 101]);
+        let mut missing = HashMap::new();
+        missing.insert(
+            100,
+            make_store_details(100, "Missing A", false, Some((2999, "USD"))),
+        );
+        missing.insert(
+            101,
+            make_store_details(101, "Missing B", false, Some((1999, "USD"))),
+        );
+        let report = match_playlist(&pf, &games, &missing).unwrap();
+
+        let price = report.completion_price.expect("should have price");
+        match price {
+            CompletionPrice::Single(money) => {
+                assert_eq!(money.currency, "USD");
+                assert_eq!(money.amount_cents, 4998); // 2999 + 1999
+            }
+            CompletionPrice::Mixed(_) => panic!("should be single currency"),
+        }
+    }
+
+    #[test]
+    fn completion_price_excludes_owned_unplayed() {
+        // Owned unplayed games must NOT contribute to completion price.
+        let mut owned_game = make_game(1, "Owned Unplayed");
+        owned_game.steam_store = Some(make_store_details(
+            1,
+            "Owned Unplayed",
+            false,
+            Some((5999, "USD")),
+        ));
+        let games = vec![owned_game];
+        // Playlist has owned 1 and missing 100.
+        let pf = make_manual_playlist("test", "Test", vec![1, 100]);
+        let mut missing = HashMap::new();
+        missing.insert(
+            100,
+            make_store_details(100, "Missing", false, Some((1999, "USD"))),
+        );
+        let report = match_playlist(&pf, &games, &missing).unwrap();
+
+        match report.completion_price.expect("should have price") {
+            CompletionPrice::Single(money) => {
+                assert_eq!(money.amount_cents, 1999); // only missing, not owned
+            }
+            CompletionPrice::Mixed(_) => panic!("should be single currency"),
+        }
+    }
+
+    #[test]
+    fn completion_price_none_for_rule_playlists() {
+        // Rule playlists evaluate only the owned library → no missing entries.
+        let games = vec![make_game(1, "Game")];
+        let pf = make_rules_playlist("test", "Test", vec![PlaylistRule::Installed]);
+        let missing = HashMap::new();
+        let report = match_playlist(&pf, &games, &missing).unwrap();
         assert!(report.completion_price.is_none());
+        assert!(report.price_coverage.is_none());
+    }
+
+    #[test]
+    fn completion_price_mixed_currency_returns_grouped_totals() {
+        let games = vec![make_game(1, "Owned")];
+        let pf = make_manual_playlist("test", "Test", vec![1, 100, 101]);
+        let mut missing = HashMap::new();
+        missing.insert(
+            100,
+            make_store_details(100, "USD Game", false, Some((2999, "USD"))),
+        );
+        missing.insert(
+            101,
+            make_store_details(101, "EUR Game", false, Some((1999, "EUR"))),
+        );
+        let report = match_playlist(&pf, &games, &missing).unwrap();
+
+        match report.completion_price.expect("should have price") {
+            CompletionPrice::Mixed(totals) => {
+                assert_eq!(totals.len(), 2);
+                let by_cur: HashMap<String, u64> = totals
+                    .iter()
+                    .map(|m| (m.currency.clone(), m.amount_cents))
+                    .collect();
+                assert_eq!(by_cur["USD"], 2999);
+                assert_eq!(by_cur["EUR"], 1999);
+            }
+            CompletionPrice::Single(_) => panic!("should be mixed currency"),
+        }
+    }
+
+    #[test]
+    fn completion_price_none_when_no_priced_missing() {
+        // Missing entries exist but none have price data.
+        let games = vec![make_game(1, "Owned")];
+        let pf = make_manual_playlist("test", "Test", vec![1, 100]);
+        let missing = HashMap::new(); // no store details for 100
+        let report = match_playlist(&pf, &games, &missing).unwrap();
+        assert!(report.completion_price.is_none());
+        // But coverage should reflect the non-free missing entry.
+        let coverage = report.price_coverage.expect("should have coverage");
+        assert_eq!(coverage.priced, 0);
+        assert_eq!(coverage.non_free, 1);
+    }
+
+    #[test]
+    fn completion_price_skips_free_missing() {
+        let games = vec![make_game(1, "Owned")];
+        let pf = make_manual_playlist("test", "Test", vec![1, 100]);
+        let mut missing = HashMap::new();
+        missing.insert(100, make_store_details(100, "Free Missing", true, None));
+        let report = match_playlist(&pf, &games, &missing).unwrap();
+        assert!(report.completion_price.is_none());
+        assert!(report.price_coverage.is_none()); // no non-free missing
+    }
+
+    #[test]
+    fn price_coverage_partial_when_some_missing_have_price() {
+        // 3 missing: 2 non-free (1 priced, 1 not), 1 free.
+        let games = vec![make_game(1, "Owned")];
+        let pf = make_manual_playlist("test", "Test", vec![1, 100, 101, 102]);
+        let mut missing = HashMap::new();
+        missing.insert(
+            100,
+            make_store_details(100, "Priced", false, Some((2999, "USD"))),
+        );
+        missing.insert(101, make_store_details(101, "No Price", false, None));
+        missing.insert(102, make_store_details(102, "Free", true, None));
+        let report = match_playlist(&pf, &games, &missing).unwrap();
+
+        let coverage = report.price_coverage.expect("should have coverage");
+        assert_eq!(coverage.priced, 1);
+        assert_eq!(coverage.non_free, 2); // 100 and 101 are non-free
+        let ratio = coverage.ratio().expect("should have ratio");
+        assert!((ratio - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn completion_price_none_when_fully_owned() {
+        // No missing entries → no completion price.
+        let games = vec![make_game(1, "Owned A"), make_game(2, "Owned B")];
+        let pf = make_manual_playlist("test", "Test", vec![1, 2]);
+        let missing = HashMap::new();
+        let report = match_playlist(&pf, &games, &missing).unwrap();
+        assert!(report.completion_price.is_none());
+        assert!(report.price_coverage.is_none());
     }
 }

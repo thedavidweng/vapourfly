@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use eframe::egui;
@@ -24,6 +23,9 @@ use vapourfly_core::steam::{
     SteamAccount, detect_accounts, detect_library_folders, read_cloud_storage,
     read_user_collections, redact_path, select_account,
 };
+
+mod jobs;
+use jobs::{JobId, JobRunner, JobSlot};
 
 // ---------------------------------------------------------------------------
 // View enum
@@ -159,15 +161,13 @@ impl JunkModeChoice {
 }
 
 // ---------------------------------------------------------------------------
-// Background result channels
+// Background result channels (typed job slots with request IDs)
 // ---------------------------------------------------------------------------
 
-static SCAN_RESULT: Mutex<Option<vapourfly_core::Result<ScanResult>>> = Mutex::new(None);
-static WRITE_RESULT: Mutex<Option<Result<String, String>>> = Mutex::new(None);
-static ENRICH_RESULT: Mutex<Option<Result<vapourfly_api::enrichment::EnrichmentSummary, String>>> =
-    Mutex::new(None);
-static DRY_RUN_RESULT: Mutex<Option<Result<vapourfly_core::models::WritePlan, String>>> =
-    Mutex::new(None);
+static SCAN_RESULT: JobSlot<ScanResult> = JobSlot::new();
+static WRITE_RESULT: JobSlot<String> = JobSlot::new();
+static ENRICH_RESULT: JobSlot<vapourfly_api::enrichment::EnrichmentSummary> = JobSlot::new();
+static DRY_RUN_RESULT: JobSlot<vapourfly_core::models::WritePlan> = JobSlot::new();
 
 // ---------------------------------------------------------------------------
 // Visual system — light + dark design tokens (ADR-0006)
@@ -349,6 +349,9 @@ struct VapourflyApp {
     success_msg: Option<String>,
     fixtures_path: Option<PathBuf>,
 
+    /// Demo mode (`--ui-demo`): deterministic fixture data, no real Steam writes.
+    ui_demo: bool,
+
     /// Light or dark visual system (ADR-0006).
     theme_mode: ThemeMode,
 
@@ -460,6 +463,13 @@ struct VapourflyApp {
     // Cache refresh
     cache_refresh_loading: bool,
     cache_refresh_msg: Option<String>,
+
+    // Background job runner (request IDs + stale-result protection)
+    job_runner: JobRunner,
+    scan_job_id: Option<JobId>,
+    write_job_id: Option<JobId>,
+    enrich_job_id: Option<JobId>,
+    dry_run_job_id: Option<JobId>,
 }
 
 fn mask_steam_id(id: &str) -> String {
@@ -1144,28 +1154,7 @@ fn nav_item(ui: &mut egui::Ui, view: View, selected: bool) -> egui::Response {
     response
 }
 
-/// Three small color dots make the app frame read as a calm macOS desktop
-/// surface even when eframe supplies a platform-native title bar around it.
-fn window_controls(ui: &mut egui::Ui) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(62.0, 28.0), egui::Sense::hover());
-    let painter = ui.painter();
-    let y = rect.center().y;
-    for (index, color) in [
-        Color32::from_rgb(255, 94, 87),
-        Color32::from_rgb(255, 189, 46),
-        Color32::from_rgb(39, 201, 63),
-    ]
-    .iter()
-    .enumerate()
-    {
-        painter.circle_filled(
-            egui::pos2(rect.left() + 11.0 + index as f32 * 20.0, y),
-            7.0,
-            *color,
-        );
-    }
-}
-
+/// Compact value-over-label metric for the top chrome.
 fn top_bar_metric(ui: &mut egui::Ui, value: impl Into<String>, label: &str) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
@@ -1180,7 +1169,7 @@ fn top_bar_metric(ui: &mut egui::Ui, value: impl Into<String>, label: &str) {
 }
 
 impl VapourflyApp {
-    fn new(fixtures_path: Option<PathBuf>) -> Self {
+    fn new(fixtures_path: Option<PathBuf>, ui_demo: bool) -> Self {
         // Load configuration
         let config = VapourflyConfig::from_cli_and_env(vapourfly_core::config::CliOverrides {
             steam_dir: fixtures_path.clone(),
@@ -1225,6 +1214,7 @@ impl VapourflyApp {
             error: None,
             success_msg: None,
             fixtures_path,
+            ui_demo,
             theme_mode: ThemeMode::Light,
 
             config,
@@ -1307,7 +1297,406 @@ impl VapourflyApp {
 
             cache_refresh_loading: false,
             cache_refresh_msg: None,
+
+            job_runner: JobRunner::new(),
+            scan_job_id: None,
+            write_job_id: None,
+            enrich_job_id: None,
+            dry_run_job_id: None,
         }
+    }
+
+    /// Populate deterministic demo data for `--ui-demo` mode.
+    ///
+    /// Provides enough in-memory data to render every page in a meaningful
+    /// loaded state: 24 games with varied metadata, 5 Playlists, 4 Steam
+    /// Collections, junk decisions, recommendation results, discover results,
+    /// source statuses, accounts, and backups. No real Steam writes are
+    /// possible in demo mode.
+    fn populate_demo_data(&mut self) {
+        use vapourfly_core::models::{
+            HltbData, HltbSource, IgdbData, PcgwData, ProtonDbData, ProtonTier, RawgData,
+            SteamStoreDetails, SteamStorePlatforms,
+        };
+
+        // -- 24 games with varied metadata -----------------------------------
+        let demo_games: Vec<Game> = (0..24)
+            .map(|i| {
+                let app_id = 1000 + i;
+                let name = format!("Demo Game {i:02}");
+                Game {
+                    app_id,
+                    name,
+                    app_type: SteamAppType::Game,
+                    installed: i < 18,
+                    install_dir: Some(format!("demo_{i}").into()),
+                    library_folder: None,
+                    playtime_minutes: Some(match i {
+                        0 => 320,
+                        1 => 180,
+                        2 => 60,
+                        3 => 0,
+                        4 => 500,
+                        5 => 15,
+                        6 => 240,
+                        7 => 0,
+                        8 => 90,
+                        9 => 0,
+                        10 => 1200,
+                        11 => 5,
+                        12 => 0,
+                        13 => 45,
+                        14 => 0,
+                        15 => 300,
+                        16 => 0,
+                        17 => 10,
+                        _ => 0,
+                    }),
+                    playtime_2wks_minutes: if i < 6 { Some(30) } else { None },
+                    playtime_disconnected_minutes: None,
+                    last_played_unix: if i < 3 {
+                        Some(chrono::Utc::now().timestamp() - i64::from(i) * 86_400)
+                    } else {
+                        None
+                    },
+                    steam_collections: if i % 5 == 0 {
+                        vec!["Favorites".into()]
+                    } else {
+                        vec![]
+                    },
+                    is_hidden: i == 9 || i == 14,
+                    is_junk: i == 11 || i == 17,
+                    hltb: if i % 3 == 0 {
+                        Some(HltbData {
+                            main_story_seconds: Some(match i {
+                                0 => 36000,  // 10h
+                                3 => 7200,   // 2h
+                                6 => 18000,  // 5h
+                                9 => 5400,   // 1.5h
+                                12 => 900,   // 15m (short sessions)
+                                15 => 25200, // 7h
+                                18 => 10800, // 3h
+                                21 => 14400, // 4h
+                                _ => 7200,
+                            }),
+                            main_extra_seconds: None,
+                            completionist_seconds: None,
+                            source: HltbSource::IgdbGameTimeToBeat,
+                        })
+                    } else {
+                        None
+                    },
+                    igdb: if i % 2 == 0 {
+                        Some(IgdbData {
+                            igdb_id: u64::from(app_id),
+                            name: format!("Demo Game {i:02}"),
+                            slug: None,
+                            rating_0_100: Some(match i {
+                                0 => 85.0,
+                                3 => 78.0,
+                                6 => 92.0,
+                                9 => 45.0,
+                                12 => 88.0,
+                                _ => 70.0,
+                            }),
+                            total_rating_0_100: None,
+                            genres: match i {
+                                0 => vec!["Shooter".into(), "Action".into()],
+                                3 => vec!["Cozy".into(), "Casual".into()],
+                                6 => vec!["Story Rich".into(), "Adventure".into()],
+                                12 => vec!["Cozy".into(), "Farming".into()],
+                                _ => vec!["Action".into()],
+                            },
+                            themes: if i == 6 {
+                                vec!["Narrative".into()]
+                            } else {
+                                vec![]
+                            },
+                            keywords: vec![],
+                            similar_game_ids: vec![],
+                            steam_app_id_confirmed: true,
+                            time_to_beat: None,
+                        })
+                    } else {
+                        None
+                    },
+                    rawg: if i % 4 == 1 {
+                        Some(RawgData {
+                            rawg_id: u64::from(app_id),
+                            rating_0_5: Some(match i {
+                                5 => 3.5,
+                                13 => 4.0,
+                                _ => 3.0,
+                            }),
+                            ratings_count: None,
+                            genres: vec![],
+                            tags: match i {
+                                5 => vec!["relaxing".into()],
+                                13 => vec!["cozy".into()],
+                                _ => vec![],
+                            },
+                            stores: vec![],
+                        })
+                    } else {
+                        None
+                    },
+                    protondb: if i % 3 == 1 {
+                        Some(ProtonDbData {
+                            tier: match i {
+                                1 => ProtonTier::Platinum,
+                                4 => ProtonTier::Gold,
+                                7 => ProtonTier::Silver,
+                                10 => ProtonTier::Native,
+                                13 => ProtonTier::Gold,
+                                16 => ProtonTier::Platinum,
+                                _ => ProtonTier::Unknown,
+                            },
+                            confidence: None,
+                            score: None,
+                        })
+                    } else {
+                        None
+                    },
+                    pcgw: if i % 3 == 2 {
+                        Some(PcgwData {
+                            page_name: None,
+                            controller_support: match i {
+                                2 => ControllerSupport::Full,
+                                8 => ControllerSupport::Full,
+                                14 => ControllerSupport::Partial,
+                                20 => ControllerSupport::None,
+                                _ => ControllerSupport::Unknown,
+                            },
+                            steam_deck_notes: None,
+                            fixes_url: None,
+                        })
+                    } else {
+                        None
+                    },
+                    steam_store: if i < 12 {
+                        Some(SteamStoreDetails {
+                            app_id,
+                            name: format!("Demo Game {i:02}"),
+                            steam_store_type: "game".into(),
+                            is_free: i == 7,
+                            short_description: Some(format!("Demo description {i}")),
+                            header_image: None,
+                            developers: vec!["Demo Studio".into()],
+                            publishers: vec![],
+                            genres: vec![],
+                            categories: vec![],
+                            release_date: None,
+                            metacritic_score: None,
+                            platforms: SteamStorePlatforms {
+                                windows: true,
+                                mac: i % 5 == 0,
+                                linux: i == 10,
+                            },
+                            coming_soon: false,
+                            price_overview: if i == 7 {
+                                None
+                            } else {
+                                Some(vapourfly_core::models::PriceOverview {
+                                    currency: "USD".into(),
+                                    initial_price_cents: 1999 + i * 500,
+                                    final_price_cents: 1999 + i * 500,
+                                    discount_percent: 0,
+                                })
+                            },
+                        })
+                    } else {
+                        None
+                    },
+                }
+            })
+            .collect();
+
+        let scan = ScanResult {
+            games: demo_games,
+            warnings: vec![],
+            steam_dir: "/demo/steam".into(),
+            account: "demo_user".into(),
+        };
+        self.scan_result = Some(scan);
+
+        // -- 4 Steam Collections ---------------------------------------------
+        self.collections = vec![
+            SteamCollection {
+                id: "favorite".into(),
+                name: "Favorites".into(),
+                app_ids: vec![1000, 1005, 1010, 1015],
+                removed_app_ids: vec![],
+                is_hidden_collection: false,
+            },
+            SteamCollection {
+                id: "hidden".into(),
+                name: "Hidden".into(),
+                app_ids: vec![1009, 1014],
+                removed_app_ids: vec![],
+                is_hidden_collection: true,
+            },
+            SteamCollection {
+                id: "completed".into(),
+                name: "Completed".into(),
+                app_ids: vec![1000, 1004, 1010],
+                removed_app_ids: vec![],
+                is_hidden_collection: false,
+            },
+            SteamCollection {
+                id: "want-to-play".into(),
+                name: "Want to Play".into(),
+                app_ids: vec![1003, 1007, 1012],
+                removed_app_ids: vec![],
+                is_hidden_collection: false,
+            },
+        ];
+
+        // -- Junk decisions (mixed confidence) --------------------------------
+        self.junk_results = vec![
+            JunkDecision {
+                app_id: 1011,
+                name: "Demo Game 11".into(),
+                is_junk: true,
+                confidence: 1.0,
+                matched: vec![JunkSignal::LowPlaytime { minutes: 5 }],
+                missing: vec![],
+                mode: JunkMode::Default,
+            },
+            JunkDecision {
+                app_id: 1017,
+                name: "Demo Game 17".into(),
+                is_junk: true,
+                confidence: 0.33,
+                matched: vec![JunkSignal::LowPlaytime { minutes: 10 }],
+                missing: vec![JunkSignalKind::CompletionTime, JunkSignalKind::Rating],
+                mode: JunkMode::Default,
+            },
+            JunkDecision {
+                app_id: 1005,
+                name: "Demo Game 05".into(),
+                is_junk: false,
+                confidence: 0.66,
+                matched: vec![],
+                missing: vec![JunkSignalKind::CompletionTime],
+                mode: JunkMode::Default,
+            },
+        ];
+        self.junk_selected = [1011, 1017].into_iter().collect();
+
+        // -- Recommendation results -------------------------------------------
+        self.recommend_results = vec![
+            Recommendation {
+                app_id: 1003,
+                name: "Demo Game 03".into(),
+                score: 4.5,
+                reasons: vec![
+                    RecommendReason {
+                        code: "low_playtime".into(),
+                        description: "Low playtime (0 min)".into(),
+                        weight: 2.0,
+                    },
+                    RecommendReason {
+                        code: "time_match".into(),
+                        description: "HLTB fits 120 min session".into(),
+                        weight: 1.5,
+                    },
+                    RecommendReason {
+                        code: "high_rating".into(),
+                        description: "High rating (3.9/5)".into(),
+                        weight: 1.0,
+                    },
+                ],
+            },
+            Recommendation {
+                app_id: 1008,
+                name: "Demo Game 08".into(),
+                score: 3.0,
+                reasons: vec![
+                    RecommendReason {
+                        code: "low_playtime".into(),
+                        description: "Low playtime (0 min)".into(),
+                        weight: 2.0,
+                    },
+                    RecommendReason {
+                        code: "deck_compatible".into(),
+                        description: "ProtonDB Gold".into(),
+                        weight: 1.0,
+                    },
+                ],
+            },
+            Recommendation {
+                app_id: 1012,
+                name: "Demo Game 12".into(),
+                score: 2.5,
+                reasons: vec![
+                    RecommendReason {
+                        code: "low_playtime".into(),
+                        description: "Low playtime (0 min)".into(),
+                        weight: 2.0,
+                    },
+                    RecommendReason {
+                        code: "time_match".into(),
+                        description: "HLTB 15m fits session".into(),
+                        weight: 0.5,
+                    },
+                ],
+            },
+        ];
+
+        // -- Discover results -------------------------------------------------
+        self.discover_results = vec![
+            DiscoverPick {
+                app_id: 1003,
+                name: "Demo Game 03".into(),
+                score: 5.2,
+                reasons: vec![discover::DiscoverReason {
+                    code: "taste_overlap",
+                    description: "Taste vector overlap",
+                    weight: 5.2,
+                }],
+            },
+            DiscoverPick {
+                app_id: 1008,
+                name: "Demo Game 08".into(),
+                score: 3.1,
+                reasons: vec![discover::DiscoverReason {
+                    code: "high_rating",
+                    description: "High rating bonus",
+                    weight: 3.1,
+                }],
+            },
+        ];
+
+        // -- Source statuses --------------------------------------------------
+        self.source_statuses =
+            vapourfly_api::enrichment::source_status(&vapourfly_core::config::default_cache_dir());
+
+        // -- Detected accounts ------------------------------------------------
+        self.detected_accounts = vec![SteamAccount {
+            steam_id64: "76561198000000000".into(),
+            account_name: "demo_user".into(),
+            persona_name: "Demo Player".into(),
+            most_recent: true,
+        }];
+
+        // -- Backups ----------------------------------------------------------
+        self.backups = vec![BackupInfo {
+            path: PathBuf::from(
+                "/demo/backups/cloud-storage-namespace-1.vapourfly-backup-20260101T120000Z-abc12345.json",
+            ),
+            created_at: chrono::Utc::now(),
+            sha256: "abc12345def67890".into(),
+        }];
+
+        // -- Playlist store ids -----------------------------------------------
+        self.playlist_store_ids = vec![
+            "my-favorites".into(),
+            "story-games".into(),
+            "discover".into(),
+            "dynamic-deck-session".into(),
+            "mood-quick-round".into(),
+        ];
+        self.playlist_store_ids_loaded = true;
     }
 
     /// Resolve the cloud storage path for the current config.
@@ -1336,6 +1725,11 @@ impl VapourflyApp {
         self.loading = true;
         self.error = None;
         self.success_msg = None;
+
+        // Allocate a request ID for stale-result protection.
+        let job_id = self.job_runner.next_id();
+        self.scan_job_id = Some(job_id);
+        SCAN_RESULT.clear();
 
         let ctx = ctx.clone();
         let fixtures = self.fixtures_path.clone();
@@ -1369,7 +1763,7 @@ impl VapourflyApp {
             };
             let result = vapourfly_api::workflow::prepare(&opts);
             ctx.request_repaint();
-            SCAN_RESULT.lock().unwrap().replace(result);
+            SCAN_RESULT.set(job_id, result.map_err(|e| e.to_string()));
         });
     }
 
@@ -1402,6 +1796,10 @@ impl VapourflyApp {
             let allow_steam_running = self.allow_steam_running;
             let retention = self.backup_retention();
 
+            let job_id = self.job_runner.next_id();
+            self.write_job_id = Some(job_id);
+            WRITE_RESULT.clear();
+
             std::thread::spawn(move || {
                 let result = vapourfly_core::write::commit_with_retention(
                     &plan,
@@ -1411,7 +1809,7 @@ impl VapourflyApp {
                 .map_err(|e| format!("Write failed: {e}"))
                 .map(|backup| format!("Write complete. Backup: {}", backup.display()));
 
-                WRITE_RESULT.lock().unwrap().replace(result);
+                WRITE_RESULT.set(job_id, result);
             });
             return;
         }
@@ -1433,6 +1831,10 @@ impl VapourflyApp {
         let collection_name = self.junk_collection_name.clone();
         let allow_steam_running = self.allow_steam_running;
         let retention = self.backup_retention();
+
+        let job_id = self.job_runner.next_id();
+        self.write_job_id = Some(job_id);
+        WRITE_RESULT.clear();
 
         std::thread::spawn(move || {
             let result = match action {
@@ -1457,13 +1859,23 @@ impl VapourflyApp {
                 }
             };
 
-            WRITE_RESULT.lock().unwrap().replace(result);
+            WRITE_RESULT.set(job_id, result);
         });
     }
 
     /// Generate a dry-run WritePlan for the pending action and show the diff
     /// modal before committing to disk.
     fn start_dry_run(&mut self, action: PendingAction) {
+        // Demo mode prohibits real Steam writes (spec: --ui-demo safety).
+        if self.ui_demo {
+            self.error = Some(
+                "Write actions are disabled in demo mode (--ui-demo). \
+                 Run without --ui-demo to modify Steam files."
+                    .into(),
+            );
+            return;
+        }
+
         let action = match self.resolve_dry_run_action(action) {
             Ok(action) => action,
             Err(e) => {
@@ -1485,6 +1897,10 @@ impl VapourflyApp {
         self.dry_run_plan = None;
         self.pending_action = Some(action.clone());
 
+        let job_id = self.job_runner.next_id();
+        self.dry_run_job_id = Some(job_id);
+        DRY_RUN_RESULT.clear();
+
         let junk_results = self.junk_results.clone();
         let collection_name = self.junk_collection_name.clone();
         let recommend_results = self.recommend_results.clone();
@@ -1497,7 +1913,7 @@ impl VapourflyApp {
                 &collection_name,
                 &recommend_results,
             );
-            DRY_RUN_RESULT.lock().unwrap().replace(result);
+            DRY_RUN_RESULT.set(job_id, result);
         });
     }
 
@@ -1526,6 +1942,10 @@ impl VapourflyApp {
         self.cache_refresh_msg = None;
         self.success_msg = None;
 
+        let job_id = self.job_runner.next_id();
+        self.enrich_job_id = Some(job_id);
+        ENRICH_RESULT.clear();
+
         let cache_root = vapourfly_core::config::default_cache_dir();
         let ctx = ctx.clone();
 
@@ -1550,7 +1970,7 @@ impl VapourflyApp {
             let summary = vapourfly_api::enrichment::enrich_games(&mut games, &cache, &options);
 
             ctx.request_repaint();
-            ENRICH_RESULT.lock().unwrap().replace(Ok(summary));
+            ENRICH_RESULT.set(job_id, Ok(summary));
         });
     }
 
@@ -1867,8 +2287,9 @@ impl VapourflyApp {
                 let games = self
                     .prepared_games(JunkMode::Default)
                     .ok_or("Scan your library before syncing a rule-based playlist.")?;
-                let report = playlist::match_playlist(&pf, &games)
-                    .map_err(|e| format!("Match failed: {e}"))?;
+                let report =
+                    playlist::match_playlist(&pf, &games, &std::collections::HashMap::new())
+                        .map_err(|e| format!("Match failed: {e}"))?;
 
                 Ok(PendingAction::PlaylistSync(PlaylistFile {
                     vapourfly_schema: pf.vapourfly_schema,
@@ -1889,7 +2310,26 @@ impl VapourflyApp {
 
     fn match_playlist_against_library(&mut self, pf: &PlaylistFile) {
         if let Some(games) = self.prepared_games(JunkMode::Default) {
-            match playlist::match_playlist(pf, &games) {
+            // First pass to find missing AppIDs, then fetch cached store
+            // details for those missing entries so completion_price reflects
+            // the corrected semantics (missing non-free entries only).
+            let empty = std::collections::HashMap::new();
+            let preliminary = match playlist::match_playlist(pf, &games, &empty) {
+                Ok(r) => r,
+                Err(e) => {
+                    self.error = Some(format!("Match failed: {e}"));
+                    return;
+                }
+            };
+            let missing_details = if preliminary.missing.is_empty() {
+                std::collections::HashMap::new()
+            } else {
+                let cache = vapourfly_api::cache::DiskCache::new(
+                    vapourfly_core::config::default_cache_dir(),
+                );
+                vapourfly_api::enrichment::missing_store_details(&preliminary.missing, &cache)
+            };
+            match playlist::match_playlist(pf, &games, &missing_details) {
                 Ok(report) => self.playlist_match_report = Some(report),
                 Err(e) => self.error = Some(format!("Match failed: {e}")),
             }
@@ -2097,6 +2537,12 @@ fn execute_backup_restore(
 // ---------------------------------------------------------------------------
 
 impl eframe::App for VapourflyApp {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        // Persist theme preference via eframe storage, not domain config
+        // (ADR-0006: appearance persistence is a GUI-only concern).
+        storage.set_string("vapourfly.theme", self.theme_mode.as_u8().to_string());
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
@@ -2104,58 +2550,61 @@ impl eframe::App for VapourflyApp {
         set_active_theme(self.theme_mode);
         configure_ui(&ctx, self.theme_mode);
 
-        // Poll background scan result.
-        if self.loading {
-            let mut guard = SCAN_RESULT.lock().unwrap();
-            if let Some(result) = guard.take() {
-                self.loading = false;
-                match result {
-                    Ok(scan) => {
-                        self.scan_result = Some(scan);
-                        match self.load_collections_from_cloud() {
-                            Ok(collections) => self.collections = collections,
-                            Err(e) => self.error = Some(e),
-                        }
+        // Poll background scan result (stale-result protected via JobId).
+        if self.loading
+            && let Some(expected) = self.scan_job_id
+            && let Some(result) = SCAN_RESULT.take_if(expected)
+        {
+            self.loading = false;
+            self.scan_job_id = None;
+            match result {
+                Ok(scan) => {
+                    self.scan_result = Some(scan);
+                    match self.load_collections_from_cloud() {
+                        Ok(collections) => self.collections = collections,
+                        Err(e) => self.error = Some(e),
                     }
-                    Err(e) => self.error = Some(e.to_string()),
                 }
+                Err(e) => self.error = Some(e),
             }
         }
 
         // Poll background write result.
-        if self.write_loading {
-            let mut guard = WRITE_RESULT.lock().unwrap();
-            if let Some(result) = guard.take() {
-                self.write_loading = false;
-                match result {
-                    Ok(msg) => {
-                        self.success_msg = Some(msg);
-                        // Auto-re-scan to pick up changes
-                        self.start_scan(&ctx);
-                    }
-                    Err(e) => self.error = Some(e),
+        if self.write_loading
+            && let Some(expected) = self.write_job_id
+            && let Some(result) = WRITE_RESULT.take_if(expected)
+        {
+            self.write_loading = false;
+            self.write_job_id = None;
+            match result {
+                Ok(msg) => {
+                    self.success_msg = Some(msg);
+                    // Auto-re-scan to pick up changes
+                    self.start_scan(&ctx);
                 }
+                Err(e) => self.error = Some(e),
             }
         }
 
         // Poll background cache refresh result.
-        if self.cache_refresh_loading {
-            let mut guard = ENRICH_RESULT.lock().unwrap();
-            if let Some(result) = guard.take() {
-                self.cache_refresh_loading = false;
-                match result {
-                    Ok(summary) => {
-                        self.cache_refresh_msg = Some(format!(
-                            "Refresh complete: {} games processed, {} network fetches, {} cache hits, {} errors",
-                            summary.games_processed,
-                            summary.network_fetches,
-                            summary.cache_hits,
-                            summary.errors.len()
-                        ));
-                        self.reload_source_statuses();
-                    }
-                    Err(e) => self.cache_refresh_msg = Some(format!("Error: {e}")),
+        if self.cache_refresh_loading
+            && let Some(expected) = self.enrich_job_id
+            && let Some(result) = ENRICH_RESULT.take_if(expected)
+        {
+            self.cache_refresh_loading = false;
+            self.enrich_job_id = None;
+            match result {
+                Ok(summary) => {
+                    self.cache_refresh_msg = Some(format!(
+                        "Refresh complete: {} games processed, {} network fetches, {} cache hits, {} errors",
+                        summary.games_processed,
+                        summary.network_fetches,
+                        summary.cache_hits,
+                        summary.errors.len()
+                    ));
+                    self.reload_source_statuses();
                 }
+                Err(e) => self.cache_refresh_msg = Some(format!("Error: {e}")),
             }
         }
 
@@ -2164,20 +2613,21 @@ impl eframe::App for VapourflyApp {
 
         // -- Confirmation dialog -----------------------------------------------
         // Poll background dry-run result.
-        if self.dry_run_loading {
-            let mut guard = DRY_RUN_RESULT.lock().unwrap();
-            if let Some(result) = guard.take() {
-                self.dry_run_loading = false;
-                match result {
-                    Ok(plan) => {
-                        self.dry_run_plan = Some(plan);
-                        self.dry_run_error = None;
-                        self.show_confirm_dialog = true;
-                    }
-                    Err(e) => {
-                        self.dry_run_error = Some(e);
-                        self.pending_action = None;
-                    }
+        if self.dry_run_loading
+            && let Some(expected) = self.dry_run_job_id
+            && let Some(result) = DRY_RUN_RESULT.take_if(expected)
+        {
+            self.dry_run_loading = false;
+            self.dry_run_job_id = None;
+            match result {
+                Ok(plan) => {
+                    self.dry_run_plan = Some(plan);
+                    self.dry_run_error = None;
+                    self.show_confirm_dialog = true;
+                }
+                Err(e) => {
+                    self.dry_run_error = Some(e);
+                    self.pending_action = None;
                 }
             }
         }
@@ -2207,8 +2657,8 @@ impl eframe::App for VapourflyApp {
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    window_controls(ui);
-                    ui.separator();
+                    // Native OS window controls remain authoritative (ADR-0006).
+                    // No app-drawn traffic-light circles.
                     ui.add_space(SP_2);
                     ui.label(
                         RichText::new("Vapourfly")
@@ -3572,6 +4022,28 @@ impl VapourflyApp {
                             .size(TS_BODY)
                             .color(t().text_secondary),
                     );
+                    if let Some(coverage) = &report.price_coverage
+                        && let Some(ratio) = coverage.ratio()
+                        && ratio < 1.0
+                    {
+                        ui.label(
+                            RichText::new(format!(
+                                "Price coverage: {}/{} missing entries priced ({:.0}%)",
+                                coverage.priced,
+                                coverage.non_free,
+                                ratio * 100.0
+                            ))
+                            .size(TS_SM)
+                            .color(t().text_muted),
+                        );
+                    }
+                } else if report.missing.is_empty() {
+                    ui.add_space(SP_2);
+                    ui.label(
+                        RichText::new("No missing entries — library is complete.")
+                            .size(TS_SM)
+                            .color(t().text_muted),
+                    );
                 } else {
                     ui.add_space(SP_2);
                     ui.label(
@@ -4416,6 +4888,10 @@ impl VapourflyApp {
             }
         }
         if let Some(path) = restore_path {
+            if self.ui_demo {
+                self.error = Some("Backup restore is disabled in demo mode (--ui-demo).".into());
+                return;
+            }
             // Clear any leftover dry-run plan so Confirm runs restore, not an
             // earlier junk/playlist write (ticket 09 write-safety).
             self.dry_run_plan = None;
@@ -5005,13 +5481,15 @@ fn format_junk_signal(signal: &JunkSignal) -> String {
 // ---------------------------------------------------------------------------
 
 fn main() -> eframe::Result<()> {
-    let fixtures_path = std::env::args()
-        .collect::<Vec<String>>()
+    let args: Vec<String> = std::env::args().collect();
+    let fixtures_path = args
         .windows(2)
         .find(|w| w[0] == "--fixtures")
         .map(|w| PathBuf::from(&w[1]));
 
-    let app = VapourflyApp::new(fixtures_path);
+    let ui_demo = args.iter().any(|a| a == "--ui-demo");
+
+    let app = VapourflyApp::new(fixtures_path, ui_demo);
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -5024,8 +5502,21 @@ fn main() -> eframe::Result<()> {
         "Vapourfly",
         native_options,
         Box::new(|cc| {
-            configure_ui(&cc.egui_ctx, ThemeMode::Light);
+            // Restore persisted theme from eframe storage (ADR-0006: theme
+            // preference is a GUI-only concern, not domain config).
+            let stored_theme = cc
+                .storage
+                .and_then(|s| s.get_string("vapourfly.theme"))
+                .and_then(|v| v.parse::<u8>().ok())
+                .map(ThemeMode::from_u8)
+                .unwrap_or(ThemeMode::Light);
+            configure_ui(&cc.egui_ctx, stored_theme);
             egui_extras::install_image_loaders(&cc.egui_ctx);
+            let mut app = app;
+            app.theme_mode = stored_theme;
+            if ui_demo {
+                app.populate_demo_data();
+            }
             Ok(Box::new(app))
         }),
     )
@@ -5067,7 +5558,7 @@ mod tests {
 
     #[test]
     fn app_created_without_fixtures() {
-        let app = VapourflyApp::new(None);
+        let app = VapourflyApp::new(None, false);
         assert!(app.scan_result.is_none());
         assert_eq!(app.current_view, View::Library);
         assert!(!app.loading);
@@ -5075,9 +5566,52 @@ mod tests {
     }
 
     #[test]
+    fn ui_demo_flag_is_stored() {
+        let app = VapourflyApp::new(None, true);
+        assert!(app.ui_demo);
+        let app = VapourflyApp::new(None, false);
+        assert!(!app.ui_demo);
+    }
+
+    #[test]
+    fn populate_demo_data_provides_all_pages() {
+        let mut app = VapourflyApp::new(None, true);
+        app.populate_demo_data();
+        // Library: at least 24 games
+        let scan = app.scan_result.expect("demo scan result");
+        assert!(scan.games.len() >= 24);
+        // Collections: at least 4
+        assert!(app.collections.len() >= 4);
+        // Junk decisions with mixed confidence
+        assert!(!app.junk_results.is_empty());
+        assert!(app.junk_results.iter().any(|d| d.confidence < 1.0));
+        // Recommendations
+        assert!(!app.recommend_results.is_empty());
+        // Discover results
+        assert!(!app.discover_results.is_empty());
+        // Playlist store ids (at least 5 including generated slots)
+        assert!(app.playlist_store_ids.len() >= 5);
+        assert!(app.playlist_store_ids.contains(&"discover".to_string()));
+        // Accounts
+        assert!(!app.detected_accounts.is_empty());
+        // Backups
+        assert!(!app.backups.is_empty());
+    }
+
+    #[test]
+    fn theme_mode_round_trips_through_u8() {
+        assert_eq!(
+            ThemeMode::from_u8(ThemeMode::Light.as_u8()),
+            ThemeMode::Light
+        );
+        assert_eq!(ThemeMode::from_u8(ThemeMode::Dark.as_u8()), ThemeMode::Dark);
+        assert_eq!(ThemeMode::from_u8(99), ThemeMode::Light); // unknown → Light
+    }
+
+    #[test]
     fn app_created_with_fixtures_path() {
         let path = PathBuf::from("/tmp/fix");
-        let app = VapourflyApp::new(Some(path.clone()));
+        let app = VapourflyApp::new(Some(path.clone()), false);
         assert_eq!(app.fixtures_path, Some(path));
     }
 
@@ -5136,7 +5670,7 @@ mod tests {
 
     #[test]
     fn default_landing_view_is_library() {
-        let app = VapourflyApp::new(None);
+        let app = VapourflyApp::new(None, false);
         assert_eq!(app.current_view, View::Library);
         assert!(!app.show_junk_panel);
     }
@@ -5315,7 +5849,7 @@ mod tests {
     #[test]
     fn library_filter_fields_match_three_toggle_contract() {
         // Guard against reintroducing Unplayed / include-only Hidden or Junk toggles.
-        let app = VapourflyApp::new(None);
+        let app = VapourflyApp::new(None, false);
         assert!(!app.filter_installed_only);
         assert!(!app.filter_not_hidden);
         assert!(!app.filter_not_junk);
@@ -5360,7 +5894,7 @@ mod tests {
 
     #[test]
     fn backup_retention_prefers_settings_edit_field() {
-        let mut app = VapourflyApp::new(None);
+        let mut app = VapourflyApp::new(None, false);
         app.backup_retention_edit = "1".into();
         assert_eq!(app.backup_retention(), 1);
         app.backup_retention_edit = "not-a-number".into();
@@ -5381,7 +5915,7 @@ mod tests {
 
     #[test]
     fn app_settings_fields_initialized() {
-        let app = VapourflyApp::new(None);
+        let app = VapourflyApp::new(None, false);
         // cc and lang should have defaults
         assert!(!app.cc_edit.is_empty());
         assert!(!app.lang_edit.is_empty());
@@ -5392,7 +5926,7 @@ mod tests {
 
     #[test]
     fn recommend_request_uses_optional_seed_input() {
-        let mut app = VapourflyApp::new(None);
+        let mut app = VapourflyApp::new(None, false);
         app.recommend_minutes = "90".into();
         app.recommend_count = "7".into();
         app.recommend_seed = "12345".into();
@@ -5413,7 +5947,7 @@ mod tests {
 
     #[test]
     fn recommend_request_rejects_invalid_input() {
-        let mut app = VapourflyApp::new(None);
+        let mut app = VapourflyApp::new(None, false);
         app.recommend_minutes = "soon".into();
 
         let err = app.recommend_request_from_inputs().unwrap_err();
@@ -5423,7 +5957,7 @@ mod tests {
 
     #[test]
     fn discover_options_use_count_and_seed_inputs() {
-        let mut app = VapourflyApp::new(None);
+        let mut app = VapourflyApp::new(None, false);
         app.discover_seed = "367520".into();
         app.discover_count = "12".into();
 
@@ -5454,7 +5988,7 @@ mod tests {
     #[test]
     fn load_playlist_from_store_adopts_edit_fields() {
         let dir = TempDir::new().unwrap();
-        let mut app = VapourflyApp::new(None);
+        let mut app = VapourflyApp::new(None, false);
         app.playlist_store_dir = Some(dir.path().to_path_buf());
 
         let pf = sample_generator_playlist("my-list", vec![730, 440]);
@@ -5474,7 +6008,7 @@ mod tests {
         let fixtures =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
         let dir = TempDir::new().unwrap();
-        let mut app = VapourflyApp::new(Some(fixtures));
+        let mut app = VapourflyApp::new(Some(fixtures), false);
         app.playlist_store_dir = Some(dir.path().to_path_buf());
 
         // Minimal scan so prepared_games has data (empty is fine for empty picks).
@@ -5619,7 +6153,7 @@ mod tests {
     #[test]
     fn app_store_generator_playlist_uses_injected_store_dir() {
         let dir = TempDir::new().unwrap();
-        let mut app = VapourflyApp::new(None);
+        let mut app = VapourflyApp::new(None, false);
         app.playlist_store_dir = Some(dir.path().to_path_buf());
 
         let pf = app
@@ -5637,7 +6171,7 @@ mod tests {
     #[serial]
     fn backup_restore_confirm_clears_leftover_dry_run_plan() {
         // Ticket 09: Restore must not commit a stale junk/playlist dry-run.
-        WRITE_RESULT.lock().unwrap().take();
+        WRITE_RESULT.clear();
 
         let temp_dir = TempDir::new().unwrap();
         let target_path = temp_dir.path().join("cloud-storage-namespace-1.json");
@@ -5656,7 +6190,7 @@ mod tests {
 
         let fixtures =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
-        let mut app = VapourflyApp::new(Some(fixtures));
+        let mut app = VapourflyApp::new(Some(fixtures), false);
         app.dry_run_plan = Some(stale_plan);
         app.pending_action = Some(PendingAction::BackupRestore(
             temp_dir.path().join("missing-backup.json"),
@@ -5668,7 +6202,7 @@ mod tests {
         // Plan must be dropped so restore takes the legacy path.
         assert!(app.dry_run_plan.is_none());
 
-        let result = poll_write_result();
+        let result = poll_write_result(&app);
         // Must be a restore failure, not a successful plan commit of junk.
         let err = result.expect_err("expected restore to fail for missing backup");
         assert!(
@@ -5681,7 +6215,7 @@ mod tests {
 
     #[test]
     fn cache_refresh_is_blocked_in_offline_mode() {
-        let mut app = VapourflyApp::new(None);
+        let mut app = VapourflyApp::new(None, false);
         app.offline_mode = true;
         app.scan_result = Some(ScanResult {
             steam_dir: "/tmp/steam".into(),
@@ -5757,7 +6291,7 @@ mod tests {
     fn settings_can_refresh_detected_accounts_from_fixture() {
         let fixtures =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
-        let mut app = VapourflyApp::new(Some(fixtures));
+        let mut app = VapourflyApp::new(Some(fixtures), false);
 
         app.refresh_detected_accounts();
 
@@ -5822,7 +6356,7 @@ mod tests {
 
     #[test]
     fn build_playlist_from_edit_fields_creates_rule_based_playlist() {
-        let mut app = VapourflyApp::new(None);
+        let mut app = VapourflyApp::new(None, false);
         app.playlist_edit_id = "installed-unplayed".into();
         app.playlist_edit_name = "Installed Unplayed".into();
         app.playlist_edit_rules = r#"[{"op":"Installed"},{"op":"NotHidden"}]"#.into();
@@ -5839,7 +6373,7 @@ mod tests {
 
     #[test]
     fn build_playlist_from_edit_fields_rejects_invalid_rules_json() {
-        let mut app = VapourflyApp::new(None);
+        let mut app = VapourflyApp::new(None, false);
         app.playlist_edit_id = "bad".into();
         app.playlist_edit_name = "Bad".into();
         app.playlist_edit_rules = "not json".into();
@@ -5850,7 +6384,7 @@ mod tests {
 
     #[test]
     fn build_playlist_from_edit_fields_rejects_empty_rules_array() {
-        let mut app = VapourflyApp::new(None);
+        let mut app = VapourflyApp::new(None, false);
         app.playlist_edit_id = "empty".into();
         app.playlist_edit_name = "Empty".into();
         app.playlist_edit_rules = "[]".into();
@@ -5861,7 +6395,7 @@ mod tests {
 
     #[test]
     fn build_playlist_from_edit_fields_requires_id_and_name() {
-        let mut app = VapourflyApp::new(None);
+        let mut app = VapourflyApp::new(None, false);
         // No id, no name.
         let err = app.build_playlist_from_edit_fields();
         assert!(err.is_err());
@@ -5890,7 +6424,7 @@ mod tests {
             },
         };
 
-        let mut app = VapourflyApp::new(None);
+        let mut app = VapourflyApp::new(None, false);
         app.playlist_last_import = Some(pf.clone());
         app.playlist_export_path = export_path.to_string_lossy().to_string();
 
@@ -5963,7 +6497,7 @@ mod tests {
             },
         };
 
-        let mut app = VapourflyApp::new(None);
+        let mut app = VapourflyApp::new(None, false);
         app.scan_result = Some(scan_result);
 
         let action = app
@@ -5985,7 +6519,7 @@ mod tests {
     #[serial]
     fn cached_dry_run_plan_still_checks_write_safety() {
         vapourfly_core::steam::set_steam_running_override(Some(true));
-        WRITE_RESULT.lock().unwrap().take();
+        WRITE_RESULT.clear();
 
         let temp_dir = TempDir::new().unwrap();
         let target_path = temp_dir.path().join("cloud-storage-namespace-1.json");
@@ -6003,22 +6537,25 @@ mod tests {
         )
         .unwrap();
 
-        let mut app = VapourflyApp::new(None);
+        let mut app = VapourflyApp::new(None, false);
         app.pending_action = Some(PendingAction::JunkApply);
         app.dry_run_plan = Some(plan);
         app.allow_steam_running = false;
         app.execute_pending_action();
 
-        let result = poll_write_result();
+        let result = poll_write_result(&app);
         assert!(result.unwrap_err().contains("Steam is currently running"));
         assert_eq!(std::fs::read_to_string(&target_path).unwrap(), "[]");
 
         vapourfly_core::steam::set_steam_running_override(None);
     }
 
-    fn poll_write_result() -> Result<String, String> {
+    fn poll_write_result(app: &VapourflyApp) -> Result<String, String> {
+        let expected = app
+            .write_job_id
+            .expect("write_job_id must be set before polling");
         for _ in 0..100 {
-            if let Some(result) = WRITE_RESULT.lock().unwrap().take() {
+            if let Some(result) = WRITE_RESULT.take_if(expected) {
                 return result;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -6030,7 +6567,7 @@ mod tests {
     fn load_collections_from_fixture_cloud_storage() {
         let fixtures =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
-        let app = VapourflyApp::new(Some(fixtures));
+        let app = VapourflyApp::new(Some(fixtures), false);
         let collections = app.load_collections_from_cloud().unwrap();
         let favorites = collections
             .iter()
@@ -6045,7 +6582,7 @@ mod tests {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
         let temp_dir = TempDir::new().unwrap();
         let export_path = temp_dir.path().join("collections.json");
-        let mut app = VapourflyApp::new(Some(fixtures));
+        let mut app = VapourflyApp::new(Some(fixtures), false);
         app.collections_export_path = export_path.to_string_lossy().to_string();
 
         app.export_collections().unwrap();
@@ -6063,7 +6600,7 @@ mod tests {
     fn setup_diagnostics_reports_fixture_mode() {
         let fixtures =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
-        let mut app = VapourflyApp::new(Some(fixtures));
+        let mut app = VapourflyApp::new(Some(fixtures), false);
         app.run_setup_diagnostics();
         let report = app.setup_diagnostics.expect("diagnostics report");
         assert!(report.contains("Vapourfly Setup Diagnostics"));
@@ -6075,7 +6612,7 @@ mod tests {
     fn export_diagnostics_writes_json_file() {
         let temp_dir = TempDir::new().unwrap();
         let export_path = temp_dir.path().join("diagnostics.json");
-        let mut app = VapourflyApp::new(None);
+        let mut app = VapourflyApp::new(None, false);
         app.diagnostics_export_path = export_path.to_string_lossy().to_string();
 
         app.export_diagnostics().unwrap();

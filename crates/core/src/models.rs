@@ -557,7 +557,71 @@ pub struct PlaylistMatchReport {
     pub unplayed: Vec<u32>,
     pub hidden: Vec<u32>,
     pub junk: Vec<u32>,
-    pub completion_price: Option<Money>,
+    /// Sum of Steam Store final prices for **missing, non-free** Playlist
+    /// entries with available price data. Owned/unplayed games are never
+    /// included. Rule Playlists evaluate only the owned library, so they have
+    /// no missing entries and this is `None`.
+    ///
+    /// See [`CompletionPrice`] for single vs mixed-currency handling.
+    pub completion_price: Option<CompletionPrice>,
+    /// Fraction of missing non-free entries that have price data, so the GUI
+    /// can label partial estimates. `None` when there are no missing non-free
+    /// entries (e.g. rule Playlists or fully-owned manual Playlists).
+    pub price_coverage: Option<PriceCoverage>,
+}
+
+/// Completion price for a Playlist Match, distinguishing single-currency
+/// totals from mixed-currency situations where summing would be meaningless.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum CompletionPrice {
+    /// All priced missing entries share one currency.
+    Single(Money),
+    /// Multiple currencies encountered; each entry is a per-currency total.
+    Mixed(Vec<Money>),
+}
+
+impl CompletionPrice {
+    /// Format the completion price for display.
+    ///
+    /// Single-currency: `"USD 49.98"`.
+    /// Mixed-currency: `"USD 29.99 + EUR 19.99"` (sorted by currency code).
+    pub fn format(&self) -> String {
+        match self {
+            Self::Single(money) => money.format(),
+            Self::Mixed(totals) => {
+                let mut sorted: Vec<&Money> = totals.iter().collect();
+                sorted.sort_by(|a, b| a.currency.cmp(&b.currency));
+                sorted
+                    .iter()
+                    .map(|m| m.format())
+                    .collect::<Vec<_>>()
+                    .join(" + ")
+            }
+        }
+    }
+}
+
+/// How many missing non-free entries have price data vs. how many are missing
+/// and non-free overall.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PriceCoverage {
+    /// Missing entries that are non-free and have price data.
+    pub priced: usize,
+    /// Missing entries that are non-free (regardless of whether price data
+    /// is available).
+    pub non_free: usize,
+}
+
+impl PriceCoverage {
+    /// Ratio of priced to non-free missing entries, or `None` when
+    /// `non_free == 0`.
+    pub fn ratio(&self) -> Option<f64> {
+        if self.non_free == 0 {
+            None
+        } else {
+            Some(self.priced as f64 / self.non_free as f64)
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
