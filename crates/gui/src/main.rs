@@ -1766,6 +1766,7 @@ impl VapourflyApp {
         self.success_msg = None;
 
         let junk_results = self.junk_results.clone();
+        let junk_selected = self.junk_selected.clone();
         let collection_name = self.junk_collection_name.clone();
         let allow_steam_running = self.allow_steam_running;
         let retention = self.backup_retention();
@@ -1779,13 +1780,18 @@ impl VapourflyApp {
                 PendingAction::JunkApply => execute_junk_apply(
                     cloud_path,
                     junk_results,
+                    junk_selected.clone(),
                     collection_name,
                     allow_steam_running,
                     retention,
                 ),
-                PendingAction::JunkHide => {
-                    execute_junk_hide(cloud_path, junk_results, allow_steam_running, retention)
-                }
+                PendingAction::JunkHide => execute_junk_hide(
+                    cloud_path,
+                    junk_results,
+                    junk_selected,
+                    allow_steam_running,
+                    retention,
+                ),
                 PendingAction::BackupRestore(backup_path) => {
                     execute_backup_restore(backup_path, cloud_path, allow_steam_running)
                 }
@@ -1840,6 +1846,7 @@ impl VapourflyApp {
         DRY_RUN_RESULT.clear();
 
         let junk_results = self.junk_results.clone();
+        let junk_selected = self.junk_selected.clone();
         let collection_name = self.junk_collection_name.clone();
         let recommend_results = self.recommend_results.clone();
 
@@ -1848,6 +1855,7 @@ impl VapourflyApp {
                 cloud_path,
                 &action,
                 &junk_results,
+                &junk_selected,
                 &collection_name,
                 &recommend_results,
             );
@@ -2361,19 +2369,31 @@ fn generate_dry_run_plan(
     cloud_path: PathBuf,
     action: &PendingAction,
     junk_results: &[JunkDecision],
+    junk_selected: &std::collections::HashSet<u32>,
     collection_name: &str,
     recommend_results: &[Recommendation],
 ) -> Result<vapourfly_core::models::WritePlan, String> {
     let cloud = vapourfly_core::steam::read_cloud_storage(&cloud_path)
         .map_err(|e| format!("Failed to read cloud storage: {e}"))?;
 
+    // If selections exist, filter junk results to only selected items.
+    let effective_junk: Vec<JunkDecision> = if junk_selected.is_empty() {
+        junk_results.to_vec()
+    } else {
+        junk_results
+            .iter()
+            .filter(|d| junk_selected.contains(&d.app_id))
+            .cloned()
+            .collect()
+    };
+
     let op = match action {
         PendingAction::JunkApply => {
-            let junk_app_ids = disposition::junk_app_ids_from_decisions(junk_results);
+            let junk_app_ids = disposition::junk_app_ids_from_decisions(&effective_junk);
             disposition::junk_apply(collection_name, junk_app_ids).map_err(|e| e.to_string())?
         }
         PendingAction::JunkHide => {
-            let junk_app_ids = disposition::junk_app_ids_from_decisions(junk_results);
+            let junk_app_ids = disposition::junk_app_ids_from_decisions(&effective_junk);
             disposition::junk_hide(junk_app_ids).map_err(|e| e.to_string())?
         }
         PendingAction::RecommendCollection => {
@@ -2397,11 +2417,22 @@ fn generate_dry_run_plan(
 fn execute_junk_apply(
     cloud_path: PathBuf,
     junk_results: Vec<JunkDecision>,
+    junk_selected: std::collections::HashSet<u32>,
     collection_name: String,
     allow_steam_running: bool,
     retention: u32,
 ) -> Result<String, String> {
-    let junk_app_ids = disposition::junk_app_ids_from_decisions(&junk_results);
+    // Filter to selected items if any are selected.
+    let effective_junk: Vec<JunkDecision> = if junk_selected.is_empty() {
+        junk_results
+    } else {
+        junk_results
+            .iter()
+            .filter(|d| junk_selected.contains(&d.app_id))
+            .cloned()
+            .collect()
+    };
+    let junk_app_ids = disposition::junk_app_ids_from_decisions(&effective_junk);
     if junk_app_ids.is_empty() {
         return Err("No junk candidates found.".into());
     }
@@ -2429,10 +2460,21 @@ fn execute_junk_apply(
 fn execute_junk_hide(
     cloud_path: PathBuf,
     junk_results: Vec<JunkDecision>,
+    junk_selected: std::collections::HashSet<u32>,
     allow_steam_running: bool,
     retention: u32,
 ) -> Result<String, String> {
-    let junk_app_ids = disposition::junk_app_ids_from_decisions(&junk_results);
+    // Filter to selected items if any are selected.
+    let effective_junk: Vec<JunkDecision> = if junk_selected.is_empty() {
+        junk_results
+    } else {
+        junk_results
+            .iter()
+            .filter(|d| junk_selected.contains(&d.app_id))
+            .cloned()
+            .collect()
+    };
+    let junk_app_ids = disposition::junk_app_ids_from_decisions(&effective_junk);
     if junk_app_ids.is_empty() {
         return Err("No junk candidates found.".into());
     }
@@ -3501,118 +3543,208 @@ impl VapourflyApp {
         }
 
         let junk_count = self.junk_results.iter().filter(|d| d.is_junk).count();
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
-            metric_pill(ui, "Candidates", junk_count.to_string());
-            metric_pill(ui, "Evaluated", self.junk_results.len().to_string());
-        });
-        ui.add_space(SP_3);
+        let selected_count = self.junk_selected.len();
+        let selected_junk_count = self
+            .junk_results
+            .iter()
+            .filter(|d| self.junk_selected.contains(&d.app_id) && d.is_junk)
+            .count();
 
-        // Preview: candidate cards with confidence + signals (not only a table).
-        section_card(ui, "Preview", |ui| {
-            let text_height = TS_BODY;
-            egui_extras::TableBuilder::new(ui)
-                .striped(true)
-                .resizable(true)
-                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(egui_extras::Column::auto().at_least(60.0))
-                .column(egui_extras::Column::remainder().at_least(150.0))
-                .column(egui_extras::Column::auto().at_least(60.0))
-                .column(egui_extras::Column::auto().at_least(80.0))
-                .column(egui_extras::Column::remainder().at_least(200.0))
-                .header(text_height * 1.4, |mut header| {
-                    header.col(|ui| {
-                        ui.label(
-                            RichText::new("ID")
-                                .size(TS_SM)
-                                .strong()
-                                .color(t().text_secondary),
-                        );
-                    });
-                    header.col(|ui| {
-                        ui.label(
-                            RichText::new("Name")
-                                .size(TS_SM)
-                                .strong()
-                                .color(t().text_secondary),
-                        );
-                    });
-                    header.col(|ui| {
-                        ui.label(
-                            RichText::new("Junk?")
-                                .size(TS_SM)
-                                .strong()
-                                .color(t().text_secondary),
-                        );
-                    });
-                    header.col(|ui| {
-                        ui.label(
-                            RichText::new("Confidence")
-                                .size(TS_SM)
-                                .strong()
-                                .color(t().text_secondary),
-                        );
-                    });
-                    header.col(|ui| {
-                        ui.label(
-                            RichText::new("Signals")
-                                .size(TS_SM)
-                                .strong()
-                                .color(t().text_secondary),
-                        );
-                    });
-                })
-                .body(|mut body| {
-                    for decision in &self.junk_results {
-                        body.row(text_height * 1.2, |mut row| {
-                            row.col(|ui| {
-                                ui.label(
-                                    RichText::new(decision.app_id.to_string())
-                                        .size(TS_BODY)
-                                        .color(t().text_primary),
-                                );
-                            });
-                            row.col(|ui| {
-                                ui.label(
-                                    RichText::new(&decision.name)
-                                        .size(TS_BODY)
-                                        .color(t().text_primary),
-                                );
-                            });
-                            row.col(|ui| {
-                                if decision.is_junk {
-                                    status_badge(ui, "Yes", t().error_soft, t().error);
-                                } else {
-                                    status_badge(ui, "No", t().surface_sunken, t().text_muted);
-                                }
-                            });
-                            row.col(|ui| {
-                                ui.label(
-                                    RichText::new(format!("{:.0}%", decision.confidence * 100.0))
-                                        .size(TS_BODY)
-                                        .color(t().text_primary),
-                                );
-                            });
-                            row.col(|ui| {
-                                let signals: Vec<String> =
-                                    decision.matched.iter().map(format_junk_signal).collect();
-                                ui.label(
-                                    RichText::new(if signals.is_empty() {
-                                        empty_value_label().to_string()
-                                    } else {
-                                        signals.join(", ")
-                                    })
-                                    .size(TS_BODY)
-                                    .color(t().text_secondary),
-                                );
-                            });
-                        });
+        // Two-column layout: table (left) + summary rail (right).
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                // Bulk selection bar.
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                    if ui
+                        .button(RichText::new("Select all junk").size(TS_SM))
+                        .clicked()
+                    {
+                        for d in &self.junk_results {
+                            if d.is_junk {
+                                self.junk_selected.insert(d.app_id);
+                            }
+                        }
                     }
+                    if ui.button(RichText::new("Clear").size(TS_SM)).clicked() {
+                        self.junk_selected.clear();
+                    }
+                    ui.label(
+                        RichText::new(format!("{selected_count} selected"))
+                            .size(TS_SM)
+                            .color(t().text_secondary),
+                    );
                 });
+                ui.add_space(SP_2);
+
+                // Preview: candidate table with selection checkboxes.
+                section_card(ui, "Preview", |ui| {
+                    let text_height = TS_BODY;
+                    egui_extras::TableBuilder::new(ui)
+                        .striped(true)
+                        .resizable(true)
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        .column(egui_extras::Column::auto().at_least(28.0))
+                        .column(egui_extras::Column::auto().at_least(60.0))
+                        .column(egui_extras::Column::remainder().at_least(150.0))
+                        .column(egui_extras::Column::auto().at_least(60.0))
+                        .column(egui_extras::Column::auto().at_least(80.0))
+                        .column(egui_extras::Column::remainder().at_least(200.0))
+                        .header(text_height * 1.4, |mut header| {
+                            header.col(|ui| {
+                                ui.checkbox(&mut false, "");
+                            });
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new("ID")
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(t().text_secondary),
+                                );
+                            });
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new("Name")
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(t().text_secondary),
+                                );
+                            });
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new("Junk?")
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(t().text_secondary),
+                                );
+                            });
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new("Confidence")
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(t().text_secondary),
+                                );
+                            });
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new("Signals")
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(t().text_secondary),
+                                );
+                            });
+                        })
+                        .body(|mut body| {
+                            for decision in &self.junk_results {
+                                body.row(text_height * 1.2, |mut row| {
+                                    let app_id = decision.app_id;
+                                    let mut checked = self.junk_selected.contains(&app_id);
+                                    row.col(|ui| {
+                                        if ui.checkbox(&mut checked, "").changed() {
+                                            if checked {
+                                                self.junk_selected.insert(app_id);
+                                            } else {
+                                                self.junk_selected.remove(&app_id);
+                                            }
+                                        }
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(
+                                            RichText::new(decision.app_id.to_string())
+                                                .size(TS_BODY)
+                                                .color(t().text_primary),
+                                        );
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(
+                                            RichText::new(&decision.name)
+                                                .size(TS_BODY)
+                                                .color(t().text_primary),
+                                        );
+                                    });
+                                    row.col(|ui| {
+                                        if decision.is_junk {
+                                            status_badge(ui, "Yes", t().error_soft, t().error);
+                                        } else {
+                                            status_badge(
+                                                ui,
+                                                "No",
+                                                t().surface_sunken,
+                                                t().text_muted,
+                                            );
+                                        }
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "{:.0}%",
+                                                decision.confidence * 100.0
+                                            ))
+                                            .size(TS_BODY)
+                                            .color(t().text_primary),
+                                        );
+                                    });
+                                    row.col(|ui| {
+                                        let signals: Vec<String> = decision
+                                            .matched
+                                            .iter()
+                                            .map(format_junk_signal)
+                                            .collect();
+                                        ui.label(
+                                            RichText::new(if signals.is_empty() {
+                                                empty_value_label().to_string()
+                                            } else {
+                                                signals.join(", ")
+                                            })
+                                            .size(TS_BODY)
+                                            .color(t().text_secondary),
+                                        );
+                                    });
+                                });
+                            }
+                        });
+                });
+            });
+
+            // Summary rail.
+            ui.add_space(SP_4);
+            ui.allocate_ui_with_layout(
+                egui::vec2(200.0, ui.available_height()),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    egui::Frame::group(ui.style())
+                        .fill(t().surface)
+                        .stroke(egui::Stroke::new(1.0, t().border_soft))
+                        .corner_radius(CORNER_MD)
+                        .inner_margin(egui::Margin::same(m(SP_3)))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new("Summary")
+                                    .size(TS_MD)
+                                    .strong()
+                                    .color(t().text_primary),
+                            );
+                            ui.add_space(SP_2);
+                            ui.separator();
+                            ui.add_space(SP_2);
+                            ui.spacing_mut().item_spacing.y = SP_3;
+                            insight_metric(ui, "Evaluated", self.junk_results.len().to_string());
+                            insight_metric(ui, "Candidates", junk_count.to_string());
+                            insight_metric(ui, "Selected", selected_count.to_string());
+                            insight_metric(ui, "Sel. junk", selected_junk_count.to_string());
+                        });
+                },
+            );
         });
 
-        // Write actions — still dry-run/confirm gated.
-        if junk_count > 0 {
+        // Write actions — selected-only or all-junk, dry-run/confirm gated.
+        let write_target_count = if selected_count > 0 {
+            selected_count
+        } else {
+            junk_count
+        };
+        if write_target_count > 0 {
             ui.add_space(SP_3);
             section_card(ui, "Actions", |ui| {
                 form_field(ui, "Collection name", |ui| {
@@ -3627,10 +3759,15 @@ impl VapourflyApp {
                 ui.horizontal(|ui| {
                     let busy = self.write_loading || self.dry_run_loading;
                     let apply_enabled = !busy && !self.junk_collection_name.is_empty();
+                    let action_label = if selected_count > 0 {
+                        format!("Apply {selected_count} selected")
+                    } else {
+                        "Apply all to collection".to_string()
+                    };
                     if ui
                         .add_enabled(apply_enabled, {
                             egui::Button::new(
-                                RichText::new("Apply to collection")
+                                RichText::new(action_label)
                                     .size(TS_SM)
                                     .color(t().text_inverse),
                             )
@@ -3643,10 +3780,17 @@ impl VapourflyApp {
                         self.start_dry_run(PendingAction::JunkApply);
                     }
 
+                    let hide_label = if selected_count > 0 {
+                        format!("Hide {selected_count} selected")
+                    } else {
+                        "Hide all".to_string()
+                    };
                     if ui
                         .add_enabled(!busy, {
                             egui::Button::new(
-                                RichText::new("Hide").size(TS_SM).color(t().text_primary),
+                                RichText::new(hide_label)
+                                    .size(TS_SM)
+                                    .color(t().text_primary),
                             )
                             .fill(t().surface)
                             .stroke(egui::Stroke::new(1.0, t().border_soft))
@@ -3676,9 +3820,13 @@ impl VapourflyApp {
                 });
                 ui.add_space(SP_1);
                 ui.label(
-                    RichText::new("Writes require dry-run confirmation and respect write safety.")
-                        .size(TS_XS)
-                        .color(t().text_muted),
+                    RichText::new(if selected_count > 0 {
+                        "Selected-only write plan. Writes require dry-run confirmation and respect write safety."
+                    } else {
+                        "All-candidates write plan. Writes require dry-run confirmation and respect write safety."
+                    })
+                    .size(TS_XS)
+                    .color(t().text_muted),
                 );
             });
         }
@@ -6581,6 +6729,7 @@ mod tests {
             target_path,
             &PendingAction::PlaylistSync(playlist),
             &[],
+            &std::collections::HashSet::new(),
             "junk",
             &[],
         )
