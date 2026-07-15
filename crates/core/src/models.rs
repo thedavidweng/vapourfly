@@ -213,7 +213,7 @@ pub struct ProtonDbData {
     pub score: Option<f32>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ProtonTier {
     Borked,
     Bronze,

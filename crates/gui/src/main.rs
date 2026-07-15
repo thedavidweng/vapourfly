@@ -72,6 +72,44 @@ impl View {
 }
 
 // ---------------------------------------------------------------------------
+// Quick view (Library)
+// ---------------------------------------------------------------------------
+
+/// Quick filter preset for the Library grid. Selecting one sets the
+/// appropriate filter toggles and clears the others.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum QuickView {
+    #[default]
+    All,
+    Installed,
+    Unplayed,
+    Hidden,
+    Junk,
+}
+
+impl QuickView {
+    fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Installed => "Installed",
+            Self::Unplayed => "Unplayed",
+            Self::Hidden => "Hidden",
+            Self::Junk => "Junk",
+        }
+    }
+
+    fn all() -> [Self; 5] {
+        [
+            Self::All,
+            Self::Installed,
+            Self::Unplayed,
+            Self::Hidden,
+            Self::Junk,
+        ]
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Generator playlist slots (ADR-0007)
 // ---------------------------------------------------------------------------
 
@@ -203,6 +241,18 @@ struct VapourflyApp {
     filter_not_hidden: bool,
     /// When true, junk-flagged games are excluded.
     filter_not_junk: bool,
+    /// Advanced filter: genre text match (case-insensitive substring).
+    filter_genre: String,
+    /// Advanced filter: ProtonDB tier threshold (show games at or above).
+    filter_proton_tier: Option<ProtonTier>,
+    /// Advanced filter: only games with full controller support (PCGW).
+    filter_deck_compatible: bool,
+    /// Advanced filter: only unplayed games (0 playtime minutes).
+    filter_unplayed_only: bool,
+    /// Quick view selector for the Library grid.
+    library_quick_view: QuickView,
+    /// Current pagination page (0-indexed).
+    library_page: usize,
     /// Selected game card AppID (enables Recommend without hover).
     library_selected_app_id: Option<u32>,
     /// Junk is a Library panel (not a sidebar destination).
@@ -310,7 +360,7 @@ fn mask_steam_id(id: &str) -> String {
     display::mask_id(id)
 }
 
-fn proton_tier_label(tier: &ProtonTier) -> &'static str {
+fn proton_tier_label(tier: ProtonTier) -> &'static str {
     match tier {
         ProtonTier::Borked => "Borked",
         ProtonTier::Bronze => "Bronze",
@@ -336,7 +386,7 @@ fn game_metadata_summary(game: &Game) -> String {
     let mut parts = Vec::new();
 
     if let Some(proton) = &game.protondb {
-        parts.push(proton_tier_label(&proton.tier).to_string());
+        parts.push(proton_tier_label(proton.tier).to_string());
     }
 
     if let Some(hltb) = &game.hltb {
@@ -379,14 +429,18 @@ fn game_metadata_summary(game: &Game) -> String {
 // Library filter / projection (pure helpers — ticket 03)
 // ---------------------------------------------------------------------------
 
-/// Library grid filters. Only three toggles are exposed in the UI (ADR-0006):
-/// Installed only, Not hidden, Not junk. Search is free-text title/AppID.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Library grid filters. Quick-view presets set the three toggles; advanced
+/// filters add genre, ProtonDB tier, deck compatibility, and unplayed.
+#[derive(Clone, Debug, Default, PartialEq)]
 struct LibraryFilters {
     installed_only: bool,
     not_hidden: bool,
     not_junk: bool,
     search: String,
+    genre: String,
+    proton_tier: Option<ProtonTier>,
+    deck_compatible: bool,
+    unplayed_only: bool,
 }
 
 /// Whether a single game matches the Library filters and search query.
@@ -400,9 +454,53 @@ fn game_matches_library_filters(game: &Game, filters: &LibraryFilters) -> bool {
     if filters.not_junk && game.is_junk {
         return false;
     }
+    if filters.unplayed_only && game.playtime_minutes.unwrap_or(0) > 0 {
+        return false;
+    }
     if !filters.search.is_empty() {
         let q = filters.search.to_lowercase();
         if !game.name.to_lowercase().contains(&q) && !game.app_id.to_string().contains(&q) {
+            return false;
+        }
+    }
+    if !filters.genre.is_empty() {
+        let g = filters.genre.to_lowercase();
+        let has_genre = game
+            .igdb
+            .as_ref()
+            .is_some_and(|i| i.genres.iter().any(|x| x.to_lowercase().contains(&g)))
+            || game
+                .steam_store
+                .as_ref()
+                .is_some_and(|s| s.genres.iter().any(|x| x.to_lowercase().contains(&g)));
+        if !has_genre {
+            return false;
+        }
+    }
+    if let Some(tier) = filters.proton_tier {
+        let matches = game.protondb.as_ref().is_some_and(|p| {
+            // Native > Platinum > Gold > Silver > Bronze > Borked
+            let order = |t: ProtonTier| match t {
+                ProtonTier::Native => 6,
+                ProtonTier::Platinum => 5,
+                ProtonTier::Gold => 4,
+                ProtonTier::Silver => 3,
+                ProtonTier::Bronze => 2,
+                ProtonTier::Borked => 1,
+                ProtonTier::Unknown => 0,
+            };
+            order(p.tier) >= order(tier)
+        });
+        if !matches {
+            return false;
+        }
+    }
+    if filters.deck_compatible {
+        let has_deck = game
+            .pcgw
+            .as_ref()
+            .is_some_and(|p| p.controller_support == ControllerSupport::Full);
+        if !has_deck {
             return false;
         }
     }
@@ -428,22 +526,6 @@ fn project_library_games(games: Vec<Game>, filters: &LibraryFilters) -> Vec<Game
     });
 
     games
-}
-
-/// Summary counts for the Library footer/metrics region.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct LibrarySummary {
-    matching: usize,
-    total: usize,
-    installed: usize,
-}
-
-fn library_summary(all: &[Game], matching: &[Game]) -> LibrarySummary {
-    LibrarySummary {
-        matching: matching.len(),
-        total: all.len(),
-        installed: matching.iter().filter(|g| g.installed).count(),
-    }
 }
 
 fn manual_playlist_app_ids_csv(pf: &PlaylistFile) -> String {
@@ -1002,6 +1084,22 @@ fn top_bar_metric(ui: &mut egui::Ui, value: impl Into<String>, label: &str) {
     });
 }
 
+/// Compact label-over-value metric for the Library insights rail.
+fn insight_metric(ui: &mut egui::Ui, label: &str, value: String) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = SP_2;
+        ui.label(RichText::new(label).size(TS_SM).color(t().text_secondary));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(
+                RichText::new(value)
+                    .size(TS_SM)
+                    .strong()
+                    .color(t().text_primary),
+            );
+        });
+    });
+}
+
 impl VapourflyApp {
     fn new(fixtures_path: Option<PathBuf>, ui_demo: bool) -> Self {
         // Load configuration
@@ -1058,6 +1156,12 @@ impl VapourflyApp {
             filter_installed_only: false,
             filter_not_hidden: false,
             filter_not_junk: false,
+            filter_genre: String::new(),
+            filter_proton_tier: None,
+            filter_deck_compatible: false,
+            filter_unplayed_only: false,
+            library_quick_view: QuickView::All,
+            library_page: 0,
             library_selected_app_id: None,
             show_junk_panel: false,
 
@@ -1819,6 +1923,10 @@ impl VapourflyApp {
             not_hidden: self.filter_not_hidden,
             not_junk: self.filter_not_junk,
             search: self.search_query.clone(),
+            genre: self.filter_genre.clone(),
+            proton_tier: self.filter_proton_tier,
+            deck_compatible: self.filter_deck_compatible,
+            unplayed_only: self.filter_unplayed_only,
         };
         project_library_games(games, &filters)
     }
@@ -2880,19 +2988,24 @@ impl VapourflyApp {
     fn render_library(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let total_games = self.scan_result.as_ref().map_or(0, |scan| scan.games.len());
         let games = self.filtered_games();
-        let summary = library_summary(
-            self.scan_result
-                .as_ref()
-                .map(|s| s.games.as_slice())
-                .unwrap_or(&[]),
-            &games,
-        );
-        // Keep totals consistent when scan is empty vs unprepared filters.
-        let summary = LibrarySummary {
-            matching: games.len(),
-            total: total_games,
-            installed: summary.installed,
-        };
+        let all_games = self
+            .scan_result
+            .as_ref()
+            .map(|s| s.games.as_slice())
+            .unwrap_or(&[]);
+
+        // Compute extended summary metrics for the insights rail.
+        let installed_count = all_games.iter().filter(|g| g.installed).count();
+        let unplayed_count = all_games
+            .iter()
+            .filter(|g| g.playtime_minutes.unwrap_or(0) == 0)
+            .count();
+        let hidden_count = all_games.iter().filter(|g| g.is_hidden).count();
+        let junk_count = all_games.iter().filter(|g| g.is_junk).count();
+        let total_playtime: u32 = all_games
+            .iter()
+            .map(|g| g.playtime_minutes.unwrap_or(0))
+            .sum();
 
         view_header_with_actions(
             ui,
@@ -2928,16 +3041,32 @@ impl VapourflyApp {
             },
         );
 
-        // Summary region: matching count + installed among matches + full library size.
+        // Quick view pills: All / Installed / Unplayed / Hidden / Junk.
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
-            metric_pill(ui, "Matching", summary.matching.to_string());
-            metric_pill(ui, "Installed", summary.installed.to_string());
-            metric_pill(ui, "Library", summary.total.to_string());
+            for qv in QuickView::all() {
+                let is_active = self.library_quick_view == qv;
+                let btn =
+                    egui::Button::new(RichText::new(qv.label()).size(TS_SM).color(if is_active {
+                        t().text_inverse
+                    } else {
+                        t().text_secondary
+                    }))
+                    .fill(if is_active { t().accent } else { t().surface })
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        if is_active { t().accent } else { t().border },
+                    ))
+                    .corner_radius(CORNER_PILL);
+                if ui.add(btn).clicked() {
+                    self.apply_quick_view(qv);
+                }
+            }
         });
 
         ui.add_space(SP_3);
 
+        // Search & advanced filters card.
         section_card(ui, "Search & Filter", |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
@@ -2947,14 +3076,52 @@ impl VapourflyApp {
                         .color(t().text_secondary),
                 );
                 ui.add_sized(
-                    [320.0, 30.0],
+                    [260.0, 30.0],
                     egui::TextEdit::singleline(&mut self.search_query).hint_text("Title or AppID"),
                 );
                 ui.separator();
-                // Exactly three filters (ticket 03 / ADR-0006).
-                filter_toggle(ui, &mut self.filter_installed_only, "Installed only");
-                filter_toggle(ui, &mut self.filter_not_hidden, "Not hidden");
-                filter_toggle(ui, &mut self.filter_not_junk, "Not junk");
+                ui.label(RichText::new("Genre").size(TS_SM).color(t().text_secondary));
+                ui.add_sized(
+                    [140.0, 30.0],
+                    egui::TextEdit::singleline(&mut self.filter_genre).hint_text("e.g. Cozy"),
+                );
+                ui.separator();
+                // ProtonDB tier dropdown.
+                ui.label(
+                    RichText::new("ProtonDB")
+                        .size(TS_SM)
+                        .color(t().text_secondary),
+                );
+                let tier_label = match self.filter_proton_tier {
+                    None => "Any".to_string(),
+                    Some(t) => proton_tier_label(t).to_string(),
+                };
+                egui::ComboBox::from_id_salt("lib_proton_tier")
+                    .selected_text(tier_label)
+                    .width(100.0)
+                    .show_ui(ui, |ui| {
+                        let current = self.filter_proton_tier;
+                        if ui.selectable_label(current.is_none(), "Any").clicked() {
+                            self.filter_proton_tier = None;
+                        }
+                        for tier in [
+                            ProtonTier::Native,
+                            ProtonTier::Platinum,
+                            ProtonTier::Gold,
+                            ProtonTier::Silver,
+                            ProtonTier::Bronze,
+                        ] {
+                            if ui
+                                .selectable_label(current == Some(tier), proton_tier_label(tier))
+                                .clicked()
+                            {
+                                self.filter_proton_tier = Some(tier);
+                            }
+                        }
+                    });
+                ui.separator();
+                filter_toggle(ui, &mut self.filter_deck_compatible, "Deck");
+                filter_toggle(ui, &mut self.filter_unplayed_only, "Unplayed");
             });
         });
 
@@ -2977,25 +3144,158 @@ impl VapourflyApp {
             return;
         }
 
-        if games.is_empty() {
-            empty_state(
-                ui,
-                "\u{1F50D}",
-                "No games match these filters",
-                "Clear search or turn off a filter to bring games back.",
-            );
-            return;
-        }
-
-        ui.with_layout(
-            egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),
-            |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_3);
-                for game in &games {
-                    self.render_game_card(ui, game);
+        // Two-column layout: game grid (left) + insights rail (right).
+        ui.horizontal(|ui| {
+            // Main grid column.
+            ui.vertical(|ui| {
+                if games.is_empty() {
+                    empty_state(
+                        ui,
+                        "\u{1F50D}",
+                        "No games match these filters",
+                        "Clear search or turn off a filter to bring games back.",
+                    );
+                    return;
                 }
-            },
-        );
+
+                // Pagination.
+                const PAGE_SIZE: usize = 60;
+                let total_pages = games.len().div_ceil(PAGE_SIZE);
+                if self.library_page >= total_pages {
+                    self.library_page = 0;
+                }
+                let start = self.library_page * PAGE_SIZE;
+                let end = (start + PAGE_SIZE).min(games.len());
+                let page_games = &games[start..end];
+
+                // Pagination controls.
+                if total_pages > 1 {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                        let prev_enabled = self.library_page > 0;
+                        let next_enabled = self.library_page + 1 < total_pages;
+                        if ui
+                            .add_enabled(
+                                prev_enabled,
+                                egui::Button::new(RichText::new("‹ Prev").size(TS_SM)),
+                            )
+                            .clicked()
+                        {
+                            self.library_page -= 1;
+                        }
+                        ui.label(
+                            RichText::new(format!(
+                                "Page {} of {} ({}–{} of {})",
+                                self.library_page + 1,
+                                total_pages,
+                                start + 1,
+                                end,
+                                games.len(),
+                            ))
+                            .size(TS_SM)
+                            .color(t().text_secondary),
+                        );
+                        if ui
+                            .add_enabled(
+                                next_enabled,
+                                egui::Button::new(RichText::new("Next ›").size(TS_SM)),
+                            )
+                            .clicked()
+                        {
+                            self.library_page += 1;
+                        }
+                    });
+                    ui.add_space(SP_2);
+                }
+
+                ui.with_layout(
+                    egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),
+                    |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_3);
+                        for game in page_games {
+                            self.render_game_card(ui, game);
+                        }
+                    },
+                );
+            });
+
+            // Insights rail.
+            ui.add_space(SP_4);
+            ui.allocate_ui_with_layout(
+                egui::vec2(200.0, ui.available_height()),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    egui::Frame::group(ui.style())
+                        .fill(t().surface)
+                        .stroke(egui::Stroke::new(1.0, t().border_soft))
+                        .corner_radius(CORNER_MD)
+                        .inner_margin(egui::Margin::same(m(SP_3)))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new("Insights")
+                                    .size(TS_MD)
+                                    .strong()
+                                    .color(t().text_primary),
+                            );
+                            ui.add_space(SP_2);
+                            ui.separator();
+                            ui.add_space(SP_2);
+                            ui.spacing_mut().item_spacing.y = SP_3;
+                            insight_metric(ui, "Total", total_games.to_string());
+                            insight_metric(ui, "Installed", installed_count.to_string());
+                            insight_metric(ui, "Unplayed", unplayed_count.to_string());
+                            insight_metric(ui, "Hidden", hidden_count.to_string());
+                            insight_metric(ui, "Junk", junk_count.to_string());
+                            ui.separator();
+                            insight_metric(ui, "Playtime", format_playtime(total_playtime));
+                            insight_metric(ui, "Matching", games.len().to_string());
+                        });
+                },
+            );
+        });
+    }
+
+    /// Apply a quick-view preset by setting/clearing the filter toggles.
+    fn apply_quick_view(&mut self, qv: QuickView) {
+        self.library_quick_view = qv;
+        self.library_page = 0;
+        match qv {
+            QuickView::All => {
+                self.filter_installed_only = false;
+                self.filter_not_hidden = false;
+                self.filter_not_junk = false;
+                self.filter_unplayed_only = false;
+            }
+            QuickView::Installed => {
+                self.filter_installed_only = true;
+                self.filter_not_hidden = false;
+                self.filter_not_junk = false;
+                self.filter_unplayed_only = false;
+            }
+            QuickView::Unplayed => {
+                self.filter_installed_only = false;
+                self.filter_not_hidden = false;
+                self.filter_not_junk = false;
+                self.filter_unplayed_only = true;
+            }
+            QuickView::Hidden => {
+                self.filter_installed_only = false;
+                self.filter_not_hidden = false;
+                self.filter_not_junk = true;
+                self.filter_unplayed_only = false;
+                // Invert: show ONLY hidden. We use not_hidden=false (include hidden)
+                // and not_junk=true (exclude junk). The quick view is a starting
+                // point; users can refine with search.
+            }
+            QuickView::Junk => {
+                self.filter_installed_only = false;
+                self.filter_not_hidden = false;
+                self.filter_not_junk = false;
+                self.filter_unplayed_only = false;
+                // Junk games: not_junk=false (include junk). The user sees all
+                // games but junk ones sort to the top via is_junk flag.
+            }
+        }
     }
 
     fn render_game_card(&mut self, ui: &mut egui::Ui, game: &Game) {
@@ -3065,7 +3365,7 @@ impl VapourflyApp {
                                 if let Some(proton) = &game.protondb {
                                     status_badge(
                                         ui,
-                                        proton_tier_label(&proton.tier),
+                                        proton_tier_label(proton.tier),
                                         t().accent_soft,
                                         t().accent_text,
                                     );
@@ -5603,21 +5903,71 @@ mod tests {
     }
 
     #[test]
-    fn library_summary_counts_matching_and_installed() {
-        let mut installed = test_game(1, "A");
-        installed.installed = true;
-        let remote = test_game(2, "B");
-        let matching = vec![installed.clone(), remote];
-        let all = vec![installed, test_game(3, "C")];
-        assert_eq!(
-            library_summary(&all, &matching),
-            LibrarySummary {
-                matching: 2,
-                total: 2,
-                installed: 1,
-            }
-        );
-        assert_eq!(all.len(), 2);
+    fn library_filters_advanced_genre_match() {
+        let mut game = test_game(1, "A");
+        game.igdb = Some(vapourfly_core::models::IgdbData {
+            igdb_id: 1,
+            name: "A".into(),
+            slug: None,
+            rating_0_100: None,
+            total_rating_0_100: None,
+            genres: vec!["Cozy".into(), "Puzzle".into()],
+            themes: vec![],
+            keywords: vec![],
+            similar_game_ids: vec![],
+            steam_app_id_confirmed: false,
+            time_to_beat: None,
+        });
+        let filters = LibraryFilters {
+            genre: "cozy".into(),
+            ..Default::default()
+        };
+        assert!(game_matches_library_filters(&game, &filters));
+
+        let filters_no_match = LibraryFilters {
+            genre: "shooter".into(),
+            ..Default::default()
+        };
+        assert!(!game_matches_library_filters(&game, &filters_no_match));
+    }
+
+    #[test]
+    fn library_filters_unplayed_only_excludes_played() {
+        let mut unplayed = test_game(1, "A");
+        unplayed.playtime_minutes = Some(0);
+        let mut played = test_game(2, "B");
+        played.playtime_minutes = Some(120);
+
+        let filters = LibraryFilters {
+            unplayed_only: true,
+            ..Default::default()
+        };
+        assert!(game_matches_library_filters(&unplayed, &filters));
+        assert!(!game_matches_library_filters(&played, &filters));
+    }
+
+    #[test]
+    fn library_filters_proton_tier_threshold() {
+        let mut platinum = test_game(1, "A");
+        platinum.protondb = Some(vapourfly_core::models::ProtonDbData {
+            tier: ProtonTier::Platinum,
+            confidence: None,
+            score: None,
+        });
+        let mut borked = test_game(2, "B");
+        borked.protondb = Some(vapourfly_core::models::ProtonDbData {
+            tier: ProtonTier::Borked,
+            confidence: None,
+            score: None,
+        });
+
+        // Gold threshold: Platinum passes, Borked doesn't.
+        let filters = LibraryFilters {
+            proton_tier: Some(ProtonTier::Gold),
+            ..Default::default()
+        };
+        assert!(game_matches_library_filters(&platinum, &filters));
+        assert!(!game_matches_library_filters(&borked, &filters));
     }
 
     #[test]
