@@ -470,18 +470,16 @@ pub fn match_playlist(playlist: &PlaylistFile, games: &[Game]) -> Result<Playlis
         let mut currency: Option<String> = None;
         let mut has_price = false;
         for &id in &unplayed {
-            if let Some(game) = by_id.get(&id) {
-                if let Some(store) = &game.steam_store {
-                    if !store.is_free {
-                        if let Some(price) = &store.price_overview {
-                            total_cents += u64::from(price.final_price_cents);
-                            if currency.is_none() {
-                                currency = Some(price.currency.clone());
-                            }
-                            has_price = true;
-                        }
-                    }
+            if let Some(game) = by_id.get(&id)
+                && let Some(store) = &game.steam_store
+                && !store.is_free
+                && let Some(price) = &store.price_overview
+            {
+                total_cents += u64::from(price.final_price_cents);
+                if currency.is_none() {
+                    currency = Some(price.currency.clone());
                 }
+                has_price = true;
             }
         }
         if has_price {

@@ -61,10 +61,10 @@ pub fn list_ids(store_dir: &Path) -> Result<Vec<String>> {
         })?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if let Some(id) = name.strip_suffix(".json") {
-            if !id.is_empty() {
-                ids.push(id.to_string());
-            }
+        if let Some(id) = name.strip_suffix(".json")
+            && !id.is_empty()
+        {
+            ids.push(id.to_string());
         }
     }
     ids.sort();

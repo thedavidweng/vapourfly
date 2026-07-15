@@ -121,7 +121,7 @@ Default 是默认模式。每个判定可解释：matched 信号、missing 信�
 
 ## 技术栈
 
-- **Rust**（edition 2024，MSRV 1.88）
+- **Rust**（edition 2024，MSRV 1.96）
 - Workspace：`crates/core`（业务逻辑）+ `crates/api`（外部数据+缓存）+ `crates/cli`（命令行）+ `crates/gui`（egui 桌面 GUI）
 - 纯文本 VDF 解析 + JSON 操作 cloud-storage 文件
 - 可选 IGDB / RAWG 凭证（环境变量）

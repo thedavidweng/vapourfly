@@ -91,10 +91,10 @@ fn parse_appinfo_file<R: Read + Seek>(
             continue;
         }
 
-        if let Some(name) = extract_common_name(&data, &string_pool, has_v2_extra) {
-            if !name.is_empty() {
-                names.insert(app_id, name);
-            }
+        if let Some(name) = extract_common_name(&data, &string_pool, has_v2_extra)
+            && !name.is_empty()
+        {
+            names.insert(app_id, name);
         }
     }
 

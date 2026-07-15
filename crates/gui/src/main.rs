@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use eframe::egui;
 use egui::{Color32, RichText};
@@ -169,43 +170,143 @@ static DRY_RUN_RESULT: Mutex<Option<Result<vapourfly_core::models::WritePlan, St
     Mutex::new(None);
 
 // ---------------------------------------------------------------------------
-// Visual system — dark design tokens (ADR-0006)
+// Visual system — light + dark design tokens (ADR-0006)
 // ---------------------------------------------------------------------------
 
-// Dark surface hierarchy with a cool violet brand accent.
+// Product screens ship a warm light canvas with orchid accents. The earlier
+// desktop shell used a cool dark surface hierarchy with a violet brand accent.
+// Both palettes are kept and switched at runtime so the app can match the
+// reference light UI without abandoning the dark design system.
 
-const SURFACE: Color32 = Color32::from_rgb(18, 20, 26);
-const SURFACE_RAISED: Color32 = Color32::from_rgb(26, 29, 36);
-const SURFACE_MUTED: Color32 = Color32::from_rgb(34, 38, 48);
-const SURFACE_SUNKEN: Color32 = Color32::from_rgb(14, 16, 22);
-const BORDER: Color32 = Color32::from_rgb(52, 58, 70);
-const BORDER_SOFT: Color32 = Color32::from_rgb(42, 46, 56);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum ThemeMode {
+    #[default]
+    Light,
+    Dark,
+}
 
-const TEXT_PRIMARY: Color32 = Color32::from_rgb(236, 238, 244);
-const TEXT_SECONDARY: Color32 = Color32::from_rgb(158, 166, 180);
-const TEXT_MUTED: Color32 = Color32::from_rgb(110, 118, 132);
-const TEXT_INVERSE: Color32 = Color32::from_rgb(18, 20, 26);
+impl ThemeMode {
+    fn toggle(self) -> Self {
+        match self {
+            Self::Light => Self::Dark,
+            Self::Dark => Self::Light,
+        }
+    }
 
-const ACCENT: Color32 = Color32::from_rgb(156, 110, 220);
-const ACCENT_SOFT: Color32 = Color32::from_rgb(48, 36, 72);
-const ACCENT_TEXT: Color32 = Color32::from_rgb(196, 168, 255);
+    fn is_dark(self) -> bool {
+        matches!(self, Self::Dark)
+    }
 
-const SUCCESS: Color32 = Color32::from_rgb(72, 180, 120);
-const SUCCESS_SOFT: Color32 = Color32::from_rgb(28, 52, 40);
-const ERROR: Color32 = Color32::from_rgb(220, 90, 90);
-const ERROR_SOFT: Color32 = Color32::from_rgb(56, 28, 28);
-const WARNING: Color32 = Color32::from_rgb(220, 170, 70);
-const WARNING_SOFT: Color32 = Color32::from_rgb(56, 44, 24);
+    fn as_u8(self) -> u8 {
+        match self {
+            Self::Light => 0,
+            Self::Dark => 1,
+        }
+    }
 
-// Type scale (8px grid aligned, 1.25 ratio between steps)
+    fn from_u8(v: u8) -> Self {
+        if v == 1 { Self::Dark } else { Self::Light }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Tokens {
+    canvas: Color32,
+    surface: Color32,
+    surface_raised: Color32,
+    surface_muted: Color32,
+    surface_sunken: Color32,
+    border: Color32,
+    border_soft: Color32,
+    text_primary: Color32,
+    text_secondary: Color32,
+    text_muted: Color32,
+    text_inverse: Color32,
+    accent: Color32,
+    accent_soft: Color32,
+    accent_text: Color32,
+    success: Color32,
+    success_soft: Color32,
+    error: Color32,
+    error_soft: Color32,
+    warning: Color32,
+    warning_soft: Color32,
+}
+
+impl Tokens {
+    const LIGHT: Self = Self {
+        canvas: Color32::from_rgb(250, 249, 251),
+        surface: Color32::from_rgb(255, 255, 255),
+        surface_raised: Color32::from_rgb(255, 255, 255),
+        surface_muted: Color32::from_rgb(247, 244, 248),
+        surface_sunken: Color32::from_rgb(242, 239, 244),
+        border: Color32::from_rgb(224, 219, 227),
+        border_soft: Color32::from_rgb(234, 230, 237),
+        text_primary: Color32::from_rgb(28, 25, 34),
+        text_secondary: Color32::from_rgb(103, 97, 110),
+        text_muted: Color32::from_rgb(142, 136, 149),
+        text_inverse: Color32::from_rgb(255, 255, 255),
+        accent: Color32::from_rgb(139, 48, 153),
+        accent_soft: Color32::from_rgb(248, 237, 250),
+        accent_text: Color32::from_rgb(122, 36, 137),
+        success: Color32::from_rgb(46, 147, 75),
+        success_soft: Color32::from_rgb(234, 247, 236),
+        error: Color32::from_rgb(210, 70, 76),
+        error_soft: Color32::from_rgb(253, 238, 239),
+        warning: Color32::from_rgb(185, 112, 20),
+        warning_soft: Color32::from_rgb(255, 246, 229),
+    };
+
+    // Restored from the dark design-system shell (ADR-0006).
+    const DARK: Self = Self {
+        canvas: Color32::from_rgb(14, 16, 22),
+        surface: Color32::from_rgb(18, 20, 26),
+        surface_raised: Color32::from_rgb(26, 29, 36),
+        surface_muted: Color32::from_rgb(34, 38, 48),
+        surface_sunken: Color32::from_rgb(14, 16, 22),
+        border: Color32::from_rgb(52, 58, 70),
+        border_soft: Color32::from_rgb(42, 46, 56),
+        text_primary: Color32::from_rgb(236, 238, 244),
+        text_secondary: Color32::from_rgb(158, 166, 180),
+        text_muted: Color32::from_rgb(110, 118, 132),
+        text_inverse: Color32::from_rgb(18, 20, 26),
+        accent: Color32::from_rgb(156, 110, 220),
+        accent_soft: Color32::from_rgb(48, 36, 72),
+        accent_text: Color32::from_rgb(196, 168, 255),
+        success: Color32::from_rgb(72, 180, 120),
+        success_soft: Color32::from_rgb(28, 52, 40),
+        error: Color32::from_rgb(220, 90, 90),
+        error_soft: Color32::from_rgb(56, 28, 28),
+        warning: Color32::from_rgb(220, 170, 70),
+        warning_soft: Color32::from_rgb(56, 44, 24),
+    };
+}
+
+/// Active theme for free functions that paint chrome/cards outside App methods.
+static ACTIVE_THEME: AtomicU8 = AtomicU8::new(0);
+
+fn set_active_theme(mode: ThemeMode) {
+    ACTIVE_THEME.store(mode.as_u8(), Ordering::Relaxed);
+}
+
+#[inline]
+fn t() -> Tokens {
+    match ThemeMode::from_u8(ACTIVE_THEME.load(Ordering::Relaxed)) {
+        ThemeMode::Dark => Tokens::DARK,
+        ThemeMode::Light => Tokens::LIGHT,
+    }
+}
+
+// Type scale: a slightly larger display step preserves the generous hierarchy
+// in the reference screens while regular controls remain compact.
 
 const TS_XS: f32 = 11.0;
 const TS_SM: f32 = 12.0;
 const TS_BODY: f32 = 13.5;
 const TS_MD: f32 = 15.0;
 const TS_LG: f32 = 18.0;
-const TS_XL: f32 = 22.0;
-const TS_2XL: f32 = 28.0;
+const TS_XL: f32 = 23.0;
+const TS_2XL: f32 = 27.0;
 
 // Spacing scale (4px grid) — f32 for layout, cast to i8 for Margin
 
@@ -217,17 +318,18 @@ const SP_6: f32 = 24.0;
 
 // Layout constants
 
-const SIDEBAR_WIDTH: f32 = 208.0;
+const TOPBAR_HEIGHT: f32 = 58.0;
+const SIDEBAR_WIDTH: f32 = 144.0;
 const CORNER_SM: f32 = 6.0;
 const CORNER_MD: f32 = 10.0;
 const CORNER_LG: f32 = 14.0;
 const CORNER_PILL: f32 = 20.0;
 
-const POSTER_W: f32 = 132.0;
-const POSTER_H: f32 = 180.0;
-const GAME_CARD_W: f32 = 190.0;
-/// Tall enough for poster + title + optional Proton/Deck badges + playtime + hover Recommend.
-const GAME_CARD_H: f32 = 360.0;
+const POSTER_W: f32 = 206.0;
+const POSTER_H: f32 = 98.0;
+const GAME_CARD_W: f32 = 232.0;
+/// Landscape capsule + title + compact metadata/action row.
+const GAME_CARD_H: f32 = 286.0;
 
 /// Cast f32 spacing to i8 for egui::Margin.
 const fn m(v: f32) -> i8 {
@@ -246,6 +348,9 @@ struct VapourflyApp {
     error: Option<String>,
     success_msg: Option<String>,
     fixtures_path: Option<PathBuf>,
+
+    /// Light or dark visual system (ADR-0006).
+    theme_mode: ThemeMode,
 
     // Config
     config: Option<VapourflyConfig>,
@@ -612,10 +717,14 @@ fn view_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
             RichText::new(title)
                 .size(TS_2XL)
                 .strong()
-                .color(TEXT_PRIMARY),
+                .color(t().text_primary),
         );
         ui.add_space(SP_1);
-        ui.label(RichText::new(subtitle).size(TS_BODY).color(TEXT_SECONDARY));
+        ui.label(
+            RichText::new(subtitle)
+                .size(TS_BODY)
+                .color(t().text_secondary),
+        );
     });
     ui.add_space(SP_3);
 }
@@ -632,10 +741,14 @@ fn view_header_with_actions(
                 RichText::new(title)
                     .size(TS_2XL)
                     .strong()
-                    .color(TEXT_PRIMARY),
+                    .color(t().text_primary),
             );
             ui.add_space(SP_1);
-            ui.label(RichText::new(subtitle).size(TS_BODY).color(TEXT_SECONDARY));
+            ui.label(
+                RichText::new(subtitle)
+                    .size(TS_BODY)
+                    .color(t().text_secondary),
+            );
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             actions(ui);
@@ -646,8 +759,8 @@ fn view_header_with_actions(
 
 fn section_card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::NONE
-        .fill(SURFACE_RAISED)
-        .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+        .fill(t().surface_raised)
+        .stroke(egui::Stroke::new(1.0, t().border_soft))
         .inner_margin(egui::Margin::same(m(SP_4)))
         .corner_radius(CORNER_MD)
         .show(ui, |ui| {
@@ -655,7 +768,7 @@ fn section_card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)
                 RichText::new(title)
                     .size(TS_MD)
                     .strong()
-                    .color(TEXT_PRIMARY),
+                    .color(t().text_primary),
             );
             ui.add_space(SP_2);
             body(ui);
@@ -665,47 +778,47 @@ fn section_card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)
 
 fn error_banner(ui: &mut egui::Ui, msg: &str) {
     egui::Frame::NONE
-        .fill(ERROR_SOFT)
-        .stroke(egui::Stroke::new(1.0, ERROR))
+        .fill(t().error_soft)
+        .stroke(egui::Stroke::new(1.0, t().error))
         .inner_margin(egui::Margin::symmetric(m(SP_3), m(SP_2)))
         .corner_radius(CORNER_SM)
         .show(ui, |ui| {
             ui.label(
                 RichText::new(format!("\u{26A0} {msg}"))
                     .size(TS_BODY)
-                    .color(ERROR),
+                    .color(t().error),
             );
         });
 }
 
 fn success_banner(ui: &mut egui::Ui, msg: &str) {
     egui::Frame::NONE
-        .fill(SUCCESS_SOFT)
-        .stroke(egui::Stroke::new(1.0, SUCCESS))
+        .fill(t().success_soft)
+        .stroke(egui::Stroke::new(1.0, t().success))
         .inner_margin(egui::Margin::symmetric(m(SP_3), m(SP_2)))
         .corner_radius(CORNER_SM)
         .show(ui, |ui| {
             ui.label(
                 RichText::new(format!("\u{2713} {msg}"))
                     .size(TS_BODY)
-                    .color(SUCCESS),
+                    .color(t().success),
             );
         });
 }
 
 fn metric_pill(ui: &mut egui::Ui, label: &str, value: String) {
     egui::Frame::NONE
-        .fill(SURFACE_SUNKEN)
+        .fill(t().surface_sunken)
         .inner_margin(egui::Margin::symmetric(m(SP_3), m(SP_1)))
         .corner_radius(CORNER_PILL)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(label).size(TS_XS).color(TEXT_MUTED));
+                ui.label(RichText::new(label).size(TS_XS).color(t().text_muted));
                 ui.label(
                     RichText::new(value)
                         .size(TS_SM)
                         .strong()
-                        .color(TEXT_PRIMARY),
+                        .color(t().text_primary),
                 );
             });
         });
@@ -713,22 +826,22 @@ fn metric_pill(ui: &mut egui::Ui, label: &str, value: String) {
 
 fn stat_inline(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).size(TS_SM).color(TEXT_MUTED));
-        ui.label(RichText::new(value).size(TS_BODY).color(TEXT_PRIMARY));
+        ui.label(RichText::new(label).size(TS_SM).color(t().text_muted));
+        ui.label(RichText::new(value).size(TS_BODY).color(t().text_primary));
     });
 }
 
 fn filter_toggle(ui: &mut egui::Ui, state: &mut bool, label: &str) {
     let btn = egui::Button::new(RichText::new(label).size(TS_SM).color(if *state {
-        TEXT_INVERSE
+        t().text_inverse
     } else {
-        TEXT_SECONDARY
+        t().text_secondary
     }))
-    .fill(if *state { ACCENT } else { SURFACE })
+    .fill(if *state { t().accent } else { t().surface })
     .stroke(if *state {
         egui::Stroke::NONE
     } else {
-        egui::Stroke::new(1.0, BORDER_SOFT)
+        egui::Stroke::new(1.0, t().border_soft)
     })
     .corner_radius(CORNER_PILL);
     if ui.add(btn).clicked() {
@@ -739,26 +852,30 @@ fn filter_toggle(ui: &mut egui::Ui, state: &mut bool, label: &str) {
 fn empty_state(ui: &mut egui::Ui, icon: &str, title: &str, subtitle: &str) {
     ui.add_space(SP_6);
     ui.vertical_centered(|ui| {
-        ui.label(RichText::new(icon).size(48.0).color(TEXT_MUTED));
+        ui.label(RichText::new(icon).size(48.0).color(t().text_muted));
         ui.add_space(SP_2);
         ui.label(
             RichText::new(title)
                 .size(TS_LG)
                 .strong()
-                .color(TEXT_PRIMARY),
+                .color(t().text_primary),
         );
         ui.add_space(SP_1);
-        ui.label(RichText::new(subtitle).size(TS_BODY).color(TEXT_SECONDARY));
+        ui.label(
+            RichText::new(subtitle)
+                .size(TS_BODY)
+                .color(t().text_secondary),
+        );
     });
     ui.add_space(SP_6);
 }
 
 fn game_image(ui: &mut egui::Ui, app_id: u32, name: &str) {
     ui.add(
-        egui::Image::from_uri(steam_poster_uri(app_id))
+        egui::Image::from_uri(steam_capsule_uri(app_id))
             .fit_to_exact_size(egui::vec2(POSTER_W, POSTER_H))
             .corner_radius(CORNER_SM)
-            .bg_fill(SURFACE_SUNKEN)
+            .bg_fill(t().surface_sunken)
             .show_loading_spinner(true)
             .alt_text(format!("{name} cover")),
     );
@@ -766,14 +883,14 @@ fn game_image(ui: &mut egui::Ui, app_id: u32, name: &str) {
 
 fn app_id_tag(ui: &mut egui::Ui, app_id: u32) {
     egui::Frame::NONE
-        .fill(SURFACE_SUNKEN)
+        .fill(t().surface_sunken)
         .inner_margin(egui::Margin::symmetric(m(SP_2), m(SP_1)))
         .corner_radius(CORNER_SM)
         .show(ui, |ui| {
             ui.label(
                 RichText::new(app_id.to_string())
                     .size(TS_XS)
-                    .color(TEXT_MUTED)
+                    .color(t().text_muted)
                     .monospace(),
             );
         });
@@ -791,7 +908,7 @@ fn status_badge(ui: &mut egui::Ui, label: &str, fill: Color32, text: Color32) {
 
 fn form_field(ui: &mut egui::Ui, label: &str, field: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).size(TS_BODY).color(TEXT_SECONDARY));
+        ui.label(RichText::new(label).size(TS_BODY).color(t().text_secondary));
         field(ui);
     });
 }
@@ -804,12 +921,17 @@ fn labeled_field(
     field: impl FnOnce(&mut egui::Ui),
 ) {
     ui.vertical(|ui| {
-        ui.label(RichText::new(label).size(TS_SM).strong().color(TEXT_SECONDARY));
+        ui.label(
+            RichText::new(label)
+                .size(TS_SM)
+                .strong()
+                .color(t().text_secondary),
+        );
         ui.add_space(SP_1);
         field(ui);
         if let Some(hint) = hint {
             ui.add_space(SP_1);
-            ui.label(RichText::new(hint).size(TS_XS).color(TEXT_MUTED));
+            ui.label(RichText::new(hint).size(TS_XS).color(t().text_muted));
         }
     });
 }
@@ -817,16 +939,16 @@ fn labeled_field(
 fn credential_badge(ui: &mut egui::Ui, signal: CredentialSignal) {
     match signal {
         CredentialSignal::Configured => {
-            status_badge(ui, signal.label(), SUCCESS_SOFT, SUCCESS);
+            status_badge(ui, signal.label(), t().success_soft, t().success);
         }
         CredentialSignal::Missing => {
-            status_badge(ui, signal.label(), ERROR_SOFT, ERROR);
+            status_badge(ui, signal.label(), t().error_soft, t().error);
         }
         CredentialSignal::NotRequired => {
-            status_badge(ui, signal.label(), SURFACE_SUNKEN, TEXT_MUTED);
+            status_badge(ui, signal.label(), t().surface_sunken, t().text_muted);
         }
         CredentialSignal::Optional => {
-            status_badge(ui, signal.label(), ACCENT_SOFT, ACCENT_TEXT);
+            status_badge(ui, signal.label(), t().accent_soft, t().accent_text);
         }
     }
 }
@@ -837,8 +959,8 @@ fn credential_badge(ui: &mut egui::Ui, signal: CredentialSignal) {
 
 fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ui.add(
-        egui::Button::new(RichText::new(label).size(TS_SM).color(TEXT_INVERSE))
-            .fill(ACCENT)
+        egui::Button::new(RichText::new(label).size(TS_SM).color(t().text_inverse))
+            .fill(t().accent)
             .stroke(egui::Stroke::NONE)
             .corner_radius(CORNER_SM),
     )
@@ -846,16 +968,16 @@ fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
 
 fn secondary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ui.add(
-        egui::Button::new(RichText::new(label).size(TS_SM).color(TEXT_PRIMARY))
-            .fill(SURFACE)
-            .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+        egui::Button::new(RichText::new(label).size(TS_SM).color(t().text_primary))
+            .fill(t().surface)
+            .stroke(egui::Stroke::new(1.0, t().border_soft))
             .corner_radius(CORNER_SM),
     )
 }
 
 fn ghost_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ui.add(
-        egui::Button::new(RichText::new(label).size(TS_SM).color(TEXT_SECONDARY))
+        egui::Button::new(RichText::new(label).size(TS_SM).color(t().text_secondary))
             .fill(Color32::TRANSPARENT)
             .stroke(egui::Stroke::NONE)
             .corner_radius(CORNER_SM),
@@ -866,7 +988,7 @@ fn ghost_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
 // Monochrome line icons for sidebar navigation
 // ---------------------------------------------------------------------------
 
-const NAV_ICON_SIZE: f32 = 16.0;
+const NAV_ICON_SIZE: f32 = 22.0;
 
 /// Draw a monochrome stroke icon for a top-level nav destination.
 fn paint_nav_icon(painter: &egui::Painter, rect: egui::Rect, view: View, color: Color32) {
@@ -969,56 +1091,92 @@ fn paint_nav_icon(painter: &egui::Painter, rect: egui::Rect, view: View, color: 
     }
 }
 
-/// Sidebar nav row: monochrome line icon + label, with selected accent fill.
+/// Sidebar nav tile: a centered line icon and compact label. The visual shape
+/// mirrors the reference rail while preserving normal egui hit targets.
 fn nav_item(ui: &mut egui::Ui, view: View, selected: bool) -> egui::Response {
     let label = view.label();
-    let row_width = SIDEBAR_WIDTH - f32::from(m(SP_3)) * 2.0 - SP_3;
-    let desired = egui::vec2(row_width, 32.0);
+    let row_width = SIDEBAR_WIDTH - f32::from(m(SP_3)) * 2.0;
+    let desired = egui::vec2(row_width, 66.0);
     let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click());
 
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered() && !selected;
         let fill = if selected {
-            ACCENT
+            t().accent_soft
         } else if hovered {
-            SURFACE_MUTED
+            t().surface_muted
         } else {
             Color32::TRANSPARENT
         };
         let text_color = if selected {
-            TEXT_INVERSE
+            t().accent_text
         } else if hovered {
-            TEXT_PRIMARY
+            t().text_primary
         } else {
-            TEXT_SECONDARY
+            t().text_secondary
         };
         let icon_color = if selected {
-            TEXT_INVERSE
+            t().accent
         } else if hovered {
-            TEXT_SECONDARY
+            t().text_primary
         } else {
-            TEXT_MUTED
+            t().text_secondary
         };
 
         let painter = ui.painter();
-        painter.rect_filled(rect, CORNER_SM, fill);
+        painter.rect_filled(rect, CORNER_MD, fill);
 
         let icon_rect = egui::Rect::from_center_size(
-            egui::pos2(rect.left() + SP_3 + NAV_ICON_SIZE * 0.5, rect.center().y),
+            egui::pos2(rect.center().x, rect.top() + 24.0),
             egui::vec2(NAV_ICON_SIZE, NAV_ICON_SIZE),
         );
         paint_nav_icon(painter, icon_rect, view, icon_color);
 
         painter.text(
-            egui::pos2(rect.left() + SP_3 + NAV_ICON_SIZE + SP_2, rect.center().y),
-            egui::Align2::LEFT_CENTER,
+            egui::pos2(rect.center().x, rect.bottom() - 13.0),
+            egui::Align2::CENTER_CENTER,
             label,
-            egui::FontId::proportional(TS_BODY),
+            egui::FontId::proportional(TS_SM),
             text_color,
         );
     }
 
     response
+}
+
+/// Three small color dots make the app frame read as a calm macOS desktop
+/// surface even when eframe supplies a platform-native title bar around it.
+fn window_controls(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(62.0, 28.0), egui::Sense::hover());
+    let painter = ui.painter();
+    let y = rect.center().y;
+    for (index, color) in [
+        Color32::from_rgb(255, 94, 87),
+        Color32::from_rgb(255, 189, 46),
+        Color32::from_rgb(39, 201, 63),
+    ]
+    .iter()
+    .enumerate()
+    {
+        painter.circle_filled(
+            egui::pos2(rect.left() + 11.0 + index as f32 * 20.0, y),
+            7.0,
+            *color,
+        );
+    }
+}
+
+fn top_bar_metric(ui: &mut egui::Ui, value: impl Into<String>, label: &str) {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        ui.label(
+            RichText::new(value.into())
+                .size(TS_MD)
+                .strong()
+                .color(t().text_primary),
+        );
+        ui.label(RichText::new(label).size(TS_XS).color(t().text_muted));
+    });
 }
 
 impl VapourflyApp {
@@ -1067,6 +1225,7 @@ impl VapourflyApp {
             error: None,
             success_msg: None,
             fixtures_path,
+            theme_mode: ThemeMode::Light,
 
             config,
             playlist_store_dir: None,
@@ -1941,6 +2100,10 @@ impl eframe::App for VapourflyApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
+        // Keep free-function tokens and egui visuals aligned with the selected theme.
+        set_active_theme(self.theme_mode);
+        configure_ui(&ctx, self.theme_mode);
+
         // Poll background scan result.
         if self.loading {
             let mut guard = SCAN_RESULT.lock().unwrap();
@@ -2020,73 +2183,108 @@ impl eframe::App for VapourflyApp {
         }
         self.render_confirm_dialog(&ctx);
 
+        let shell_games = self.scan_result.as_ref().map_or(0, |scan| scan.games.len());
+        let shell_hidden = self.scan_result.as_ref().map_or(0, |scan| {
+            scan.games.iter().filter(|game| game.is_hidden).count()
+        });
+        let shell_playtime = self.scan_result.as_ref().map_or(0, |scan| {
+            scan.games
+                .iter()
+                .map(|game| game.playtime_minutes.unwrap_or(0))
+                .sum::<u32>()
+        });
+        let shell_playtime = format_playtime(shell_playtime);
+        let shell_playlists = self.playlist_store_ids.len();
+
+        // -- Top chrome ------------------------------------------------------
+        egui::Panel::top("top_chrome")
+            .exact_size(TOPBAR_HEIGHT)
+            .frame(
+                egui::Frame::NONE
+                    .fill(t().surface)
+                    .stroke(egui::Stroke::new(1.0, t().border_soft))
+                    .inner_margin(egui::Margin::symmetric(m(SP_3), m(SP_2))),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    window_controls(ui);
+                    ui.separator();
+                    ui.add_space(SP_2);
+                    ui.label(
+                        RichText::new("Vapourfly")
+                            .size(TS_MD)
+                            .strong()
+                            .color(t().text_primary),
+                    );
+                    ui.label(RichText::new("›").size(TS_LG).color(t().text_muted));
+                    ui.label(
+                        RichText::new(self.current_view.label())
+                            .size(TS_MD)
+                            .color(t().text_primary),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let theme_label = if self.theme_mode.is_dark() {
+                            "☀ Light"
+                        } else {
+                            "☾ Dark"
+                        };
+                        if secondary_button(ui, theme_label).clicked() {
+                            self.theme_mode = self.theme_mode.toggle();
+                            set_active_theme(self.theme_mode);
+                            configure_ui(&ctx, self.theme_mode);
+                        }
+                        ui.add_space(SP_4);
+                        top_bar_metric(ui, "Ready", "Synced");
+                        ui.add_space(SP_6);
+                        top_bar_metric(ui, shell_playlists.to_string(), "Playlists");
+                        ui.add_space(SP_6);
+                        top_bar_metric(ui, shell_hidden.to_string(), "Hidden");
+                        ui.add_space(SP_6);
+                        top_bar_metric(ui, shell_playtime, "Play time");
+                        ui.add_space(SP_6);
+                        top_bar_metric(ui, shell_games.to_string(), "Games");
+                    });
+                });
+            });
+
         // -- Left panel: navigation -----------------------------------------
         egui::Panel::left("nav_panel")
             .resizable(false)
-            .default_size(SIDEBAR_WIDTH)
+            .exact_size(SIDEBAR_WIDTH)
             .frame(
                 egui::Frame::NONE
-                    .fill(SURFACE_RAISED)
-                    .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
-                    .inner_margin(egui::Margin::same(m(SP_3))),
+                    .fill(t().surface)
+                    .stroke(egui::Stroke::new(1.0, t().border_soft))
+                    .inner_margin(egui::Margin::same(m(SP_2))),
             )
             .show(ui, |ui| {
-                // Brand header
                 ui.add_space(SP_2);
-                ui.label(
-                    RichText::new("Vapourfly")
-                        .size(TS_XL)
-                        .strong()
-                        .color(TEXT_PRIMARY),
-                );
-                ui.add_space(SP_1);
-                ui.label(
-                    RichText::new("Steam library curator")
-                        .size(TS_SM)
-                        .color(TEXT_MUTED),
-                );
-                ui.add_space(SP_4);
 
-                // Navigation items (dark shell + monochrome line icons)
-                for &view in View::ALL {
+                // Library-facing destinations form the primary group. The
+                // maintenance destinations stay at the bottom like the
+                // reference application rail.
+                for &view in &View::ALL[..5] {
                     let selected = self.current_view == view;
                     if nav_item(ui, view, selected).clicked() {
                         self.current_view = view;
                     }
-                    ui.add_space(SP_1);
+                    ui.add_space(3.0);
                 }
 
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                    ui.add_space(SP_1);
                     ui.label(
                         RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
                             .size(TS_XS)
-                            .color(TEXT_MUTED),
+                            .color(t().text_muted),
                     );
                     ui.add_space(SP_2);
-                    if self.loading {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label(RichText::new("Scanning").size(TS_SM).color(TEXT_MUTED));
-                        });
-                    } else if ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new("Refresh").size(TS_SM).color(TEXT_SECONDARY),
-                            )
-                            .fill(SURFACE)
-                            .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
-                            .corner_radius(CORNER_SM),
-                        )
-                        .clicked()
-                    {
-                        self.start_scan(&ctx);
-                    }
-                    if let Some(scan) = &self.scan_result {
-                        ui.label(
-                            RichText::new(format!("{} games", scan.games.len()))
-                                .size(TS_XS)
-                                .color(TEXT_MUTED),
-                        );
+                    for &view in View::ALL[5..].iter().rev() {
+                        let selected = self.current_view == view;
+                        if nav_item(ui, view, selected).clicked() {
+                            self.current_view = view;
+                        }
+                        ui.add_space(3.0);
                     }
                 });
             });
@@ -2095,8 +2293,8 @@ impl eframe::App for VapourflyApp {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::NONE
-                    .fill(SURFACE)
-                    .inner_margin(egui::Margin::same(m(SP_4))),
+                    .fill(t().canvas)
+                    .inner_margin(egui::Margin::same(m(SP_6))),
             )
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
@@ -2177,8 +2375,8 @@ impl VapourflyApp {
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .frame(
                 egui::Frame::NONE
-                    .fill(SURFACE_RAISED)
-                    .stroke(egui::Stroke::new(1.0, BORDER))
+                    .fill(t().surface_raised)
+                    .stroke(egui::Stroke::new(1.0, t().border))
                     .corner_radius(CORNER_LG)
                     .inner_margin(egui::Margin::same(m(SP_4))),
             )
@@ -2187,7 +2385,7 @@ impl VapourflyApp {
                     RichText::new("Confirm Action")
                         .size(TS_XL)
                         .strong()
-                        .color(TEXT_PRIMARY),
+                        .color(t().text_primary),
                 );
                 ui.add_space(SP_3);
 
@@ -2199,12 +2397,12 @@ impl VapourflyApp {
                         RichText::new("Dry-Run Diff")
                             .size(TS_MD)
                             .strong()
-                            .color(TEXT_PRIMARY),
+                            .color(t().text_primary),
                     );
                     ui.label(
                         RichText::new(format!("Target: {}", plan.target_path.display()))
                             .size(TS_BODY)
-                            .color(TEXT_SECONDARY),
+                            .color(t().text_secondary),
                     );
                     ui.add_space(SP_1);
 
@@ -2216,7 +2414,7 @@ impl VapourflyApp {
                                 ui.label(
                                     RichText::new("Collections changed:")
                                         .size(TS_SM)
-                                        .color(TEXT_MUTED),
+                                        .color(t().text_muted),
                                 );
                                 let names: Vec<&str> = diff
                                     .collections_changed
@@ -2226,7 +2424,7 @@ impl VapourflyApp {
                                 ui.label(
                                     RichText::new(names.join(", "))
                                         .size(TS_BODY)
-                                        .color(TEXT_PRIMARY),
+                                        .color(t().text_primary),
                                 );
                                 ui.end_row();
                             }
@@ -2235,12 +2433,12 @@ impl VapourflyApp {
                                 ui.label(
                                     RichText::new("AppIDs added:")
                                         .size(TS_SM)
-                                        .color(TEXT_MUTED),
+                                        .color(t().text_muted),
                                 );
                                 ui.label(
                                     RichText::new(format!("{} games", diff.app_ids_added.len()))
                                         .size(TS_BODY)
-                                        .color(TEXT_PRIMARY),
+                                        .color(t().text_primary),
                                 );
                                 ui.end_row();
                             }
@@ -2249,12 +2447,12 @@ impl VapourflyApp {
                                 ui.label(
                                     RichText::new("AppIDs removed:")
                                         .size(TS_SM)
-                                        .color(TEXT_MUTED),
+                                        .color(t().text_muted),
                                 );
                                 ui.label(
                                     RichText::new(format!("{} games", diff.app_ids_removed.len()))
                                         .size(TS_BODY)
-                                        .color(TEXT_PRIMARY),
+                                        .color(t().text_primary),
                                 );
                                 ui.end_row();
                             }
@@ -2263,7 +2461,7 @@ impl VapourflyApp {
                                 ui.label(
                                     RichText::new("Hidden AppIDs added:")
                                         .size(TS_SM)
-                                        .color(TEXT_MUTED),
+                                        .color(t().text_muted),
                                 );
                                 ui.label(
                                     RichText::new(format!(
@@ -2271,7 +2469,7 @@ impl VapourflyApp {
                                         diff.hidden_app_ids_added.len()
                                     ))
                                     .size(TS_BODY)
-                                    .color(TEXT_PRIMARY),
+                                    .color(t().text_primary),
                                 );
                                 ui.end_row();
                             }
@@ -2279,12 +2477,12 @@ impl VapourflyApp {
                             ui.label(
                                 RichText::new("Unchanged entries:")
                                     .size(TS_SM)
-                                    .color(TEXT_MUTED),
+                                    .color(t().text_muted),
                             );
                             ui.label(
                                 RichText::new(diff.unchanged_count.to_string())
                                     .size(TS_BODY)
-                                    .color(TEXT_PRIMARY),
+                                    .color(t().text_primary),
                             );
                             ui.end_row();
 
@@ -2292,12 +2490,12 @@ impl VapourflyApp {
                                 ui.label(
                                     RichText::new("Skipped deleted:")
                                         .size(TS_SM)
-                                        .color(TEXT_MUTED),
+                                        .color(t().text_muted),
                                 );
                                 ui.label(
                                     RichText::new(diff.skipped_deleted_count.to_string())
                                         .size(TS_BODY)
-                                        .color(TEXT_PRIMARY),
+                                        .color(t().text_primary),
                                 );
                                 ui.end_row();
                             }
@@ -2307,7 +2505,7 @@ impl VapourflyApp {
                     ui.label(
                         RichText::new("\u{26A0} A safety backup will be created before writing.")
                             .size(TS_BODY)
-                            .color(WARNING),
+                            .color(t().warning),
                     );
                 }
                 // -- Backup restore (no dry-run diff) --------------------------
@@ -2319,7 +2517,7 @@ impl VapourflyApp {
                     ui.label(
                         RichText::new(format!("Restore backup '{filename}'?"))
                             .size(TS_BODY)
-                            .color(TEXT_PRIMARY),
+                            .color(t().text_primary),
                     );
                     ui.add_space(SP_2);
                     ui.label(
@@ -2327,7 +2525,7 @@ impl VapourflyApp {
                             "\u{26A0} This will overwrite your current cloud storage. A safety backup will be created first.",
                         )
                         .size(TS_BODY)
-                        .color(WARNING),
+                        .color(t().warning),
                     );
                 }
 
@@ -2335,7 +2533,7 @@ impl VapourflyApp {
                     ui.add_space(SP_2);
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label(RichText::new("Writing").size(TS_BODY).color(TEXT_SECONDARY));
+                        ui.label(RichText::new("Writing").size(TS_BODY).color(t().text_secondary));
                     });
                 } else {
                     ui.add_space(SP_3);
@@ -2345,9 +2543,9 @@ impl VapourflyApp {
                                 egui::Button::new(
                                     RichText::new("Confirm")
                                         .size(TS_BODY)
-                                        .color(TEXT_INVERSE),
+                                        .color(t().text_inverse),
                                 )
-                                .fill(ACCENT)
+                                .fill(t().accent)
                                 .stroke(egui::Stroke::NONE)
                                 .corner_radius(CORNER_SM),
                             )
@@ -2360,10 +2558,10 @@ impl VapourflyApp {
                                 egui::Button::new(
                                     RichText::new("Cancel")
                                         .size(TS_BODY)
-                                        .color(TEXT_PRIMARY),
+                                        .color(t().text_primary),
                                 )
-                                .fill(SURFACE)
-                                .stroke(egui::Stroke::new(1.0, BORDER))
+                                .fill(t().surface)
+                                .stroke(egui::Stroke::new(1.0, t().border))
                                 .corner_radius(CORNER_SM),
                             )
                             .clicked()
@@ -2421,10 +2619,12 @@ impl VapourflyApp {
                 if ui
                     .add_enabled(
                         !self.loading,
-                        egui::Button::new(RichText::new("Refresh").size(TS_SM).color(TEXT_INVERSE))
-                            .fill(ACCENT)
-                            .stroke(egui::Stroke::NONE)
-                            .corner_radius(CORNER_SM),
+                        egui::Button::new(
+                            RichText::new("Refresh").size(TS_SM).color(t().text_inverse),
+                        )
+                        .fill(t().accent)
+                        .stroke(egui::Stroke::NONE)
+                        .corner_radius(CORNER_SM),
                     )
                     .clicked()
                 {
@@ -2435,7 +2635,11 @@ impl VapourflyApp {
                 }
                 if self.loading {
                     ui.spinner();
-                    ui.label(RichText::new("Scanning").size(TS_SM).color(TEXT_SECONDARY));
+                    ui.label(
+                        RichText::new("Scanning")
+                            .size(TS_SM)
+                            .color(t().text_secondary),
+                    );
                 }
             },
         );
@@ -2453,7 +2657,11 @@ impl VapourflyApp {
         section_card(ui, "Search & Filter", |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
-                ui.label(RichText::new("Search").size(TS_SM).color(TEXT_SECONDARY));
+                ui.label(
+                    RichText::new("Search")
+                        .size(TS_SM)
+                        .color(t().text_secondary),
+                );
                 ui.add_sized(
                     [320.0, 30.0],
                     egui::TextEdit::singleline(&mut self.search_query).hint_text("Title or AppID"),
@@ -2515,9 +2723,9 @@ impl VapourflyApp {
         // Approved deviation: Recommend is revealed on hover or selection.
         let show_recommend = was_hovered || is_selected;
         let border = if is_selected {
-            egui::Stroke::new(1.5, ACCENT)
+            egui::Stroke::new(1.5, t().accent)
         } else {
-            egui::Stroke::new(1.0, BORDER_SOFT)
+            egui::Stroke::new(1.0, t().border)
         };
 
         let response = ui
@@ -2529,7 +2737,7 @@ impl VapourflyApp {
                     ui.set_height(GAME_CARD_H);
 
                     egui::Frame::NONE
-                        .fill(SURFACE_RAISED)
+                        .fill(t().surface_raised)
                         .stroke(border)
                         .inner_margin(egui::Margin::same(m(SP_3)))
                         .corner_radius(CORNER_MD)
@@ -2538,12 +2746,14 @@ impl VapourflyApp {
                             ui.set_height(GAME_CARD_H - f32::from(m(SP_3)) * 2.0);
 
                             ui.horizontal(|ui| {
-                                app_id_tag(ui, game.app_id);
+                                let (label, fill, text) = game_primary_badge(game);
+                                status_badge(ui, label, fill, text);
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        let (label, fill, text) = game_primary_badge(game);
-                                        status_badge(ui, label, fill, text);
+                                        ui.label(
+                                            RichText::new("•••").size(TS_SM).color(t().text_muted),
+                                        );
                                     },
                                 );
                             });
@@ -2555,12 +2765,12 @@ impl VapourflyApp {
 
                             ui.add_space(SP_2);
                             ui.add_sized(
-                                [GAME_CARD_W - f32::from(m(SP_3)) * 2.0, 36.0],
+                                [GAME_CARD_W - f32::from(m(SP_3)) * 2.0, 24.0],
                                 egui::Label::new(
                                     RichText::new(&game.name)
                                         .size(TS_MD)
                                         .strong()
-                                        .color(TEXT_PRIMARY),
+                                        .color(t().text_primary),
                                 )
                                 .wrap(),
                             );
@@ -2572,24 +2782,21 @@ impl VapourflyApp {
                                     status_badge(
                                         ui,
                                         proton_tier_label(&proton.tier),
-                                        ACCENT_SOFT,
-                                        ACCENT_TEXT,
+                                        t().accent_soft,
+                                        t().accent_text,
                                     );
                                 }
                                 if game_shows_deck_badge(game) {
-                                    status_badge(ui, "Deck", SUCCESS_SOFT, SUCCESS);
+                                    status_badge(ui, "Deck", t().success_soft, t().success);
+                                }
+                                if game.protondb.is_none() && !game_shows_deck_badge(game) {
+                                    ui.label(
+                                        RichText::new(game_card_detail(game))
+                                            .size(TS_XS)
+                                            .color(t().text_muted),
+                                    );
                                 }
                             });
-
-                            ui.add_sized(
-                                [GAME_CARD_W - f32::from(m(SP_3)) * 2.0, 24.0],
-                                egui::Label::new(
-                                    RichText::new(game_card_detail(game))
-                                        .size(TS_SM)
-                                        .color(TEXT_SECONDARY),
-                                )
-                                .wrap(),
-                            );
 
                             ui.horizontal(|ui| {
                                 ui.label(
@@ -2597,7 +2804,7 @@ impl VapourflyApp {
                                         game.playtime_minutes.unwrap_or(0),
                                     ))
                                     .size(TS_SM)
-                                    .color(TEXT_MUTED),
+                                    .color(t().text_muted),
                                 );
                                 if show_recommend {
                                     ui.with_layout(
@@ -2606,11 +2813,11 @@ impl VapourflyApp {
                                             if ui
                                                 .add(
                                                     egui::Button::new(
-                                                        RichText::new("Recommend")
+                                                        RichText::new("▶  Recommend")
                                                             .size(TS_SM)
-                                                            .color(ACCENT_TEXT),
+                                                            .color(t().text_inverse),
                                                     )
-                                                    .fill(ACCENT_SOFT)
+                                                    .fill(t().accent)
                                                     .stroke(egui::Stroke::NONE)
                                                     .corner_radius(CORNER_SM),
                                                 )
@@ -2652,7 +2859,11 @@ impl VapourflyApp {
         section_card(ui, "Mode", |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
-                ui.label(RichText::new("Detection").size(TS_SM).color(TEXT_SECONDARY));
+                ui.label(
+                    RichText::new("Detection")
+                        .size(TS_SM)
+                        .color(t().text_secondary),
+                );
                 for mode in &[
                     JunkModeChoice::Default,
                     JunkModeChoice::Strict,
@@ -2661,16 +2872,16 @@ impl VapourflyApp {
                     let selected = self.junk_mode == *mode;
                     let btn = egui::Button::new(RichText::new(mode.label()).size(TS_SM).color(
                         if selected {
-                            TEXT_INVERSE
+                            t().text_inverse
                         } else {
-                            TEXT_SECONDARY
+                            t().text_secondary
                         },
                     ))
-                    .fill(if selected { ACCENT } else { SURFACE })
+                    .fill(if selected { t().accent } else { t().surface })
                     .stroke(if selected {
                         egui::Stroke::NONE
                     } else {
-                        egui::Stroke::new(1.0, BORDER_SOFT)
+                        egui::Stroke::new(1.0, t().border_soft)
                     })
                     .corner_radius(CORNER_PILL);
                     if ui.add(btn).clicked() {
@@ -2731,7 +2942,7 @@ impl VapourflyApp {
                             RichText::new("ID")
                                 .size(TS_SM)
                                 .strong()
-                                .color(TEXT_SECONDARY),
+                                .color(t().text_secondary),
                         );
                     });
                     header.col(|ui| {
@@ -2739,7 +2950,7 @@ impl VapourflyApp {
                             RichText::new("Name")
                                 .size(TS_SM)
                                 .strong()
-                                .color(TEXT_SECONDARY),
+                                .color(t().text_secondary),
                         );
                     });
                     header.col(|ui| {
@@ -2747,7 +2958,7 @@ impl VapourflyApp {
                             RichText::new("Junk?")
                                 .size(TS_SM)
                                 .strong()
-                                .color(TEXT_SECONDARY),
+                                .color(t().text_secondary),
                         );
                     });
                     header.col(|ui| {
@@ -2755,7 +2966,7 @@ impl VapourflyApp {
                             RichText::new("Confidence")
                                 .size(TS_SM)
                                 .strong()
-                                .color(TEXT_SECONDARY),
+                                .color(t().text_secondary),
                         );
                     });
                     header.col(|ui| {
@@ -2763,7 +2974,7 @@ impl VapourflyApp {
                             RichText::new("Signals")
                                 .size(TS_SM)
                                 .strong()
-                                .color(TEXT_SECONDARY),
+                                .color(t().text_secondary),
                         );
                     });
                 })
@@ -2774,28 +2985,28 @@ impl VapourflyApp {
                                 ui.label(
                                     RichText::new(decision.app_id.to_string())
                                         .size(TS_BODY)
-                                        .color(TEXT_PRIMARY),
+                                        .color(t().text_primary),
                                 );
                             });
                             row.col(|ui| {
                                 ui.label(
                                     RichText::new(&decision.name)
                                         .size(TS_BODY)
-                                        .color(TEXT_PRIMARY),
+                                        .color(t().text_primary),
                                 );
                             });
                             row.col(|ui| {
                                 if decision.is_junk {
-                                    status_badge(ui, "Yes", ERROR_SOFT, ERROR);
+                                    status_badge(ui, "Yes", t().error_soft, t().error);
                                 } else {
-                                    status_badge(ui, "No", SURFACE_SUNKEN, TEXT_MUTED);
+                                    status_badge(ui, "No", t().surface_sunken, t().text_muted);
                                 }
                             });
                             row.col(|ui| {
                                 ui.label(
                                     RichText::new(format!("{:.0}%", decision.confidence * 100.0))
                                         .size(TS_BODY)
-                                        .color(TEXT_PRIMARY),
+                                        .color(t().text_primary),
                                 );
                             });
                             row.col(|ui| {
@@ -2808,7 +3019,7 @@ impl VapourflyApp {
                                         signals.join(", ")
                                     })
                                     .size(TS_BODY)
-                                    .color(TEXT_SECONDARY),
+                                    .color(t().text_secondary),
                                 );
                             });
                         });
@@ -2837,9 +3048,9 @@ impl VapourflyApp {
                             egui::Button::new(
                                 RichText::new("Apply to collection")
                                     .size(TS_SM)
-                                    .color(TEXT_INVERSE),
+                                    .color(t().text_inverse),
                             )
-                            .fill(ACCENT)
+                            .fill(t().accent)
                             .stroke(egui::Stroke::NONE)
                             .corner_radius(CORNER_SM)
                         })
@@ -2850,10 +3061,12 @@ impl VapourflyApp {
 
                     if ui
                         .add_enabled(!busy, {
-                            egui::Button::new(RichText::new("Hide").size(TS_SM).color(TEXT_PRIMARY))
-                                .fill(SURFACE)
-                                .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
-                                .corner_radius(CORNER_SM)
+                            egui::Button::new(
+                                RichText::new("Hide").size(TS_SM).color(t().text_primary),
+                            )
+                            .fill(t().surface)
+                            .stroke(egui::Stroke::new(1.0, t().border_soft))
+                            .corner_radius(CORNER_SM)
                         })
                         .clicked()
                     {
@@ -2862,14 +3075,18 @@ impl VapourflyApp {
 
                     if self.write_loading {
                         ui.spinner();
-                        ui.label(RichText::new("Writing").size(TS_SM).color(TEXT_SECONDARY));
+                        ui.label(
+                            RichText::new("Writing")
+                                .size(TS_SM)
+                                .color(t().text_secondary),
+                        );
                     }
                     if self.dry_run_loading {
                         ui.spinner();
                         ui.label(
                             RichText::new("Preparing diff")
                                 .size(TS_SM)
-                                .color(TEXT_SECONDARY),
+                                .color(t().text_secondary),
                         );
                     }
                 });
@@ -2877,7 +3094,7 @@ impl VapourflyApp {
                 ui.label(
                     RichText::new("Writes require dry-run confirmation and respect write safety.")
                         .size(TS_XS)
-                        .color(TEXT_MUTED),
+                        .color(t().text_muted),
                 );
             });
         }
@@ -2956,9 +3173,9 @@ impl VapourflyApp {
                     egui::Button::new(
                         RichText::new("Write to vapourfly-picks")
                             .size(TS_SM)
-                            .color(TEXT_INVERSE),
+                            .color(t().text_inverse),
                     )
-                    .fill(ACCENT)
+                    .fill(t().accent)
                     .stroke(egui::Stroke::NONE)
                     .corner_radius(CORNER_SM),
                 )
@@ -2975,7 +3192,7 @@ impl VapourflyApp {
                         "Writing"
                     })
                     .size(TS_SM)
-                    .color(TEXT_SECONDARY),
+                    .color(t().text_secondary),
                 );
             }
         });
@@ -2984,7 +3201,7 @@ impl VapourflyApp {
                 "Requires dry-run confirmation. Targets the vapourfly-picks Steam Collection.",
             )
             .size(TS_XS)
-            .color(TEXT_MUTED),
+            .color(t().text_muted),
         );
         ui.add_space(SP_3);
 
@@ -2994,7 +3211,12 @@ impl VapourflyApp {
                 ui.horizontal(|ui| {
                     app_id_tag(ui, rec.app_id);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        status_badge(ui, &format!("{:.2}", rec.score), ACCENT_SOFT, ACCENT_TEXT);
+                        status_badge(
+                            ui,
+                            &format!("{:.2}", rec.score),
+                            t().accent_soft,
+                            t().accent_text,
+                        );
                     });
                 });
                 if !rec.reasons.is_empty() {
@@ -3003,14 +3225,19 @@ impl VapourflyApp {
                         for reason in &rec.reasons {
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing = egui::vec2(SP_1, SP_1);
-                                status_badge(ui, &reason.code, SURFACE_MUTED, TEXT_SECONDARY);
+                                status_badge(
+                                    ui,
+                                    &reason.code,
+                                    t().surface_muted,
+                                    t().text_secondary,
+                                );
                                 ui.label(
                                     RichText::new(format!(
                                         "{} ({:+.1})",
                                         reason.description, reason.weight
                                     ))
                                     .size(TS_SM)
-                                    .color(TEXT_SECONDARY),
+                                    .color(t().text_secondary),
                                 );
                             });
                         }
@@ -3054,7 +3281,7 @@ impl VapourflyApp {
                             "No playlists in the local store yet. Save, import, or generate one.",
                         )
                         .size(TS_SM)
-                        .color(TEXT_MUTED),
+                        .color(t().text_muted),
                     );
                     if ghost_button(ui, "Refresh list").clicked() {
                         self.refresh_playlist_store_ids();
@@ -3137,7 +3364,7 @@ impl VapourflyApp {
             ui.label(
                 RichText::new("Comma-separated Steam AppIDs for manual playlists.")
                     .size(TS_XS)
-                    .color(TEXT_MUTED),
+                    .color(t().text_muted),
             );
             ui.add_space(SP_2);
             form_field(ui, "Rules JSON", |ui| {
@@ -3154,7 +3381,7 @@ impl VapourflyApp {
                     "Optional. When provided, App IDs are ignored and a rule-based playlist is created.",
                 )
                 .size(TS_XS)
-                .color(TEXT_MUTED),
+                .color(t().text_muted),
             );
             ui.add_space(SP_3);
             if primary_button(ui, "Save Playlist").clicked() {
@@ -3286,9 +3513,9 @@ impl VapourflyApp {
                             egui::Button::new(
                                 RichText::new("Sync to Steam Collection")
                                     .size(TS_SM)
-                                    .color(TEXT_INVERSE),
+                                    .color(t().text_inverse),
                             )
-                            .fill(ACCENT)
+                            .fill(t().accent)
                             .stroke(egui::Stroke::NONE)
                             .corner_radius(CORNER_SM),
                         )
@@ -3302,7 +3529,7 @@ impl VapourflyApp {
                     ui.label(
                         RichText::new(format!("Share code: {code}"))
                             .size(TS_SM)
-                            .color(TEXT_MUTED)
+                            .color(t().text_muted)
                             .monospace(),
                     );
                 }
@@ -3313,7 +3540,7 @@ impl VapourflyApp {
                         ui.label(
                             RichText::new("Preparing dry-run diff")
                                 .size(TS_SM)
-                                .color(TEXT_SECONDARY),
+                                .color(t().text_secondary),
                         );
                     });
                 }
@@ -3322,7 +3549,7 @@ impl VapourflyApp {
                         "Sync always shows a dry-run diff before writing Steam cloud storage.",
                     )
                     .size(TS_XS)
-                    .color(TEXT_MUTED),
+                    .color(t().text_muted),
                 );
             });
         }
@@ -3343,7 +3570,7 @@ impl VapourflyApp {
                     ui.label(
                         RichText::new(format!("Completion price: {}", price.format()))
                             .size(TS_BODY)
-                            .color(TEXT_SECONDARY),
+                            .color(t().text_secondary),
                     );
                 } else {
                     ui.add_space(SP_2);
@@ -3352,7 +3579,7 @@ impl VapourflyApp {
                             "Completion price unavailable — run cache refresh --source steam-store when online.",
                         )
                         .size(TS_SM)
-                        .color(TEXT_MUTED),
+                        .color(t().text_muted),
                     );
                 }
 
@@ -3364,12 +3591,12 @@ impl VapourflyApp {
                         RichText::new("Owned preview")
                             .size(TS_SM)
                             .strong()
-                            .color(TEXT_PRIMARY),
+                            .color(t().text_primary),
                     );
                     ui.add_space(SP_1);
                     let names = self.playlist_owned_preview_labels(&owned_ids);
                     for line in names {
-                        ui.label(RichText::new(line).size(TS_SM).color(TEXT_SECONDARY));
+                        ui.label(RichText::new(line).size(TS_SM).color(t().text_secondary));
                     }
                 }
             });
@@ -3441,7 +3668,7 @@ impl VapourflyApp {
                     "Regenerate overwrites the stable discover slot. Change id/name and Save in Playlists to keep a long-term copy.",
                 )
                 .size(TS_XS)
-                .color(TEXT_MUTED),
+                .color(t().text_muted),
             );
         });
 
@@ -3481,10 +3708,10 @@ impl VapourflyApp {
                         egui::Button::new(
                             RichText::new("Sync to Steam Collection")
                                 .size(TS_SM)
-                                .color(TEXT_PRIMARY),
+                                .color(t().text_primary),
                         )
-                        .fill(SURFACE)
-                        .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                        .fill(t().surface)
+                        .stroke(egui::Stroke::new(1.0, t().border_soft))
                         .corner_radius(CORNER_SM),
                     )
                     .clicked()
@@ -3496,7 +3723,7 @@ impl VapourflyApp {
         ui.label(
             RichText::new("Sync requires dry-run confirmation before any Steam write.")
                 .size(TS_XS)
-                .color(TEXT_MUTED),
+                .color(t().text_muted),
         );
         ui.add_space(SP_3);
 
@@ -3506,7 +3733,12 @@ impl VapourflyApp {
                 ui.horizontal(|ui| {
                     app_id_tag(ui, pick.app_id);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        status_badge(ui, &format!("{:.2}", pick.score), ACCENT_SOFT, ACCENT_TEXT);
+                        status_badge(
+                            ui,
+                            &format!("{:.2}", pick.score),
+                            t().accent_soft,
+                            t().accent_text,
+                        );
                     });
                 });
                 if !pick.reasons.is_empty() {
@@ -3515,14 +3747,19 @@ impl VapourflyApp {
                         for reason in &pick.reasons {
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing = egui::vec2(SP_1, SP_1);
-                                status_badge(ui, reason.code, SURFACE_MUTED, TEXT_SECONDARY);
+                                status_badge(
+                                    ui,
+                                    reason.code,
+                                    t().surface_muted,
+                                    t().text_secondary,
+                                );
                                 ui.label(
                                     RichText::new(format!(
                                         "{} ({:+.2})",
                                         reason.description, reason.weight
                                     ))
                                     .size(TS_SM)
-                                    .color(TEXT_SECONDARY),
+                                    .color(t().text_secondary),
                                 );
                             });
                         }
@@ -3551,8 +3788,8 @@ impl VapourflyApp {
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .frame(
                 egui::Frame::NONE
-                    .fill(SURFACE_RAISED)
-                    .stroke(egui::Stroke::new(1.0, BORDER))
+                    .fill(t().surface_raised)
+                    .stroke(egui::Stroke::new(1.0, t().border))
                     .corner_radius(CORNER_LG)
                     .inner_margin(egui::Margin::same(m(SP_4))),
             )
@@ -3562,7 +3799,7 @@ impl VapourflyApp {
                     RichText::new("Dynamic")
                         .size(TS_XL)
                         .strong()
-                        .color(TEXT_PRIMARY),
+                        .color(t().text_primary),
                 );
                 ui.add_space(SP_1);
                 ui.label(
@@ -3570,7 +3807,7 @@ impl VapourflyApp {
                         "Pick deck-session or finish-it, set parameters, then generate into a stable store slot.",
                     )
                     .size(TS_SM)
-                    .color(TEXT_SECONDARY),
+                    .color(t().text_secondary),
                 );
                 ui.add_space(SP_3);
 
@@ -3578,23 +3815,23 @@ impl VapourflyApp {
                     RichText::new("Template")
                         .size(TS_SM)
                         .strong()
-                        .color(TEXT_PRIMARY),
+                        .color(t().text_primary),
                 );
                 ui.add_space(SP_1);
                 for template in [DynamicTemplate::DeckSession, DynamicTemplate::FinishIt] {
                     let selected = self.dynamic_template == template.id();
                     let btn = egui::Button::new(
                         RichText::new(template.label()).size(TS_SM).color(if selected {
-                            TEXT_INVERSE
+                            t().text_inverse
                         } else {
-                            TEXT_SECONDARY
+                            t().text_secondary
                         }),
                     )
-                    .fill(if selected { ACCENT } else { SURFACE })
+                    .fill(if selected { t().accent } else { t().surface })
                     .stroke(if selected {
                         egui::Stroke::NONE
                     } else {
-                        egui::Stroke::new(1.0, BORDER_SOFT)
+                        egui::Stroke::new(1.0, t().border_soft)
                     })
                     .corner_radius(CORNER_PILL);
                     if ui.add(btn).clicked() {
@@ -3623,7 +3860,7 @@ impl VapourflyApp {
                         "Session minutes applies to Deck Session (HLTB cap). Count caps Finish It results.",
                     )
                     .size(TS_XS)
-                    .color(TEXT_MUTED),
+                    .color(t().text_muted),
                 );
 
                 ui.add_space(SP_4);
@@ -3646,7 +3883,7 @@ impl VapourflyApp {
                 });
                 if let Some(err) = &self.error {
                     ui.add_space(SP_2);
-                    ui.label(RichText::new(err).size(TS_SM).color(ERROR));
+                    ui.label(RichText::new(err).size(TS_SM).color(t().error));
                 }
             });
         if !open {
@@ -3663,8 +3900,8 @@ impl VapourflyApp {
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .frame(
                 egui::Frame::NONE
-                    .fill(SURFACE_RAISED)
-                    .stroke(egui::Stroke::new(1.0, BORDER))
+                    .fill(t().surface_raised)
+                    .stroke(egui::Stroke::new(1.0, t().border))
                     .corner_radius(CORNER_LG)
                     .inner_margin(egui::Margin::same(m(SP_4))),
             )
@@ -3674,7 +3911,7 @@ impl VapourflyApp {
                     RichText::new("Mood")
                         .size(TS_XL)
                         .strong()
-                        .color(TEXT_PRIMARY),
+                        .color(t().text_primary),
                 );
                 ui.add_space(SP_1);
                 ui.label(
@@ -3682,7 +3919,7 @@ impl VapourflyApp {
                         "Seven canonical Editorial Moods with opaque criteria (ADR-0004). Generates into mood-<id>.",
                     )
                     .size(TS_SM)
-                    .color(TEXT_SECONDARY),
+                    .color(t().text_secondary),
                 );
                 ui.add_space(SP_3);
 
@@ -3692,14 +3929,14 @@ impl VapourflyApp {
                         for mood in EditorialMood::all() {
                             let selected = self.editorial_mood == mood.id();
                             let fill = if selected {
-                                ACCENT_SOFT
+                                t().accent_soft
                             } else {
-                                SURFACE_SUNKEN
+                                t().surface_sunken
                             };
                             let stroke = if selected {
-                                egui::Stroke::new(1.0, ACCENT)
+                                egui::Stroke::new(1.0, t().accent)
                             } else {
-                                egui::Stroke::new(1.0, BORDER_SOFT)
+                                egui::Stroke::new(1.0, t().border_soft)
                             };
                             let response = egui::Frame::NONE
                                 .fill(fill)
@@ -3712,12 +3949,12 @@ impl VapourflyApp {
                                         RichText::new(mood.name())
                                             .size(TS_MD)
                                             .strong()
-                                            .color(TEXT_PRIMARY),
+                                            .color(t().text_primary),
                                     );
                                     ui.label(
                                         RichText::new(mood.description())
                                             .size(TS_SM)
-                                            .color(TEXT_SECONDARY),
+                                            .color(t().text_secondary),
                                     );
                                 })
                                 .response
@@ -3749,7 +3986,7 @@ impl VapourflyApp {
                 });
                 if let Some(err) = &self.error {
                     ui.add_space(SP_2);
-                    ui.label(RichText::new(err).size(TS_SM).color(ERROR));
+                    ui.label(RichText::new(err).size(TS_SM).color(t().error));
                 }
             });
         if !open {
@@ -3840,19 +4077,17 @@ impl VapourflyApp {
             |ui| {
                 if ui
                     .add_enabled(refresh_all_enabled, {
-                        egui::Button::new(
-                            RichText::new("Refresh All")
-                                .size(TS_SM)
-                                .color(if refresh_all_enabled {
-                                    TEXT_INVERSE
-                                } else {
-                                    TEXT_MUTED
-                                }),
-                        )
+                        egui::Button::new(RichText::new("Refresh All").size(TS_SM).color(
+                            if refresh_all_enabled {
+                                t().text_inverse
+                            } else {
+                                t().text_muted
+                            },
+                        ))
                         .fill(if refresh_all_enabled {
-                            ACCENT
+                            t().accent
                         } else {
-                            SURFACE_MUTED
+                            t().surface_muted
                         })
                         .stroke(egui::Stroke::NONE)
                         .corner_radius(CORNER_SM)
@@ -3872,9 +4107,9 @@ impl VapourflyApp {
             ui.horizontal(|ui| {
                 ui.checkbox(&mut self.offline_mode, "Offline mode (cache only)");
                 if self.offline_mode {
-                    status_badge(ui, "Cache only", WARNING_SOFT, WARNING);
+                    status_badge(ui, "Cache only", t().warning_soft, t().warning);
                 } else {
-                    status_badge(ui, "Network allowed", SUCCESS_SOFT, SUCCESS);
+                    status_badge(ui, "Network allowed", t().success_soft, t().success);
                 }
             });
             ui.add_space(SP_1);
@@ -3885,7 +4120,7 @@ impl VapourflyApp {
                     "When offline is enabled, network refresh and workflow hydration skip the network and use cache only."
                 })
                 .size(TS_SM)
-                .color(TEXT_MUTED),
+                .color(t().text_muted),
             );
         });
 
@@ -3903,13 +4138,13 @@ impl VapourflyApp {
                     ui.label(
                         RichText::new("Refreshing cache…")
                             .size(TS_SM)
-                            .color(TEXT_SECONDARY),
+                            .color(t().text_secondary),
                     );
                 });
                 ui.add_space(SP_2);
             }
             if let Some(msg) = &self.cache_refresh_msg {
-                ui.label(RichText::new(msg).size(TS_SM).color(TEXT_SECONDARY));
+                ui.label(RichText::new(msg).size(TS_SM).color(t().text_secondary));
                 ui.add_space(SP_2);
             }
 
@@ -3946,7 +4181,7 @@ impl VapourflyApp {
                                     RichText::new(title)
                                         .size(TS_SM)
                                         .strong()
-                                        .color(TEXT_SECONDARY),
+                                        .color(t().text_secondary),
                                 );
                             });
                         }
@@ -3955,8 +4190,7 @@ impl VapourflyApp {
                         for status in &self.source_statuses {
                             let source_id = status.name.as_str();
                             let display = source_display_name(source_id);
-                            let signal =
-                                source_credential_signal(source_id, has_igdb, has_rawg);
+                            let signal = source_credential_signal(source_id, has_igdb, has_rawg);
                             let can_refresh = source_refresh_enabled(
                                 source_id, has_igdb, has_rawg, offline, loading,
                             );
@@ -3974,7 +4208,7 @@ impl VapourflyApp {
                                         RichText::new(display)
                                             .size(TS_BODY)
                                             .strong()
-                                            .color(TEXT_PRIMARY),
+                                            .color(t().text_primary),
                                     );
                                 });
                                 row.col(|ui| {
@@ -3984,22 +4218,24 @@ impl VapourflyApp {
                                     ui.label(
                                         RichText::new(entries.to_string())
                                             .size(TS_BODY)
-                                            .color(TEXT_PRIMARY),
+                                            .color(t().text_primary),
                                     );
                                 });
                                 row.col(|ui| {
-                                    let color = if stale > 0 { WARNING } else { TEXT_PRIMARY };
+                                    let color = if stale > 0 {
+                                        t().warning
+                                    } else {
+                                        t().text_primary
+                                    };
                                     ui.label(
-                                        RichText::new(stale.to_string())
-                                            .size(TS_BODY)
-                                            .color(color),
+                                        RichText::new(stale.to_string()).size(TS_BODY).color(color),
                                     );
                                 });
                                 row.col(|ui| {
                                     ui.label(
                                         RichText::new(last)
                                             .size(TS_SM)
-                                            .color(TEXT_SECONDARY)
+                                            .color(t().text_secondary)
                                             .monospace(),
                                     );
                                 });
@@ -4008,16 +4244,16 @@ impl VapourflyApp {
                                         .add_enabled(
                                             can_refresh,
                                             egui::Button::new(
-                                                RichText::new("Refresh")
-                                                    .size(TS_SM)
-                                                    .color(if can_refresh {
-                                                        TEXT_PRIMARY
+                                                RichText::new("Refresh").size(TS_SM).color(
+                                                    if can_refresh {
+                                                        t().text_primary
                                                     } else {
-                                                        TEXT_MUTED
-                                                    }),
+                                                        t().text_muted
+                                                    },
+                                                ),
                                             )
-                                            .fill(SURFACE)
-                                            .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                                            .fill(t().surface)
+                                            .stroke(egui::Stroke::new(1.0, t().border_soft))
                                             .corner_radius(CORNER_SM),
                                         )
                                         .clicked()
@@ -4036,7 +4272,7 @@ impl VapourflyApp {
                     "Credentials: VAPOURFLY_IGDB_CLIENT_ID + VAPOURFLY_IGDB_CLIENT_SECRET, VAPOURFLY_RAWG_KEY. Set env vars before launch.",
                 )
                 .size(TS_XS)
-                .color(TEXT_MUTED),
+                .color(t().text_muted),
             );
         });
 
@@ -4058,7 +4294,7 @@ impl VapourflyApp {
                         "Safety backups of Steam cloud storage. Restore is confirmation-gated.",
                     )
                     .size(TS_SM)
-                    .color(TEXT_SECONDARY),
+                    .color(t().text_secondary),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if secondary_button(ui, "Refresh Backups").clicked() {
@@ -4074,7 +4310,7 @@ impl VapourflyApp {
                         "No backups found. Click Refresh Backups after a write creates one.",
                     )
                     .size(TS_BODY)
-                    .color(TEXT_MUTED),
+                    .color(t().text_muted),
                 );
             } else {
                 ui.horizontal_wrapped(|ui| {
@@ -4100,7 +4336,7 @@ impl VapourflyApp {
                                     RichText::new(title)
                                         .size(TS_SM)
                                         .strong()
-                                        .color(TEXT_SECONDARY),
+                                        .color(t().text_secondary),
                                 );
                             });
                         }
@@ -4112,8 +4348,7 @@ impl VapourflyApp {
                                 .file_name()
                                 .map(|n| n.to_string_lossy().to_string())
                                 .unwrap_or_default();
-                            let created =
-                                backup.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
+                            let created = backup.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
                             let sha = backup.sha256[..8.min(backup.sha256.len())].to_string();
                             let path = backup.path.clone();
 
@@ -4122,14 +4357,14 @@ impl VapourflyApp {
                                     ui.label(
                                         RichText::new(&filename)
                                             .size(TS_BODY)
-                                            .color(TEXT_PRIMARY),
+                                            .color(t().text_primary),
                                     );
                                 });
                                 row.col(|ui| {
                                     ui.label(
                                         RichText::new(created)
                                             .size(TS_SM)
-                                            .color(TEXT_SECONDARY)
+                                            .color(t().text_secondary)
                                             .monospace(),
                                     );
                                 });
@@ -4137,7 +4372,7 @@ impl VapourflyApp {
                                     ui.label(
                                         RichText::new(sha)
                                             .size(TS_SM)
-                                            .color(TEXT_MUTED)
+                                            .color(t().text_muted)
                                             .monospace(),
                                     );
                                 });
@@ -4160,7 +4395,7 @@ impl VapourflyApp {
                     ui.label(
                         RichText::new("Restoring…")
                             .size(TS_SM)
-                            .color(TEXT_SECONDARY),
+                            .color(t().text_secondary),
                     );
                 });
             }
@@ -4262,7 +4497,7 @@ impl VapourflyApp {
                     self.save_settings();
                 }
                 if let Some(msg) = &self.settings_save_msg {
-                    ui.label(RichText::new(msg).size(TS_SM).color(SUCCESS));
+                    ui.label(RichText::new(msg).size(TS_SM).color(t().success));
                 }
             });
         });
@@ -4274,7 +4509,7 @@ impl VapourflyApp {
                     self.refresh_detected_accounts();
                 }
                 if let Some(msg) = &self.account_list_msg {
-                    ui.label(RichText::new(msg).size(TS_SM).color(TEXT_SECONDARY));
+                    ui.label(RichText::new(msg).size(TS_SM).color(t().text_secondary));
                 }
             });
             ui.add_space(SP_2);
@@ -4283,7 +4518,7 @@ impl VapourflyApp {
                 ui.label(
                     RichText::new("No accounts loaded. Set Steam directory and refresh.")
                         .size(TS_BODY)
-                        .color(TEXT_MUTED),
+                        .color(t().text_muted),
                 );
             } else {
                 let mut selected_account = None;
@@ -4297,7 +4532,7 @@ impl VapourflyApp {
                                 RichText::new(title)
                                     .size(TS_SM)
                                     .strong()
-                                    .color(TEXT_SECONDARY),
+                                    .color(t().text_secondary),
                             );
                         }
                         ui.end_row();
@@ -4306,23 +4541,23 @@ impl VapourflyApp {
                             ui.label(
                                 RichText::new(&account.persona_name)
                                     .size(TS_BODY)
-                                    .color(TEXT_PRIMARY),
+                                    .color(t().text_primary),
                             );
                             ui.label(
                                 RichText::new(&account.account_name)
                                     .size(TS_BODY)
-                                    .color(TEXT_PRIMARY),
+                                    .color(t().text_primary),
                             );
                             ui.label(
                                 RichText::new(mask_steam_id(&account.steam_id64))
                                     .size(TS_SM)
-                                    .color(TEXT_MUTED)
+                                    .color(t().text_muted)
                                     .monospace(),
                             );
                             if account.most_recent {
-                                status_badge(ui, "yes", SUCCESS_SOFT, SUCCESS);
+                                status_badge(ui, "yes", t().success_soft, t().success);
                             } else {
-                                status_badge(ui, "no", SURFACE_SUNKEN, TEXT_MUTED);
+                                status_badge(ui, "no", t().surface_sunken, t().text_muted);
                             }
                             if secondary_button(ui, "Use").clicked() {
                                 selected_account = Some(account.account_name.clone());
@@ -4348,7 +4583,7 @@ impl VapourflyApp {
                     "Enable with caution. Steam may overwrite cloud-storage changes (ADR-0001).",
                 )
                 .size(TS_SM)
-                .color(WARNING),
+                .color(t().warning),
             );
         });
 
@@ -4359,7 +4594,7 @@ impl VapourflyApp {
                         "Steam paths, accounts, libraries, cloud storage, cache, and credentials.",
                     )
                     .size(TS_SM)
-                    .color(TEXT_SECONDARY),
+                    .color(t().text_secondary),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if secondary_button(ui, "Run Setup Check").clicked() {
@@ -4370,14 +4605,14 @@ impl VapourflyApp {
             if let Some(report) = &self.setup_diagnostics {
                 ui.add_space(SP_2);
                 egui::Frame::NONE
-                    .fill(SURFACE_SUNKEN)
+                    .fill(t().surface_sunken)
                     .inner_margin(egui::Margin::same(m(SP_3)))
                     .corner_radius(CORNER_SM)
                     .show(ui, |ui| {
                         ui.label(
                             RichText::new(report)
                                 .size(TS_XS)
-                                .color(TEXT_PRIMARY)
+                                .color(t().text_primary)
                                 .monospace(),
                         );
                     });
@@ -4388,7 +4623,7 @@ impl VapourflyApp {
             ui.label(
                 RichText::new("Export sanitized support data for bug reports.")
                     .size(TS_SM)
-                    .color(TEXT_SECONDARY),
+                    .color(t().text_secondary),
             );
             ui.add_space(SP_2);
             labeled_field(ui, "Export path", None, |ui| {
@@ -4423,12 +4658,12 @@ impl VapourflyApp {
             ui.label(
                 RichText::new("A local-first CLI/GUI tool for managing Steam game libraries.")
                     .size(TS_BODY)
-                    .color(TEXT_SECONDARY),
+                    .color(t().text_secondary),
             );
             ui.label(
                 RichText::new("Licensed under MIT OR Apache-2.0.")
                     .size(TS_SM)
-                    .color(TEXT_MUTED),
+                    .color(t().text_muted),
             );
         });
     }
@@ -4508,46 +4743,75 @@ impl VapourflyApp {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn configure_ui(ctx: &egui::Context) {
-    let mut style = (*ctx.style_of(egui::Theme::Dark)).clone();
-    style.spacing.item_spacing = egui::vec2(SP_2, 7.0);
-    style.spacing.button_padding = egui::vec2(SP_3, SP_1);
-    style.spacing.window_margin = egui::Margin::same(m(SP_3));
-    style.spacing.indent = SP_3;
+fn configure_ui(ctx: &egui::Context, mode: ThemeMode) {
+    set_active_theme(mode);
+    let p = t();
+    let egui_theme = if mode.is_dark() {
+        egui::Theme::Dark
+    } else {
+        egui::Theme::Light
+    };
 
-    let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = SURFACE;
-    visuals.window_fill = SURFACE_RAISED;
-    visuals.faint_bg_color = SURFACE_RAISED;
-    visuals.extreme_bg_color = SURFACE_SUNKEN;
-    visuals.hyperlink_color = ACCENT;
-    visuals.selection.bg_fill = ACCENT_SOFT;
-    visuals.selection.stroke.color = ACCENT_TEXT;
-    visuals.widgets.noninteractive.bg_fill = SURFACE;
-    visuals.widgets.noninteractive.fg_stroke.color = TEXT_SECONDARY;
-    visuals.widgets.inactive.bg_fill = SURFACE_MUTED;
-    visuals.widgets.inactive.fg_stroke.color = TEXT_SECONDARY;
-    visuals.widgets.hovered.bg_fill = ACCENT_SOFT;
-    visuals.widgets.hovered.fg_stroke.color = TEXT_PRIMARY;
-    visuals.widgets.active.bg_fill = ACCENT_SOFT;
-    visuals.widgets.active.fg_stroke.color = TEXT_PRIMARY;
-    visuals.override_text_color = Some(TEXT_PRIMARY);
-    visuals.dark_mode = true;
+    let mut style = (*ctx.style_of(egui_theme)).clone();
+    style.spacing.item_spacing = egui::vec2(SP_2, SP_2);
+    style.spacing.button_padding = egui::vec2(SP_3, 6.0);
+    style.spacing.window_margin = egui::Margin::same(m(SP_4));
+    style.spacing.indent = SP_3;
+    style.interaction.selectable_labels = false;
+
+    let mut visuals = if mode.is_dark() {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
+    visuals.panel_fill = p.canvas;
+    visuals.window_fill = p.surface;
+    visuals.faint_bg_color = p.surface_muted;
+    visuals.extreme_bg_color = p.surface_sunken;
+    visuals.hyperlink_color = p.accent;
+    visuals.selection.bg_fill = p.accent_soft;
+    visuals.selection.stroke.color = p.accent_text;
+    visuals.widgets.noninteractive.bg_fill = p.canvas;
+    visuals.widgets.noninteractive.weak_bg_fill = p.canvas;
+    visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(6);
+    visuals.widgets.noninteractive.fg_stroke.color = p.text_secondary;
+    visuals.widgets.inactive.bg_fill = p.surface;
+    visuals.widgets.inactive.weak_bg_fill = p.surface;
+    visuals.widgets.inactive.fg_stroke.color = p.text_secondary;
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, p.border);
+    visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(6);
+    visuals.widgets.hovered.bg_fill = p.accent_soft;
+    visuals.widgets.hovered.weak_bg_fill = p.accent_soft;
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, p.accent);
+    visuals.widgets.hovered.fg_stroke.color = p.text_primary;
+    visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(6);
+    visuals.widgets.active.bg_fill = p.accent;
+    visuals.widgets.active.weak_bg_fill = p.accent;
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, p.accent);
+    visuals.widgets.active.fg_stroke.color = p.text_inverse;
+    visuals.widgets.active.corner_radius = egui::CornerRadius::same(6);
+    visuals.widgets.open.bg_fill = p.surface;
+    visuals.widgets.open.weak_bg_fill = p.surface;
+    visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, p.accent);
+    visuals.widgets.open.fg_stroke.color = p.text_primary;
+    visuals.widgets.open.corner_radius = egui::CornerRadius::same(6);
+    visuals.override_text_color = Some(p.text_primary);
+    visuals.dark_mode = mode.is_dark();
     style.visuals = visuals;
 
-    ctx.set_style_of(egui::Theme::Dark, style);
-    ctx.set_theme(egui::Theme::Dark);
+    ctx.set_style_of(egui_theme, style);
+    ctx.set_theme(egui_theme);
 }
 
 fn game_primary_badge(game: &Game) -> (&'static str, Color32, Color32) {
     if game.is_junk {
-        ("Junk", ERROR_SOFT, ERROR)
+        ("Junk", t().error_soft, t().error)
     } else if game.is_hidden {
-        ("Hidden", SURFACE_MUTED, TEXT_SECONDARY)
+        ("Hidden", t().surface_muted, t().text_secondary)
     } else if game.installed {
-        ("Installed", SUCCESS_SOFT, SUCCESS)
+        ("Installed", t().success_soft, t().success)
     } else {
-        ("Library", ACCENT_SOFT, ACCENT)
+        ("Library", t().accent_soft, t().accent)
     }
 }
 
@@ -4574,8 +4838,8 @@ fn render_collection_card(ui: &mut egui::Ui, coll: &SteamCollection) {
             ui.set_height(COLLECTION_CARD_H);
 
             egui::Frame::NONE
-                .fill(SURFACE_RAISED)
-                .stroke(egui::Stroke::new(1.0, BORDER_SOFT))
+                .fill(t().surface_raised)
+                .stroke(egui::Stroke::new(1.0, t().border_soft))
                 .inner_margin(egui::Margin::same(m(SP_3)))
                 .corner_radius(CORNER_MD)
                 .show(ui, |ui| {
@@ -4586,11 +4850,11 @@ fn render_collection_card(ui: &mut egui::Ui, coll: &SteamCollection) {
                             RichText::new(&coll.name)
                                 .size(TS_MD)
                                 .strong()
-                                .color(TEXT_PRIMARY),
+                                .color(t().text_primary),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if coll.is_hidden_collection {
-                                status_badge(ui, "Hidden", SURFACE_MUTED, TEXT_SECONDARY);
+                                status_badge(ui, "Hidden", t().surface_muted, t().text_secondary);
                             }
                             metric_pill(ui, "Games", coll.app_ids.len().to_string());
                         });
@@ -4605,7 +4869,7 @@ fn render_collection_card(ui: &mut egui::Ui, coll: &SteamCollection) {
                             coll.app_ids.iter().copied().take(COLLAGE_MAX).collect();
                         if shown.is_empty() {
                             egui::Frame::NONE
-                                .fill(SURFACE_SUNKEN)
+                                .fill(t().surface_sunken)
                                 .corner_radius(CORNER_SM)
                                 .inner_margin(egui::Margin::same(m(SP_3)))
                                 .show(ui, |ui| {
@@ -4617,7 +4881,7 @@ fn render_collection_card(ui: &mut egui::Ui, coll: &SteamCollection) {
                                         ui.label(
                                             RichText::new("No covers")
                                                 .size(TS_XS)
-                                                .color(TEXT_MUTED),
+                                                .color(t().text_muted),
                                         );
                                     });
                                 });
@@ -4630,7 +4894,7 @@ fn render_collection_card(ui: &mut egui::Ui, coll: &SteamCollection) {
                                             COLLAGE_POSTER_H,
                                         ))
                                         .corner_radius(CORNER_SM)
-                                        .bg_fill(SURFACE_SUNKEN)
+                                        .bg_fill(t().surface_sunken)
                                         .show_loading_spinner(true)
                                         .alt_text(format!("App {app_id} cover")),
                                 );
@@ -4639,7 +4903,7 @@ fn render_collection_card(ui: &mut egui::Ui, coll: &SteamCollection) {
                                 ui.label(
                                     RichText::new(format!("+{}", coll.app_ids.len() - COLLAGE_MAX))
                                         .size(TS_SM)
-                                        .color(TEXT_MUTED),
+                                        .color(t().text_muted),
                                 );
                             }
                         }
@@ -4668,6 +4932,13 @@ fn game_card_detail(game: &Game) -> String {
 
 fn steam_poster_uri(app_id: u32) -> String {
     format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{app_id}/library_600x900.jpg")
+}
+
+/// Steam's universally available header capsule has the landscape ratio used
+/// by the primary Library cards. Poster art remains in use for collection
+/// collages where the tall composition is more useful.
+fn steam_capsule_uri(app_id: u32) -> String {
+    format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{app_id}/header.jpg")
 }
 
 fn empty_value_label() -> &'static str {
@@ -4744,8 +5015,8 @@ fn main() -> eframe::Result<()> {
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1280.0, 820.0])
-            .with_min_inner_size([900.0, 620.0]),
+            .with_inner_size([1440.0, 960.0])
+            .with_min_inner_size([1024.0, 700.0]),
         ..Default::default()
     };
 
@@ -4753,7 +5024,7 @@ fn main() -> eframe::Result<()> {
         "Vapourfly",
         native_options,
         Box::new(|cc| {
-            configure_ui(&cc.egui_ctx);
+            configure_ui(&cc.egui_ctx, ThemeMode::Light);
             egui_extras::install_image_loaders(&cc.egui_ctx);
             Ok(Box::new(app))
         }),

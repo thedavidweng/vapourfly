@@ -539,9 +539,9 @@ mod tests {
 
     #[test]
     fn detect_steam_dir_returns_some_on_known_platform() {
-        let result = VapourflyConfig::detect_steam_dir();
+        let _result = VapourflyConfig::detect_steam_dir();
         #[cfg(any(target_os = "macos", target_os = "linux"))]
-        assert!(result.is_some(), "should return a path on macOS/Linux");
+        assert!(_result.is_some(), "should return a path on macOS/Linux");
     }
 
     #[test]
@@ -636,10 +636,10 @@ mod tests {
         remove_env("VAPOURFLY_STEAM_DIR");
 
         let cli = CliOverrides::default();
-        let result = VapourflyConfig::from_cli_and_env(cli);
+        let _result = VapourflyConfig::from_cli_and_env(cli);
         // On macOS/Linux this should succeed via auto-detect.
         #[cfg(any(target_os = "macos", target_os = "linux"))]
-        assert!(result.is_ok());
+        assert!(_result.is_ok());
     }
 
     // -- derived paths -------------------------------------------------------

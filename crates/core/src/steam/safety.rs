@@ -54,8 +54,7 @@ fn detect_steam_process() -> bool {
         std::process::Command::new("pgrep")
             .args(["-xq", "steam_osx"])
             .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+            .is_ok_and(|s| s.success())
     }
 
     #[cfg(target_os = "linux")]
@@ -65,16 +64,14 @@ fn detect_steam_process() -> bool {
             .arg("-s")
             .arg("steam")
             .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+            .is_ok_and(|s| s.success());
         if found {
             return true;
         }
         std::process::Command::new("pgrep")
             .args(["-xq", "steam"])
             .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+            .is_ok_and(|s| s.success())
     }
 
     #[cfg(target_os = "windows")]
@@ -82,11 +79,10 @@ fn detect_steam_process() -> bool {
         std::process::Command::new("tasklist")
             .args(["/FI", "IMAGENAME eq Steam.exe"])
             .output()
-            .map(|o| {
+            .is_ok_and(|o| {
                 let stdout = String::from_utf8_lossy(&o.stdout);
                 stdout.contains("Steam.exe")
             })
-            .unwrap_or(false)
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]

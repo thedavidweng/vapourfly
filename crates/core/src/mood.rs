@@ -210,14 +210,13 @@ fn is_indie(game: &Game) -> bool {
             return true;
         }
     }
-    if let Some(store) = &game.steam_store {
-        if store
+    if let Some(store) = &game.steam_store
+        && store
             .genres
             .iter()
             .any(|g| g.to_ascii_lowercase().contains("indie"))
-        {
-            return true;
-        }
+    {
+        return true;
     }
     false
 }
