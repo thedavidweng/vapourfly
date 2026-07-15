@@ -5187,6 +5187,65 @@ impl VapourflyApp {
         if let Some(source) = refresh_source {
             self.start_cache_refresh(Some(source), ctx);
         }
+
+        // Cache health summary rail.
+        ui.add_space(SP_3);
+        let total_entries: usize = self.source_statuses.iter().map(|s| s.cache_entries).sum();
+        let total_stale: usize = self.source_statuses.iter().map(|s| s.stale_entries).sum();
+        let healthy_sources = self
+            .source_statuses
+            .iter()
+            .filter(|s| s.stale_entries == 0)
+            .count();
+        let total_sources = self.source_statuses.len();
+        let health_pct = if total_sources > 0 {
+            (healthy_sources as f64 / total_sources as f64 * 100.0) as u32
+        } else {
+            0
+        };
+
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                section_card(ui, "Cache Health", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_2);
+                        // Health gauge.
+                        let health_color = if health_pct >= 80 {
+                            t().success
+                        } else if health_pct >= 50 {
+                            t().warning
+                        } else {
+                            t().error
+                        };
+                        ui.label(
+                            RichText::new(format!("{health_pct}%"))
+                                .size(TS_2XL)
+                                .strong()
+                                .color(health_color),
+                        );
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            ui.label(
+                                RichText::new("cache health")
+                                    .size(TS_SM)
+                                    .color(t().text_secondary),
+                            );
+                            ui.label(
+                                RichText::new(format!(
+                                    "{healthy_sources}/{total_sources} sources fresh"
+                                ))
+                                .size(TS_XS)
+                                .color(t().text_muted),
+                            );
+                        });
+                        ui.separator();
+                        insight_metric(ui, "Entries", total_entries.to_string());
+                        insight_metric(ui, "Stale", total_stale.to_string());
+                        insight_metric(ui, "Sources", total_sources.to_string());
+                    });
+                });
+            });
+        });
     }
 
     // -- Backups section (embedded under Settings; ADR-0006 / ticket 09) ----
