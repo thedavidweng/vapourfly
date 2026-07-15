@@ -12,7 +12,7 @@ This policy exists to protect the project's license integrity. Violations will r
 
 ## Development Setup
 
-Vapourfly targets **Rust 2024 edition** with **MSRV 1.88**.
+Vapourfly targets **Rust 2024 edition** with **MSRV 1.96**.
 
 ```bash
 # Install Rust (via rustup)
