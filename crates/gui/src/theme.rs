@@ -35,6 +35,13 @@ impl ThemeMode {
         matches!(self, Self::Dark)
     }
 
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Light => "Light",
+            Self::Dark => "Dark",
+        }
+    }
+
     /// Serialize for eframe storage persistence.
     pub fn as_u8(self) -> u8 {
         match self {

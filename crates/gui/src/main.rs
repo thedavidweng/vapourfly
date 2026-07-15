@@ -5346,236 +5346,346 @@ impl VapourflyApp {
             "Steam install, accounts, locale, write safety, diagnostics, and backups.",
         );
 
-        // Configuration group: directory, account, locale, retention.
-        section_card(ui, "Configuration", |ui| {
-            labeled_field(
-                ui,
-                "Steam directory",
-                Some("Leave empty for auto-detection."),
-                |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.steam_dir_edit)
-                            .desired_width(f32::INFINITY)
-                            .hint_text("/path/to/Steam"),
-                    );
-                },
-            );
-            ui.add_space(SP_3);
-            labeled_field(
-                ui,
-                "Account override",
-                Some("Leave empty for auto-selection (most recent account)."),
-                |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.account_edit)
-                            .desired_width(280.0)
-                            .hint_text("account name"),
-                    );
-                },
-            );
-            ui.add_space(SP_3);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(SP_4, SP_2);
-                labeled_field(ui, "Store country (cc)", None, |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.cc_edit)
-                            .desired_width(72.0)
-                            .hint_text("us"),
-                    );
-                });
-                labeled_field(ui, "Store language", None, |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.lang_edit)
-                            .desired_width(140.0)
-                            .hint_text("english"),
-                    );
-                });
-                labeled_field(
-                    ui,
-                    "Backup retention",
-                    Some("Rolling backups kept per file."),
-                    |ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.backup_retention_edit)
-                                .desired_width(64.0)
-                                .hint_text("5"),
-                        );
-                    },
-                );
-            });
-            ui.add_space(SP_3);
-            ui.horizontal(|ui| {
-                if primary_button(ui, "Save Settings").clicked() {
-                    self.save_settings();
-                }
-                if let Some(msg) = &self.settings_save_msg {
-                    ui.label(RichText::new(msg).size(TS_SM).color(t().success));
-                }
-            });
-        });
-
-        // Detected accounts with one-click override.
-        section_card(ui, "Detected accounts", |ui| {
-            ui.horizontal(|ui| {
-                if secondary_button(ui, "Refresh Accounts").clicked() {
-                    self.refresh_detected_accounts();
-                }
-                if let Some(msg) = &self.account_list_msg {
-                    ui.label(RichText::new(msg).size(TS_SM).color(t().text_secondary));
-                }
-            });
-            ui.add_space(SP_2);
-
-            if self.detected_accounts.is_empty() {
-                ui.label(
-                    RichText::new("No accounts loaded. Set Steam directory and refresh.")
-                        .size(TS_BODY)
-                        .color(t().text_muted),
-                );
-            } else {
-                let mut selected_account = None;
-                egui::Grid::new("detected_accounts_grid")
-                    .num_columns(5)
-                    .spacing([SP_3, SP_2])
-                    .striped(true)
-                    .show(ui, |ui| {
-                        for title in ["Persona", "Account", "Steam ID", "Most recent", "Action"] {
-                            ui.label(
-                                RichText::new(title)
-                                    .size(TS_SM)
-                                    .strong()
-                                    .color(t().text_secondary),
-                            );
-                        }
-                        ui.end_row();
-
-                        for account in &self.detected_accounts {
-                            ui.label(
-                                RichText::new(&account.persona_name)
-                                    .size(TS_BODY)
-                                    .color(t().text_primary),
-                            );
-                            ui.label(
-                                RichText::new(&account.account_name)
-                                    .size(TS_BODY)
-                                    .color(t().text_primary),
-                            );
-                            ui.label(
-                                RichText::new(mask_steam_id(&account.steam_id64))
-                                    .size(TS_SM)
-                                    .color(t().text_muted)
-                                    .monospace(),
-                            );
-                            if account.most_recent {
-                                status_badge(ui, "yes", t().success_soft, t().success);
-                            } else {
-                                status_badge(ui, "no", t().surface_sunken, t().text_muted);
-                            }
-                            if secondary_button(ui, "Use").clicked() {
-                                selected_account = Some(account.account_name.clone());
-                            }
-                            ui.end_row();
-                        }
-                    });
-
-                if let Some(account_name) = selected_account {
-                    self.account_edit = account_name;
-                }
-            }
-        });
-
-        section_card(ui, "Write safety", |ui| {
-            ui.checkbox(
-                &mut self.allow_steam_running,
-                "Allow writes while Steam is running",
-            );
-            ui.add_space(SP_1);
-            ui.label(
-                RichText::new(
-                    "Enable with caution. Steam may overwrite cloud-storage changes (ADR-0001).",
-                )
-                .size(TS_SM)
-                .color(t().warning),
-            );
-        });
-
-        section_card(ui, "Setup diagnostics", |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(
-                        "Steam paths, accounts, libraries, cloud storage, cache, and credentials.",
-                    )
-                    .size(TS_SM)
-                    .color(t().text_secondary),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if secondary_button(ui, "Run Setup Check").clicked() {
-                        self.run_setup_diagnostics();
-                    }
-                });
-            });
-            if let Some(report) = &self.setup_diagnostics {
-                ui.add_space(SP_2);
-                egui::Frame::NONE
-                    .fill(t().surface_sunken)
-                    .inner_margin(egui::Margin::same(m(SP_3)))
-                    .corner_radius(CORNER_SM)
-                    .show(ui, |ui| {
+        // Two-column layout: settings cards (left) + summary rail (right).
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                // Appearance: theme toggle.
+                section_card(ui, "Appearance", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
                         ui.label(
-                            RichText::new(report)
+                            RichText::new("Theme")
+                                .size(TS_SM)
+                                .color(t().text_secondary),
+                        );
+                        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+                            let is_active = self.theme_mode == mode;
+                            let btn = egui::Button::new(
+                                RichText::new(mode.label()).size(TS_SM).color(if is_active {
+                                    t().text_inverse
+                                } else {
+                                    t().text_secondary
+                                }),
+                            )
+                            .fill(if is_active { t().accent } else { t().surface })
+                            .stroke(egui::Stroke::new(
+                                1.0,
+                                if is_active { t().accent } else { t().border },
+                            ))
+                            .corner_radius(CORNER_PILL);
+                            if ui.add(btn).clicked() {
+                                self.theme_mode = mode;
+                            }
+                        }
+                        ui.label(
+                            RichText::new("Persisted across launches via local storage.")
                                 .size(TS_XS)
-                                .color(t().text_primary)
-                                .monospace(),
+                                .color(t().text_muted),
                         );
                     });
-            }
-        });
+                });
 
-        section_card(ui, "Diagnostics export", |ui| {
-            ui.label(
-                RichText::new("Export sanitized support data for bug reports.")
-                    .size(TS_SM)
-                    .color(t().text_secondary),
-            );
-            ui.add_space(SP_2);
-            labeled_field(ui, "Export path", None, |ui| {
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.diagnostics_export_path)
-                            .desired_width(320.0)
-                            .hint_text("diagnostics.json"),
+                // Configuration group: directory, account, locale, retention.
+                section_card(ui, "Configuration", |ui| {
+                    labeled_field(
+                        ui,
+                        "Steam directory",
+                        Some("Leave empty for auto-detection."),
+                        |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.steam_dir_edit)
+                                    .desired_width(f32::INFINITY)
+                                    .hint_text("/path/to/Steam"),
+                            );
+                        },
                     );
-                    if secondary_button(ui, "Export Diagnostics").clicked() {
-                        match self.export_diagnostics() {
-                            Ok(()) => {
-                                self.success_msg = Some(format!(
-                                    "Diagnostics exported to {}",
-                                    self.diagnostics_export_path.trim()
-                                ));
-                            }
-                            Err(e) => {
-                                self.error = Some(format!("Diagnostics export failed: {e}"));
-                            }
+                    ui.add_space(SP_3);
+                    labeled_field(
+                        ui,
+                        "Account override",
+                        Some("Leave empty for auto-selection (most recent account)."),
+                        |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.account_edit)
+                                    .desired_width(280.0)
+                                    .hint_text("account name"),
+                            );
+                        },
+                    );
+                    ui.add_space(SP_3);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(SP_4, SP_2);
+                        labeled_field(ui, "Store country (cc)", None, |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.cc_edit)
+                                    .desired_width(72.0)
+                                    .hint_text("us"),
+                            );
+                        });
+                        labeled_field(ui, "Store language", None, |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.lang_edit)
+                                    .desired_width(140.0)
+                                    .hint_text("english"),
+                            );
+                        });
+                        labeled_field(
+                            ui,
+                            "Backup retention",
+                            Some("Rolling backups kept per file."),
+                            |ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.backup_retention_edit)
+                                        .desired_width(64.0)
+                                        .hint_text("5"),
+                                );
+                            },
+                        );
+                    });
+                    ui.add_space(SP_3);
+                    ui.horizontal(|ui| {
+                        if primary_button(ui, "Save Settings").clicked() {
+                            self.save_settings();
+                        }
+                        if let Some(msg) = &self.settings_save_msg {
+                            ui.label(RichText::new(msg).size(TS_SM).color(t().success));
+                        }
+                    });
+                });
+
+                // Detected accounts with one-click override.
+                section_card(ui, "Detected accounts", |ui| {
+                    ui.horizontal(|ui| {
+                        if secondary_button(ui, "Refresh Accounts").clicked() {
+                            self.refresh_detected_accounts();
+                        }
+                        if let Some(msg) = &self.account_list_msg {
+                            ui.label(RichText::new(msg).size(TS_SM).color(t().text_secondary));
+                        }
+                    });
+                    ui.add_space(SP_2);
+
+                    if self.detected_accounts.is_empty() {
+                        ui.label(
+                            RichText::new("No accounts loaded. Set Steam directory and refresh.")
+                                .size(TS_BODY)
+                                .color(t().text_muted),
+                        );
+                    } else {
+                        let mut selected_account = None;
+                        egui::Grid::new("detected_accounts_grid")
+                            .num_columns(5)
+                            .spacing([SP_3, SP_2])
+                            .striped(true)
+                            .show(ui, |ui| {
+                                for title in ["Persona", "Account", "Steam ID", "Most recent", "Action"] {
+                                    ui.label(
+                                        RichText::new(title)
+                                            .size(TS_SM)
+                                            .strong()
+                                            .color(t().text_secondary),
+                                    );
+                                }
+                                ui.end_row();
+
+                                for account in &self.detected_accounts {
+                                    ui.label(
+                                        RichText::new(&account.persona_name)
+                                            .size(TS_BODY)
+                                            .color(t().text_primary),
+                                    );
+                                    ui.label(
+                                        RichText::new(&account.account_name)
+                                            .size(TS_BODY)
+                                            .color(t().text_primary),
+                                    );
+                                    ui.label(
+                                        RichText::new(mask_steam_id(&account.steam_id64))
+                                            .size(TS_SM)
+                                            .color(t().text_muted)
+                                            .monospace(),
+                                    );
+                                    if account.most_recent {
+                                        status_badge(ui, "yes", t().success_soft, t().success);
+                                    } else {
+                                        status_badge(ui, "no", t().surface_sunken, t().text_muted);
+                                    }
+                                    if secondary_button(ui, "Use").clicked() {
+                                        selected_account = Some(account.account_name.clone());
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+
+                        if let Some(account_name) = selected_account {
+                            self.account_edit = account_name;
                         }
                     }
                 });
+
+                section_card(ui, "Write safety", |ui| {
+                    ui.checkbox(
+                        &mut self.allow_steam_running,
+                        "Allow writes while Steam is running",
+                    );
+                    ui.add_space(SP_1);
+                    ui.label(
+                        RichText::new(
+                            "Enable with caution. Steam may overwrite cloud-storage changes (ADR-0001).",
+                        )
+                        .size(TS_SM)
+                        .color(t().warning),
+                    );
+                });
+
+                section_card(ui, "Setup diagnostics", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(
+                                "Steam paths, accounts, libraries, cloud storage, cache, and credentials.",
+                            )
+                            .size(TS_SM)
+                            .color(t().text_secondary),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if secondary_button(ui, "Run Setup Check").clicked() {
+                                self.run_setup_diagnostics();
+                            }
+                        });
+                    });
+                    if let Some(report) = &self.setup_diagnostics {
+                        ui.add_space(SP_2);
+                        egui::Frame::NONE
+                            .fill(t().surface_sunken)
+                            .inner_margin(egui::Margin::same(m(SP_3)))
+                            .corner_radius(CORNER_SM)
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(report)
+                                        .size(TS_XS)
+                                        .color(t().text_primary)
+                                        .monospace(),
+                                );
+                            });
+                    }
+                });
+
+                section_card(ui, "Diagnostics export", |ui| {
+                    ui.label(
+                        RichText::new("Export sanitized support data for bug reports.")
+                            .size(TS_SM)
+                            .color(t().text_secondary),
+                    );
+                    ui.add_space(SP_2);
+                    labeled_field(ui, "Export path", None, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.diagnostics_export_path)
+                                    .desired_width(320.0)
+                                    .hint_text("diagnostics.json"),
+                            );
+                            if secondary_button(ui, "Export Diagnostics").clicked() {
+                                match self.export_diagnostics() {
+                                    Ok(()) => {
+                                        self.success_msg = Some(format!(
+                                            "Diagnostics exported to {}",
+                                            self.diagnostics_export_path.trim()
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        self.error = Some(format!("Diagnostics export failed: {e}"));
+                                    }
+                                }
+                            }
+                        });
+                    });
+                });
+
+                // Backups / restore live under Settings (not a top-level nav item).
+                self.render_backups_section(ui);
+
+                section_card(ui, "About", |ui| {
+                    stat_inline(ui, "Version:", &format!("v{}", env!("CARGO_PKG_VERSION")));
+                    ui.label(
+                        RichText::new("A local-first CLI/GUI tool for managing Steam game libraries.")
+                            .size(TS_BODY)
+                            .color(t().text_secondary),
+                    );
+                    ui.label(
+                        RichText::new("Licensed under MIT OR Apache-2.0.")
+                            .size(TS_SM)
+                            .color(t().text_muted),
+                    );
+                });
             });
-        });
 
-        // Backups / restore live under Settings (not a top-level nav item).
-        self.render_backups_section(ui);
-
-        section_card(ui, "About", |ui| {
-            stat_inline(ui, "Version:", &format!("v{}", env!("CARGO_PKG_VERSION")));
-            ui.label(
-                RichText::new("A local-first CLI/GUI tool for managing Steam game libraries.")
-                    .size(TS_BODY)
-                    .color(t().text_secondary),
-            );
-            ui.label(
-                RichText::new("Licensed under MIT OR Apache-2.0.")
-                    .size(TS_SM)
-                    .color(t().text_muted),
+            // Summary rail.
+            ui.add_space(SP_4);
+            ui.allocate_ui_with_layout(
+                egui::vec2(200.0, ui.available_height()),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    egui::Frame::group(ui.style())
+                        .fill(t().surface)
+                        .stroke(egui::Stroke::new(1.0, t().border_soft))
+                        .corner_radius(CORNER_MD)
+                        .inner_margin(egui::Margin::same(m(SP_3)))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new("Summary")
+                                    .size(TS_MD)
+                                    .strong()
+                                    .color(t().text_primary),
+                            );
+                            ui.add_space(SP_2);
+                            ui.separator();
+                            ui.add_space(SP_2);
+                            ui.spacing_mut().item_spacing.y = SP_3;
+                            insight_metric(
+                                ui,
+                                "Theme",
+                                self.theme_mode.label().to_string(),
+                            );
+                            insight_metric(
+                                ui,
+                                "Accounts",
+                                self.detected_accounts.len().to_string(),
+                            );
+                            insight_metric(
+                                ui,
+                                "Steam dir",
+                                if self.steam_dir_edit.trim().is_empty() {
+                                    "auto".to_string()
+                                } else {
+                                    "set".to_string()
+                                },
+                            );
+                            insight_metric(
+                                ui,
+                                "Retention",
+                                if self.backup_retention_edit.trim().is_empty() {
+                                    "default".to_string()
+                                } else {
+                                    self.backup_retention_edit.trim().to_string()
+                                },
+                            );
+                            insight_metric(
+                                ui,
+                                "Write safety",
+                                if self.allow_steam_running {
+                                    "relaxed".to_string()
+                                } else {
+                                    "strict".to_string()
+                                },
+                            );
+                            ui.separator();
+                            insight_metric(
+                                ui,
+                                "Version",
+                                format!("v{}", env!("CARGO_PKG_VERSION")),
+                            );
+                        });
+                },
             );
         });
     }
