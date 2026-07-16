@@ -1,0 +1,62 @@
+## Summary
+
+### Original work (Items 1–3)
+
+- **Completion-price correction (domain):** `completion_price` now sums missing non-free Playlist entries (not owned unplayed games). New `CompletionPrice` (Single/Mixed) and `PriceCoverage` structs handle multi-currency totals and partial coverage. Rule Playlists have no missing entries → no price.
+- **`--ui-demo` mode:** Deterministic fixture data for all pages (24 games, 5 Playlists, 4 Collections, junk decisions, recommendations, discover results). Write actions disabled.
+- **Theme persistence:** Saved via eframe local storage (not domain config). `ThemeMode::as_u8()/from_u8()` for round-trip.
+- **Native window controls:** Removed app-drawn traffic lights; native OS controls remain.
+- **Background job runner:** New `jobs` module with `JobId`, `JobRunner`, `JobSlot<T>` providing typed slots with request IDs and stale-result protection. All four background channels migrated.
+- **GUI module split:** Extracted `theme.rs` (ThemeMode, Tokens, design constants, configure_ui) and `jobs.rs` from main.rs.
+- **Library redesign:** Quick-view pills (All/Installed/Unplayed/Hidden/Junk), advanced filters (genre, ProtonDB tier, Deck, Unplayed), pagination (48/page with **Load more**), insights rail.
+- **Junk subview:** Per-row selection checkboxes, bulk select/clear, summary rail, selected-only write plans.
+- **Recommendations:** Session planner with seed picker dropdown, top-3 highlight cards with medals and match-percent, explanation rail.
+- **Settings:** Appearance card with theme toggle, summary rail (Theme, Accounts, Steam dir, Retention, Write safety, Version).
+- **Data Sources:** Cache-health panel with health-percentage gauge.
+- **Documentation:** FEATURES.md updated for all changed views.
+
+### Follow-up work (Items 4–7)
+
+- **Item 4 — Demo artwork fully local & deterministic:** Shared `GameArtwork` component is the single source of truth for game images. In `ui_demo` or `offline_mode`, CDN fetches are banned. Network failures fall back to a deterministic placeholder (two color blocks, title initial, AppID). `ARTWORK_PALETTE` test ensures placeholder determinism by AppID.
+- **Item 5 — Compact responsive layout:** 76px icon-only sidebar at 1024–1179px, 16px central padding below 1280px, and insight/rails move below main content at 1024–1279px. Helper functions `is_compact_sidebar`, `is_compact_padding`, `rails_below` in `theme.rs`.
+- **Item 6 — Spec content:**
+  - Junk table density: cover thumbnail, playtime, HLTB, rating, Proton/Deck tier, missing signals, hidden status, library-share percentage. Summary rail now shows Threshold, HLTB coverage, and Focus reclaimed playtime.
+  - Top-3 Recommendation cards: 220×124 hero image via shared `GameArtwork` component, plus compact metadata (playtime, HLTB, RAWG rating, ProtonDB tier, score).
+  - Playlist workspace: hero card with cover, content-type badge, creator, local-store label, owned/unplayed counts, and average HLTB. Two-column layout below has Games/Rules/Match tabs on the left and a metadata rail (description, content type, game count, generator badge) on the right. Share/export and sync-to-Steam controls live in the rail.
+- **Item 7 — Documentation & smoke test:** Updated `docs/FEATURES.md` to reflect 48/page **Load more**, removed "Apply all"/"Hide all" references (selected-subset only), added a GUI smoke-test checklist, and updated Library/Junk/Recommendations/Playlist descriptions.
+
+### Code review fixes (Fixes 1–5b)
+
+- **Fix 1 — CI green:** `cargo fmt --all` applied to resolve formatting CI failure.
+- **Fix 2 — Completion price online fetch:** Missing AppIDs without `steam-store` cache entries are now fetched on-demand via `SteamStoreClient` in online mode. Offline mode shows "unknown" for uncached prices. Shared `resolve_missing_store_details` API used by both CLI and GUI. Tests cover offline and online scenarios.
+- **Fix 3 — Eliminate per-frame clone + reclassification:** `PreparedLibrarySnapshot` now stores `Arc<[Game]>` with pre-classified games (JunkMode::Default). The `prepared_games` function returns `Arc<[Game]>` directly for Default mode, cloning only for non-default modes that run in background threads. Redundant `manual_overrides()` calls in `start_junk_preview` removed; `manual_overrides` method marked `#[cfg(test)]`.
+- **Fix 4 — Fingerprint validation at poll time:** All polling points (scan, write, enrich, dry-run, junk preview, recommend, discover, playlist match, dynamic, mood) now compare the expected ticket's fingerprint against the **current** workflow state's fingerprint (not the stored expected). Fingerprints cover scan config (steam_dir, account, fixtures, offline), scan_generation, junk mode, recommend request, playlist content, and dry-run selection. Stale results are discarded and the job re-runs.
+- **Fix 5a — Library advanced filters + insights + overflow menu:**
+  - New filters: tag (RAWG tags + IGDB keywords), controller support (PCGW full controller), HLTB min/max range, playtime min/max range.
+  - Sort by: Name, Playtime, HLTB, Rating, AppID (with Desc toggle), in addition to default Installed+Playtime.
+  - All new filters integrated into quick-view presets (cleared on All).
+  - Insights rail: Backlog (installed + unplayed), Recent (recently active), Avg HLTB.
+  - Game card overflow menu (•••): Recommend, View on Steam Store, Hide/Unhide.
+  - 7 new tests.
+- **Fix 5b — Playlist Games tab + Rules visual editing:**
+  - Games tab: search-based Add/Remove from library as primary editor (already present).
+  - Rules tab: visual rule tree with recursive And/Or/Not nesting, per-rule remove buttons, quick-add buttons (Installed, NotHidden, NotJunk, ControllerSupportFull), parameterized rule adders (HasGenre, HasTag, HltbMaxMinutes, ProtonAtLeast), and Advanced JSON toggle.
+  - 1 new test for rule_label covering all 12 PlaylistRule variants.
+
+#### Test plan
+- [x] `cargo fmt --all` clean
+- [x] `cargo clippy --all-targets` clean (0 warnings)
+- [x] `cargo test` — 528 tests pass across all crates
+- [x] `cargo test -p vapourfly-gui` — 94 GUI tests pass
+- [x] `cargo build --release -p vapourfly-gui` succeeds
+- [x] `cargo run -p vapourfly-gui -- --ui-demo` starts and renders without crashing
+- [ ] Manual smoke test: theme toggle persists across restart
+- [ ] Manual smoke test: Library quick views + advanced filters (genre, tag, ProtonDB, Deck, Controller, Unplayed, HLTB range, playtime range) + sort dropdown + Load more (48/page)
+- [ ] Manual smoke test: Library game card overflow menu (•••: Recommend, View on Steam Store, Hide/Unhide)
+- [ ] Manual smoke test: Library insights rail shows Backlog, Recent, Avg HLTB
+- [ ] Manual smoke test: Junk dense table → selected-only dry-run plan
+- [ ] Manual smoke test: Recommendations top-3 cards show 220×124 images + metadata
+- [ ] Manual smoke test: Playlists hero + Games tab search Add/Remove + Rules tab visual editor (tree, remove, quick-add, parameterized adders, Advanced JSON)
+- [ ] Manual smoke test: Playlist completion price shows online-fetched prices for missing AppIDs
+- [ ] Manual smoke test: responsive breakpoints (76px sidebar at 1024–1179px, 16px padding below 1280px, rails below at 1024–1279px)
+- [ ] Manual smoke test: demo/offline mode shows deterministic placeholder art, no CDN fetches
