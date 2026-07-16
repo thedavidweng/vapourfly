@@ -272,6 +272,10 @@ struct VapourflyApp {
     recommend_deck: bool,
     recommend_installed_only: bool,
     recommend_results: Vec<Recommendation>,
+    /// Selected recommendation AppID for "Why this pick?" panel.
+    recommend_selected: Option<u32>,
+    /// Search filter for the seed autocomplete.
+    recommend_seed_search: String,
 
     // Playlists view
     playlist_import_path: String,
@@ -1198,6 +1202,8 @@ impl VapourflyApp {
             recommend_deck: false,
             recommend_installed_only: false,
             recommend_results: Vec::new(),
+            recommend_selected: None,
+            recommend_seed_search: String::new(),
 
             playlist_import_path: String::new(),
             playlist_export_path: String::new(),
@@ -3912,30 +3918,85 @@ impl VapourflyApp {
                         egui::TextEdit::singleline(&mut self.recommend_minutes).hint_text("120"),
                     );
                 });
+                // Quick duration buttons.
+                for &mins in [30u32, 60, 120, 240].iter() {
+                    let label = if mins < 60 {
+                        format!("{mins}m")
+                    } else if mins % 60 == 0 {
+                        format!("{}h", mins / 60)
+                    } else {
+                        format!("{}h{}m", mins / 60, mins % 60)
+                    };
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new(label).size(TS_XS))
+                                .fill(t().surface)
+                                .stroke(egui::Stroke::new(1.0, t().border_soft))
+                                .corner_radius(CORNER_PILL),
+                        )
+                        .clicked()
+                    {
+                        self.recommend_minutes = mins.to_string();
+                    }
+                }
+            });
+            ui.add_space(SP_2);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_2);
                 form_field(ui, "Count", |ui| {
                     ui.add_sized(
                         [64.0, 28.0],
                         egui::TextEdit::singleline(&mut self.recommend_count).hint_text("5"),
                     );
                 });
+                // Quick count buttons.
+                for &n in [3u32, 5, 10].iter() {
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new(n.to_string()).size(TS_XS))
+                                .fill(t().surface)
+                                .stroke(egui::Stroke::new(1.0, t().border_soft))
+                                .corner_radius(CORNER_PILL),
+                        )
+                        .clicked()
+                    {
+                        self.recommend_count = n.to_string();
+                    }
+                }
+            });
+            ui.add_space(SP_2);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_2);
                 form_field(ui, "Seed AppID", |ui| {
                     ui.add_sized(
                         [100.0, 28.0],
                         egui::TextEdit::singleline(&mut self.recommend_seed).hint_text("optional"),
                     );
                 });
-                // Seed picker: dropdown of library games for quick selection.
+                // Searchable seed autocomplete from library.
                 if let Some(scan) = &self.scan_result {
+                    ui.label(
+                        RichText::new("Search:")
+                            .size(TS_SM)
+                            .color(t().text_secondary),
+                    );
+                    ui.add_sized(
+                        [120.0, 28.0],
+                        egui::TextEdit::singleline(&mut self.recommend_seed_search)
+                            .hint_text("library search"),
+                    );
+                    let q = self.recommend_seed_search.to_lowercase();
                     let seed_games: Vec<(u32, String)> = scan
                         .games
                         .iter()
-                        .take(50)
+                        .filter(|g| q.is_empty() || g.name.to_lowercase().contains(&q))
+                        .take(20)
                         .map(|g| (g.app_id, g.name.clone()))
                         .collect();
                     if !seed_games.is_empty() {
                         egui::ComboBox::from_id_salt("rec_seed_picker")
                             .selected_text("Pick from library\u{2026}")
-                            .width(160.0)
+                            .width(200.0)
                             .show_ui(ui, |ui| {
                                 for (app_id, name) in seed_games {
                                     if ui
@@ -3959,6 +4020,8 @@ impl VapourflyApp {
                         Ok(request) => {
                             if let Some(games) = self.prepared_games(JunkMode::Default) {
                                 self.recommend_results = recommend(&games, &request);
+                                self.recommend_selected =
+                                    self.recommend_results.first().map(|r| r.app_id);
                             }
                         }
                         Err(e) => self.error = Some(e),
@@ -3976,6 +4039,14 @@ impl VapourflyApp {
             );
             return;
         }
+
+        // Match percent formula: deck mode → score/7.5, normal → score/5.5.
+        // Rounded and clamped to 0–100.
+        let max_score = if self.recommend_deck { 7.5 } else { 5.5 };
+        let match_pct = |score: f32| -> u32 {
+            let pct = (score / max_score * 100.0).round() as i32;
+            pct.clamp(0, 100) as u32
+        };
 
         // Top-3 highlight cards.
         let top3: Vec<&Recommendation> = self.recommend_results.iter().take(3).collect();
@@ -3996,9 +4067,21 @@ impl VapourflyApp {
                         1 => "\u{1F948}", // 🥈
                         _ => "\u{1F949}", // 🥉
                     };
+                    let is_selected = self.recommend_selected == Some(rec.app_id);
                     egui::Frame::group(ui.style())
-                        .fill(t().surface)
-                        .stroke(egui::Stroke::new(1.0, t().border_soft))
+                        .fill(if is_selected {
+                            t().accent_soft
+                        } else {
+                            t().surface
+                        })
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            if is_selected {
+                                t().accent
+                            } else {
+                                t().border_soft
+                            },
+                        ))
                         .corner_radius(CORNER_MD)
                         .inner_margin(egui::Margin::same(m(SP_3)))
                         .show(ui, |ui| {
@@ -4016,20 +4099,9 @@ impl VapourflyApp {
                                 ui.add_space(SP_1);
                                 ui.horizontal(|ui| {
                                     app_id_tag(ui, rec.app_id);
-                                    // Match percent: score relative to max possible.
-                                    let max_score = self
-                                        .recommend_results
-                                        .first()
-                                        .map(|r| r.score)
-                                        .unwrap_or(1.0);
-                                    let pct = if max_score > 0.0 {
-                                        (rec.score / max_score * 100.0).min(100.0)
-                                    } else {
-                                        0.0
-                                    };
                                     status_badge(
                                         ui,
-                                        &format!("{pct:.0}% match"),
+                                        &format!("{}% match", match_pct(rec.score)),
                                         t().accent_soft,
                                         t().accent_text,
                                     );
@@ -4040,6 +4112,12 @@ impl VapourflyApp {
                                         .size(TS_SM)
                                         .color(t().text_secondary),
                                 );
+                                if ui
+                                    .button(RichText::new("Why this pick?").size(TS_XS))
+                                    .clicked()
+                                {
+                                    self.recommend_selected = Some(rec.app_id);
+                                }
                             });
                         });
                 }
@@ -4048,7 +4126,7 @@ impl VapourflyApp {
 
         ui.add_space(SP_3);
 
-        // Two-column: full results list (left) + explanation rail (right).
+        // Two-column: compact results list (left) + explanation rail (right).
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 // Write action bar.
@@ -4093,102 +4171,225 @@ impl VapourflyApp {
                 );
                 ui.add_space(SP_3);
 
-                // Full results list: score + reason codes.
-                for rec in &self.recommend_results {
-                    section_card(ui, &rec.name, |ui| {
-                        ui.horizontal(|ui| {
-                            app_id_tag(ui, rec.app_id);
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    status_badge(
-                                        ui,
-                                        &format!("{:.2}", rec.score),
-                                        t().accent_soft,
-                                        t().accent_text,
-                                    );
-                                },
-                            );
-                        });
-                        if !rec.reasons.is_empty() {
-                            ui.add_space(SP_1);
-                            ui.indent("rec_reasons", |ui| {
-                                for reason in &rec.reasons {
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.spacing_mut().item_spacing =
-                                            egui::vec2(SP_1, SP_1);
+                // Compact results list (after top 3): selectable rows.
+                for rec in self.recommend_results.iter().skip(3) {
+                    let is_selected = self.recommend_selected == Some(rec.app_id);
+                    egui::Frame::group(ui.style())
+                        .fill(if is_selected { t().accent_soft } else { t().surface })
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            if is_selected { t().accent } else { t().border_soft },
+                        ))
+                        .corner_radius(CORNER_SM)
+                        .inner_margin(egui::Margin::same(m(SP_2)))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                                app_id_tag(ui, rec.app_id);
+                                ui.label(
+                                    RichText::new(&rec.name)
+                                        .size(TS_BODY)
+                                        .color(t().text_primary),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
                                         status_badge(
                                             ui,
-                                            &reason.code,
-                                            t().surface_muted,
-                                            t().text_secondary,
+                                            &format!("{}% match", match_pct(rec.score)),
+                                            t().accent_soft,
+                                            t().accent_text,
                                         );
                                         ui.label(
-                                            RichText::new(format!(
-                                                "{} ({:+.1})",
-                                                reason.description, reason.weight
-                                            ))
-                                            .size(TS_SM)
-                                            .color(t().text_secondary),
+                                            RichText::new(format!("{:.2}", rec.score))
+                                                .size(TS_SM)
+                                                .color(t().text_secondary),
                                         );
-                                    });
-                                }
+                                    },
+                                );
                             });
-                        }
-                    });
+                            if ui.button(RichText::new("Why?").size(TS_XS)).clicked() {
+                                self.recommend_selected = Some(rec.app_id);
+                            }
+                        });
                 }
             });
 
-            // Explanation rail.
+            // Explanation rail: "Why this pick?" for selected, or general scoring.
             ui.add_space(SP_4);
             ui.allocate_ui_with_layout(
-                egui::vec2(200.0, ui.available_height()),
+                egui::vec2(220.0, ui.available_height()),
                 egui::Layout::top_down(egui::Align::LEFT),
                 |ui| {
-                    egui::Frame::group(ui.style())
-                        .fill(t().surface)
-                        .stroke(egui::Stroke::new(1.0, t().border_soft))
-                        .corner_radius(CORNER_MD)
-                        .inner_margin(egui::Margin::same(m(SP_3)))
-                        .show(ui, |ui| {
-                            ui.label(
-                                RichText::new("How scoring works")
-                                    .size(TS_MD)
-                                    .strong()
-                                    .color(t().text_primary),
-                            );
-                            ui.add_space(SP_2);
-                            ui.separator();
-                            ui.add_space(SP_2);
-                            ui.spacing_mut().item_spacing.y = SP_3;
-                            insight_metric(
-                                ui,
-                                "Results",
-                                self.recommend_results.len().to_string(),
-                            );
-                            let avg_score = if self.recommend_results.is_empty() {
-                                0.0
-                            } else {
-                                self.recommend_results.iter().map(|r| r.score).sum::<f32>()
-                                    / self.recommend_results.len() as f32
-                            };
-                            insight_metric(ui, "Avg score", format!("{avg_score:.2}"));
-                            let top_score = self
-                                .recommend_results
-                                .first()
-                                .map(|r| r.score)
-                                .unwrap_or(0.0);
-                            insight_metric(ui, "Top score", format!("{top_score:.2}"));
-                            ui.separator();
-                            ui.add_space(SP_2);
-                            ui.label(
-                                RichText::new(
-                                    "Scores combine playtime fit, deck compatibility, ProtonDB tier, and rating signals. Higher is better.",
-                                )
-                                .size(TS_XS)
-                                .color(t().text_muted),
-                            );
-                        });
+                    if let Some(selected_id) = self.recommend_selected {
+                        if let Some(rec) = self
+                            .recommend_results
+                            .iter()
+                            .find(|r| r.app_id == selected_id)
+                        {
+                            egui::Frame::group(ui.style())
+                                .fill(t().surface)
+                                .stroke(egui::Stroke::new(1.0, t().border_soft))
+                                .corner_radius(CORNER_MD)
+                                .inner_margin(egui::Margin::same(m(SP_3)))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        RichText::new("Why this pick?")
+                                            .size(TS_MD)
+                                            .strong()
+                                            .color(t().text_primary),
+                                    );
+                                    ui.add_space(SP_1);
+                                    ui.label(
+                                        RichText::new(&rec.name)
+                                            .size(TS_BODY)
+                                            .color(t().text_primary),
+                                    );
+                                    ui.horizontal(|ui| {
+                                        app_id_tag(ui, rec.app_id);
+                                        status_badge(
+                                            ui,
+                                            &format!("{}% match", match_pct(rec.score)),
+                                            t().accent_soft,
+                                            t().accent_text,
+                                        );
+                                        ui.label(
+                                            RichText::new(format!("Score: {:.2}", rec.score))
+                                                .size(TS_SM)
+                                                .color(t().text_secondary),
+                                        );
+                                    });
+                                    ui.add_space(SP_2);
+                                    ui.separator();
+                                    ui.add_space(SP_2);
+                                    ui.label(
+                                        RichText::new("Reason codes")
+                                            .size(TS_SM)
+                                            .strong()
+                                            .color(t().text_secondary),
+                                    );
+                                    ui.add_space(SP_1);
+                                    for reason in &rec.reasons {
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.spacing_mut().item_spacing =
+                                                egui::vec2(SP_1, SP_1);
+                                            status_badge(
+                                                ui,
+                                                &reason.code,
+                                                t().surface_muted,
+                                                t().text_secondary,
+                                            );
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "{} ({:+.1})",
+                                                    reason.description, reason.weight
+                                                ))
+                                                .size(TS_SM)
+                                                .color(t().text_secondary),
+                                            );
+                                        });
+                                    }
+                                    // Game metadata: cover, HLTB, playtime, Deck.
+                                    if let Some(scan) = &self.scan_result {
+                                        if let Some(game) =
+                                            scan.games.iter().find(|g| g.app_id == rec.app_id)
+                                        {
+                                            ui.add_space(SP_2);
+                                            ui.separator();
+                                            ui.add_space(SP_2);
+                                            ui.label(
+                                                RichText::new("Game details")
+                                                    .size(TS_SM)
+                                                    .strong()
+                                                    .color(t().text_secondary),
+                                            );
+                                            ui.add_space(SP_1);
+                                            if let Some(pt) = game.playtime_minutes {
+                                                insight_metric(
+                                                    ui,
+                                                    "Playtime",
+                                                    format!("{}h", pt / 60),
+                                                );
+                                            }
+                                            if let Some(igdb) = &game.igdb {
+                                                if let Some(ttb) = &igdb.time_to_beat {
+                                                    if let Some(norm) = ttb.normally_seconds {
+                                                        insight_metric(
+                                                            ui,
+                                                            "HLTB",
+                                                            format!("{}h", norm / 3600),
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            if let Some(pcgw) = &game.pcgw {
+                                                let deck = match pcgw.controller_support {
+                                                    ControllerSupport::Full => "Full",
+                                                    ControllerSupport::Partial => "Partial",
+                                                    ControllerSupport::None => "None",
+                                                    ControllerSupport::Unknown => "Unknown",
+                                                };
+                                                insight_metric(ui, "Deck", deck.to_string());
+                                            }
+                                        }
+                                    }
+                                });
+                        }
+                    } else {
+                        // General scoring explanation.
+                        egui::Frame::group(ui.style())
+                            .fill(t().surface)
+                            .stroke(egui::Stroke::new(1.0, t().border_soft))
+                            .corner_radius(CORNER_MD)
+                            .inner_margin(egui::Margin::same(m(SP_3)))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new("How scoring works")
+                                        .size(TS_MD)
+                                        .strong()
+                                        .color(t().text_primary),
+                                );
+                                ui.add_space(SP_2);
+                                ui.separator();
+                                ui.add_space(SP_2);
+                                ui.spacing_mut().item_spacing.y = SP_3;
+                                insight_metric(
+                                    ui,
+                                    "Results",
+                                    self.recommend_results.len().to_string(),
+                                );
+                                let avg_score = if self.recommend_results.is_empty() {
+                                    0.0
+                                } else {
+                                    self.recommend_results.iter().map(|r| r.score).sum::<f32>()
+                                        / self.recommend_results.len() as f32
+                                };
+                                insight_metric(ui, "Avg score", format!("{avg_score:.2}"));
+                                let top_score = self
+                                    .recommend_results
+                                    .first()
+                                    .map(|r| r.score)
+                                    .unwrap_or(0.0);
+                                insight_metric(ui, "Top score", format!("{top_score:.2}"));
+                                ui.separator();
+                                ui.add_space(SP_2);
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Match % = score / {:.1} ({} mode). Scores combine playtime fit, deck compatibility, ProtonDB tier, and rating signals.",
+                                        max_score,
+                                        if self.recommend_deck { "deck" } else { "normal" }
+                                    ))
+                                    .size(TS_XS)
+                                    .color(t().text_muted),
+                                );
+                                ui.add_space(SP_2);
+                                ui.label(
+                                    RichText::new("Click \"Why this pick?\" on any result to see its reason codes.")
+                                        .size(TS_XS)
+                                        .color(t().text_muted),
+                                );
+                            });
+                    }
                 },
             );
         });
