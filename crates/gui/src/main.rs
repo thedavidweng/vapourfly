@@ -263,6 +263,7 @@ struct VapourflyApp {
     junk_results: Vec<JunkDecision>,
     junk_selected: std::collections::HashSet<u32>,
     junk_collection_name: String,
+    junk_show_all_evaluated: bool,
 
     // Recommendations view
     recommend_minutes: String,
@@ -1169,6 +1170,7 @@ impl VapourflyApp {
             junk_results: Vec::new(),
             junk_selected: std::collections::HashSet::new(),
             junk_collection_name: "junk".into(),
+            junk_show_all_evaluated: false,
 
             recommend_minutes: "120".into(),
             recommend_count: "5".into(),
@@ -2381,23 +2383,25 @@ fn generate_dry_run_plan(
     let cloud = vapourfly_core::steam::read_cloud_storage(&cloud_path)
         .map_err(|e| format!("Failed to read cloud storage: {e}"))?;
 
-    // If selections exist, filter junk results to only selected items.
-    let effective_junk: Vec<JunkDecision> = if junk_selected.is_empty() {
-        junk_results.to_vec()
-    } else {
-        junk_results
-            .iter()
-            .filter(|d| junk_selected.contains(&d.app_id))
-            .cloned()
-            .collect()
-    };
+    // Filter junk results to only selected items. Empty selection = 0 targets.
+    let effective_junk: Vec<JunkDecision> = junk_results
+        .iter()
+        .filter(|d| junk_selected.contains(&d.app_id))
+        .cloned()
+        .collect();
 
     let op = match action {
         PendingAction::JunkApply => {
+            if effective_junk.is_empty() {
+                return Err("No junk candidates selected.".into());
+            }
             let junk_app_ids = disposition::junk_app_ids_from_decisions(&effective_junk);
             disposition::junk_apply(collection_name, junk_app_ids).map_err(|e| e.to_string())?
         }
         PendingAction::JunkHide => {
+            if effective_junk.is_empty() {
+                return Err("No junk candidates selected.".into());
+            }
             let junk_app_ids = disposition::junk_app_ids_from_decisions(&effective_junk);
             disposition::junk_hide(junk_app_ids).map_err(|e| e.to_string())?
         }
@@ -2427,19 +2431,15 @@ fn execute_junk_apply(
     allow_steam_running: bool,
     retention: u32,
 ) -> Result<String, String> {
-    // Filter to selected items if any are selected.
-    let effective_junk: Vec<JunkDecision> = if junk_selected.is_empty() {
-        junk_results
-    } else {
-        junk_results
-            .iter()
-            .filter(|d| junk_selected.contains(&d.app_id))
-            .cloned()
-            .collect()
-    };
+    // Filter to selected items only. Empty selection = 0 targets.
+    let effective_junk: Vec<JunkDecision> = junk_results
+        .iter()
+        .filter(|d| junk_selected.contains(&d.app_id))
+        .cloned()
+        .collect();
     let junk_app_ids = disposition::junk_app_ids_from_decisions(&effective_junk);
     if junk_app_ids.is_empty() {
-        return Err("No junk candidates found.".into());
+        return Err("No junk candidates selected.".into());
     }
 
     let cloud = vapourfly_core::steam::read_cloud_storage(&cloud_path)
@@ -2469,19 +2469,15 @@ fn execute_junk_hide(
     allow_steam_running: bool,
     retention: u32,
 ) -> Result<String, String> {
-    // Filter to selected items if any are selected.
-    let effective_junk: Vec<JunkDecision> = if junk_selected.is_empty() {
-        junk_results
-    } else {
-        junk_results
-            .iter()
-            .filter(|d| junk_selected.contains(&d.app_id))
-            .cloned()
-            .collect()
-    };
+    // Filter to selected items only. Empty selection = 0 targets.
+    let effective_junk: Vec<JunkDecision> = junk_results
+        .iter()
+        .filter(|d| junk_selected.contains(&d.app_id))
+        .cloned()
+        .collect();
     let junk_app_ids = disposition::junk_app_ids_from_decisions(&effective_junk);
     if junk_app_ids.is_empty() {
-        return Err("No junk candidates found.".into());
+        return Err("No junk candidates selected.".into());
     }
 
     let cloud = vapourfly_core::steam::read_cloud_storage(&cloud_path)
@@ -3530,7 +3526,13 @@ impl VapourflyApp {
                             let overrides = load_default_manual_overrides();
                             self.junk_results =
                                 evaluate_junk(&games, &JunkRules::default(), &mode, &overrides);
-                            self.junk_selected.clear();
+                            // Auto-select all junk candidates after Preview.
+                            self.junk_selected = self
+                                .junk_results
+                                .iter()
+                                .filter(|d| d.is_junk)
+                                .map(|d| d.app_id)
+                                .collect();
                         }
                     }
                 });
@@ -3558,7 +3560,7 @@ impl VapourflyApp {
         // Two-column layout: table (left) + summary rail (right).
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                // Bulk selection bar.
+                // Bulk selection bar + show-all toggle.
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
                     if ui
@@ -3574,6 +3576,8 @@ impl VapourflyApp {
                     if ui.button(RichText::new("Clear").size(TS_SM)).clicked() {
                         self.junk_selected.clear();
                     }
+                    ui.separator();
+                    ui.checkbox(&mut self.junk_show_all_evaluated, "Show all evaluated");
                     ui.label(
                         RichText::new(format!("{selected_count} selected"))
                             .size(TS_SM)
@@ -3583,6 +3587,13 @@ impl VapourflyApp {
                 ui.add_space(SP_2);
 
                 // Preview: candidate table with selection checkboxes.
+                // Default: only show junk. Toggle to show all evaluated.
+                let visible_decisions: Vec<&JunkDecision> = if self.junk_show_all_evaluated {
+                    self.junk_results.iter().collect()
+                } else {
+                    self.junk_results.iter().filter(|d| d.is_junk).collect()
+                };
+
                 section_card(ui, "Preview", |ui| {
                     let text_height = TS_BODY;
                     egui_extras::TableBuilder::new(ui)
@@ -3597,7 +3608,7 @@ impl VapourflyApp {
                         .column(egui_extras::Column::remainder().at_least(200.0))
                         .header(text_height * 1.4, |mut header| {
                             header.col(|ui| {
-                                ui.checkbox(&mut false, "");
+                                let _ = ui.checkbox(&mut false, "");
                             });
                             header.col(|ui| {
                                 ui.label(
@@ -3641,7 +3652,7 @@ impl VapourflyApp {
                             });
                         })
                         .body(|mut body| {
-                            for decision in &self.junk_results {
+                            for decision in visible_decisions {
                                 body.row(text_height * 1.2, |mut row| {
                                     let app_id = decision.app_id;
                                     let mut checked = self.junk_selected.contains(&app_id);
@@ -3743,98 +3754,93 @@ impl VapourflyApp {
             );
         });
 
-        // Write actions — selected-only or all-junk, dry-run/confirm gated.
-        let write_target_count = if selected_count > 0 {
-            selected_count
-        } else {
-            junk_count
-        };
-        if write_target_count > 0 {
-            ui.add_space(SP_3);
-            section_card(ui, "Actions", |ui| {
-                form_field(ui, "Collection name", |ui| {
-                    ui.add_sized(
-                        [220.0, 28.0],
-                        egui::TextEdit::singleline(&mut self.junk_collection_name)
-                            .hint_text("e.g. junk"),
-                    );
-                });
-                ui.add_space(SP_2);
-
-                ui.horizontal(|ui| {
-                    let busy = self.write_loading || self.dry_run_loading;
-                    let apply_enabled = !busy && !self.junk_collection_name.is_empty();
-                    let action_label = if selected_count > 0 {
-                        format!("Apply {selected_count} selected")
-                    } else {
-                        "Apply all to collection".to_string()
-                    };
-                    if ui
-                        .add_enabled(apply_enabled, {
-                            egui::Button::new(
-                                RichText::new(action_label)
-                                    .size(TS_SM)
-                                    .color(t().text_inverse),
-                            )
-                            .fill(t().accent)
-                            .stroke(egui::Stroke::NONE)
-                            .corner_radius(CORNER_SM)
-                        })
-                        .clicked()
-                    {
-                        self.start_dry_run(PendingAction::JunkApply);
-                    }
-
-                    let hide_label = if selected_count > 0 {
-                        format!("Hide {selected_count} selected")
-                    } else {
-                        "Hide all".to_string()
-                    };
-                    if ui
-                        .add_enabled(!busy, {
-                            egui::Button::new(
-                                RichText::new(hide_label)
-                                    .size(TS_SM)
-                                    .color(t().text_primary),
-                            )
-                            .fill(t().surface)
-                            .stroke(egui::Stroke::new(1.0, t().border_soft))
-                            .corner_radius(CORNER_SM)
-                        })
-                        .clicked()
-                    {
-                        self.start_dry_run(PendingAction::JunkHide);
-                    }
-
-                    if self.write_loading {
-                        ui.spinner();
-                        ui.label(
-                            RichText::new("Writing")
-                                .size(TS_SM)
-                                .color(t().text_secondary),
-                        );
-                    }
-                    if self.dry_run_loading {
-                        ui.spinner();
-                        ui.label(
-                            RichText::new("Preparing diff")
-                                .size(TS_SM)
-                                .color(t().text_secondary),
-                        );
-                    }
-                });
-                ui.add_space(SP_1);
-                ui.label(
-                    RichText::new(if selected_count > 0 {
-                        "Selected-only write plan. Writes require dry-run confirmation and respect write safety."
-                    } else {
-                        "All-candidates write plan. Writes require dry-run confirmation and respect write safety."
-                    })
-                    .size(TS_XS)
-                    .color(t().text_muted),
+        // Write actions — selected-only, dry-run/confirm gated.
+        // Empty selection = 0 targets; buttons are disabled.
+        let has_selection = selected_count > 0;
+        ui.add_space(SP_3);
+        section_card(ui, "Actions", |ui| {
+            form_field(ui, "Collection name", |ui| {
+                ui.add_sized(
+                    [220.0, 28.0],
+                    egui::TextEdit::singleline(&mut self.junk_collection_name)
+                        .hint_text("e.g. junk"),
                 );
             });
-        }
+            ui.add_space(SP_2);
+
+            ui.horizontal(|ui| {
+                let busy = self.write_loading || self.dry_run_loading;
+                let apply_enabled = !busy && has_selection && !self.junk_collection_name.is_empty();
+                let action_label = if has_selection {
+                    format!("Apply {selected_count} selected")
+                } else {
+                    "Apply (no selection)".to_string()
+                };
+                if ui
+                    .add_enabled(apply_enabled, {
+                        egui::Button::new(
+                            RichText::new(action_label)
+                                .size(TS_SM)
+                                .color(t().text_inverse),
+                        )
+                        .fill(t().accent)
+                        .stroke(egui::Stroke::NONE)
+                        .corner_radius(CORNER_SM)
+                    })
+                    .clicked()
+                {
+                    self.start_dry_run(PendingAction::JunkApply);
+                }
+
+                let hide_label = if has_selection {
+                    format!("Hide {selected_count} selected")
+                } else {
+                    "Hide (no selection)".to_string()
+                };
+                if ui
+                    .add_enabled(!busy && has_selection, {
+                        egui::Button::new(
+                            RichText::new(hide_label)
+                                .size(TS_SM)
+                                .color(t().text_primary),
+                        )
+                        .fill(t().surface)
+                        .stroke(egui::Stroke::new(1.0, t().border_soft))
+                        .corner_radius(CORNER_SM)
+                    })
+                    .clicked()
+                {
+                    self.start_dry_run(PendingAction::JunkHide);
+                }
+
+                if self.write_loading {
+                    ui.spinner();
+                    ui.label(
+                        RichText::new("Writing")
+                            .size(TS_SM)
+                            .color(t().text_secondary),
+                    );
+                }
+                if self.dry_run_loading {
+                    ui.spinner();
+                    ui.label(
+                        RichText::new("Preparing diff")
+                            .size(TS_SM)
+                            .color(t().text_secondary),
+                    );
+                }
+            });
+            ui.add_space(SP_1);
+            ui.label(
+                RichText::new(if has_selection {
+                    "Selected-only write plan. Writes require dry-run confirmation and respect write safety."
+                } else {
+                    "Select junk candidates to enable write actions. Empty selection means 0 targets."
+                })
+                .size(TS_XS)
+                .color(t().text_muted),
+            );
+        });
     }
 
     // -- Recommend view -----------------------------------------------------
