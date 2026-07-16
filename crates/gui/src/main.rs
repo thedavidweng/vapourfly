@@ -268,13 +268,16 @@ static PLAYLIST_MATCH_RESULT: JobSlot<PlaylistMatchReport> = JobSlot::new();
 /// the disk cache every frame.
 static PREPARED_LIBRARY_RESULT: JobSlot<PreparedLibrarySnapshot> = JobSlot::new();
 
-/// Cached library snapshot: hydrated games + the fingerprint that identifies
-/// the inputs used to produce them. The games are pre-junk-classification so
-/// different JunkMode callers can classify on top without re-hydrating.
+/// Cached library snapshot: hydrated games + the manual overrides that were
+/// loaded alongside them, plus the fingerprint identifying the inputs used to
+/// produce them. The games are pre-junk-classification so different JunkMode
+/// callers can classify on top without re-hydrating; the overrides are captured
+/// here so `prepared_games` never reads the overrides file on the egui frame.
 #[derive(Clone, Debug)]
 struct PreparedLibrarySnapshot {
     fingerprint: u64,
     games: Vec<Game>,
+    overrides: ManualOverrides,
 }
 
 // ---------------------------------------------------------------------------
@@ -448,6 +451,10 @@ struct VapourflyApp {
 
     // Background job runner (request IDs + stale-result protection)
     job_runner: JobRunner,
+    /// egui::Context captured each frame so non-UI methods (e.g. playlist
+    /// adoption) can spawn background work and request repaints. Set at the
+    /// top of `ui()`; `None` only before the first frame.
+    ctx: Option<egui::Context>,
     scan_job_id: Option<JobId>,
     write_job_id: Option<JobId>,
     enrich_job_id: Option<JobId>,
@@ -474,6 +481,13 @@ struct VapourflyApp {
     /// Increments each time a cache refresh completes, so the library snapshot
     /// is invalidated and re-hydrated with the new cache data.
     cache_refresh_generation: u64,
+    /// Monotonic counter incremented every time a new scan result is accepted
+    /// (real scan or demo refresh). Unlike `scan_job_id` (which is `None`
+    /// after a scan completes) or the game count (which can stay the same when
+    /// only content changes — playtime, hidden state, collections), this
+    /// always changes, so the prepare fingerprint reliably invalidates the
+    /// cached snapshot. See [`VapourflyApp::library_prepare_fingerprint`].
+    scan_generation: u64,
 
     // Loading flags for off-frame operations
     junk_preview_loading: bool,
@@ -1059,12 +1073,17 @@ fn credential_badge(ui: &mut egui::Ui, signal: CredentialSignal) {
 // ---------------------------------------------------------------------------
 
 fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    ui.add(
-        egui::Button::new(RichText::new(label).size(TS_SM).color(t().text_inverse))
-            .fill(t().accent)
-            .stroke(egui::Stroke::NONE)
-            .corner_radius(CORNER_SM),
-    )
+    ui.add(primary_button_widget(label))
+}
+
+/// The [`egui::Button`] widget used by [`primary_button`], for use with
+/// `ui.add_enabled(enabled, …)` so the button can be disabled when the
+/// prepared library is not yet ready.
+fn primary_button_widget(label: &str) -> egui::Button<'static> {
+    egui::Button::new(RichText::new(label).size(TS_SM).color(t().text_inverse))
+        .fill(t().accent)
+        .stroke(egui::Stroke::NONE)
+        .corner_radius(CORNER_SM)
 }
 
 fn secondary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
@@ -1479,6 +1498,7 @@ impl VapourflyApp {
             cache_refresh_msg: None,
 
             job_runner: JobRunner::new(),
+            ctx: None,
             scan_job_id: None,
             write_job_id: None,
             enrich_job_id: None,
@@ -1495,6 +1515,7 @@ impl VapourflyApp {
             prepare_job_id: None,
             prepare_fingerprint: None,
             cache_refresh_generation: 0,
+            scan_generation: 0,
             junk_preview_loading: false,
             recommend_loading: false,
             discover_loading: false,
@@ -1716,6 +1737,10 @@ impl VapourflyApp {
             account: "demo_user".into(),
         };
         self.scan_result = Some(scan);
+        // Demo refresh is a new scan result: bump the generation and drop any
+        // cached snapshot so the library re-prepares from the refreshed data.
+        self.scan_generation = self.scan_generation.wrapping_add(1);
+        self.prepared_snapshot = None;
 
         // -- 4 Steam Collections ---------------------------------------------
         self.collections = vec![
@@ -2160,6 +2185,10 @@ impl VapourflyApp {
             return;
         }
 
+        // Rule-based Playlist Sync is resolved off-frame inside the dry-run
+        // job (see `generate_dry_run_plan`), so `resolve_dry_run_action` no
+        // longer matches rules on the egui frame. Capture the prepared library
+        // so the background job can resolve rules there.
         let action = match self.resolve_dry_run_action(action) {
             Ok(action) => action,
             Err(e) => {
@@ -2167,6 +2196,7 @@ impl VapourflyApp {
                 return;
             }
         };
+        let games = self.prepared_games(JunkMode::Default).unwrap_or_default();
 
         let cloud_path = match self.cloud_storage_path() {
             Ok(p) => p,
@@ -2198,6 +2228,7 @@ impl VapourflyApp {
                 &junk_selected,
                 &collection_name,
                 &recommend_results,
+                &games,
             );
             DRY_RUN_RESULT.set(job_id, result);
         });
@@ -2781,11 +2812,17 @@ impl VapourflyApp {
     }
 
     /// Fingerprint identifying the current library snapshot inputs. Changes
-    /// when: a new scan completes, the cache is refreshed, or the cache /
-    /// overrides paths change. Two matching fingerprints mean the cached
-    /// hydrated games are still valid.
+    /// when: a new scan result is accepted (`scan_generation` bumps), the cache
+    /// is refreshed, or the cache / overrides paths change. Two matching
+    /// fingerprints mean the cached hydrated games are still valid.
+    ///
+    /// Uses `scan_generation` rather than `scan_job_id` + game count: the job
+    /// id is `None` after a scan completes, and the game count can stay the
+    /// same when only content changes (playtime, hidden state, collections),
+    /// so those would let a stale snapshot survive a rescan. `scan_generation`
+    /// increments on every accepted scan result regardless of content.
     fn library_prepare_fingerprint(&self) -> u64 {
-        let scan_id = self.scan_job_id.map(|j| j.0).unwrap_or(0);
+        let scan_gen = self.scan_generation;
         let refresh_gen = self.cache_refresh_generation;
         let cache_dir = self.cache_dir.to_string_lossy();
         let overrides = self
@@ -2793,13 +2830,8 @@ impl VapourflyApp {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        let scan_games = self
-            .scan_result
-            .as_ref()
-            .map(|s| s.games.len())
-            .unwrap_or(0);
         fingerprint_u64(&format!(
-            "prepare:scan_id={scan_id}:gen={refresh_gen}:games={scan_games}:cache={cache_dir}:ovr={overrides}"
+            "prepare:scan_gen={scan_gen}:gen={refresh_gen}:cache={cache_dir}:ovr={overrides}"
         ))
     }
 
@@ -2836,17 +2868,25 @@ impl VapourflyApp {
             .map(|s| s.games.clone())
             .unwrap_or_default();
         let cache_dir = self.cache_dir.clone();
+        let overrides_path = self.manual_overrides_path.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let mut games = games;
             let cache = vapourfly_api::cache::DiskCache::new(cache_dir);
             vapourfly_api::enrichment::hydrate_from_cache(&mut games, &cache);
+            // Load overrides off-frame so prepared_games never touches the
+            // overrides file on the egui frame.
+            let overrides = match &overrides_path {
+                Some(p) => vapourfly_core::junk::load_manual_overrides_or_default(p),
+                None => load_default_manual_overrides(),
+            };
             ctx.request_repaint();
             PREPARED_LIBRARY_RESULT.set(
                 job_id,
                 Ok(PreparedLibrarySnapshot {
                     fingerprint: fp,
                     games,
+                    overrides,
                 }),
             );
         });
@@ -2866,25 +2906,60 @@ impl VapourflyApp {
         }
     }
 
+    /// Hydrated + junk-classified games for the requested mode, sourced from
+    /// the background-prepared snapshot. Returns `None` when the snapshot is not
+    /// yet ready (first frames after a scan/rescan, or while rehydrating after a
+    /// cache refresh): callers must show a loading state and disable dependent
+    /// operations instead of synchronously hydrating on the egui frame.
+    ///
+    /// Tests inject a snapshot via [`VapourflyApp::inject_prepared_snapshot`]
+    /// rather than relying on a production fallback.
     fn prepared_games(&self, junk_mode: JunkMode) -> Option<Vec<Game>> {
-        let scan = self.scan_result.as_ref()?;
-        // Fast path: use the background-prepared snapshot if it's fresh.
-        // The snapshot stores pre-junk-classification hydrated games; we clone
-        // and classify for the requested mode (cheap, in-memory).
-        if let Some(snap) = &self.prepared_snapshot {
-            let mut games = snap.games.clone();
-            let overrides = self.manual_overrides();
-            apply_junk_flags(&mut games, &JunkRules::default(), &junk_mode, &overrides);
-            return Some(games);
+        // Only the snapshot path remains: no on-frame hydration fallback.
+        let current_fp = self.library_prepare_fingerprint();
+        let snap = self.prepared_snapshot.as_ref()?;
+        if snap.fingerprint != current_fp {
+            return None;
         }
-        // Fallback (first frames before the background prepare completes, or
-        // in tests that don't run the UI loop): hydrate synchronously.
-        let mut games = scan.games.clone();
+        let mut games = snap.games.clone();
+        apply_junk_flags(
+            &mut games,
+            &JunkRules::default(),
+            &junk_mode,
+            &snap.overrides,
+        );
+        Some(games)
+    }
+
+    /// Whether the prepared library snapshot is fresh and ready to serve
+    /// `prepared_games`. UI that depends on the prepared library should show a
+    /// loading state and disable actions while this is false.
+    fn library_ready(&self) -> bool {
+        let current_fp = self.library_prepare_fingerprint();
+        self.prepared_snapshot
+            .as_ref()
+            .is_some_and(|s| s.fingerprint == current_fp)
+    }
+
+    /// Test helper: synchronously build and install a prepared snapshot from the
+    /// current scan result + overrides, so tests can exercise `prepared_games`
+    /// and its consumers without running the UI loop or the background thread.
+    #[cfg(test)]
+    fn inject_prepared_snapshot(&mut self) {
+        let fp = self.library_prepare_fingerprint();
+        let mut games = self
+            .scan_result
+            .as_ref()
+            .map(|s| s.games.clone())
+            .unwrap_or_default();
         let cache = vapourfly_api::cache::DiskCache::new(self.cache_dir.clone());
         vapourfly_api::enrichment::hydrate_from_cache(&mut games, &cache);
         let overrides = self.manual_overrides();
-        apply_junk_flags(&mut games, &JunkRules::default(), &junk_mode, &overrides);
-        Some(games)
+        self.prepared_snapshot = Some(PreparedLibrarySnapshot {
+            fingerprint: fp,
+            games,
+            overrides,
+        });
     }
 
     fn recommend_request_from_inputs(&self) -> Result<RecommendRequest, String> {
@@ -2963,7 +3038,10 @@ impl VapourflyApp {
         self.playlist_edit_description = pf.playlist.description.clone();
         self.playlist_edit_app_ids = manual_playlist_app_ids_csv(pf);
         self.playlist_edit_rules = playlist_rules_json(pf);
-        self.match_playlist_against_library(pf);
+        // Playlist Match runs entirely off-frame: clear any stale report and
+        // launch a background match (no on-frame first pass).
+        self.playlist_match_report = None;
+        self.start_playlist_match_from_stored_ctx(pf);
     }
 
     /// Build a `PlaylistFile` from the current edit fields.
@@ -3023,70 +3101,44 @@ impl VapourflyApp {
     }
 
     fn resolve_dry_run_action(&self, action: PendingAction) -> Result<PendingAction, String> {
+        // Rule-based Playlist Sync is now resolved off-frame inside the
+        // background dry-run job (`generate_dry_run_plan`), so this no longer
+        // matches rules on the egui frame. The action passes through unchanged;
+        // any rule-resolution error surfaces as `dry_run_error` from the job.
         match action {
             PendingAction::PlaylistSync(pf) => {
-                if matches!(pf.playlist.content, PlaylistContent::Manual { .. }) {
-                    return Ok(PendingAction::PlaylistSync(pf));
+                if matches!(pf.playlist.content, PlaylistContent::Rules { .. })
+                    && !self.library_ready()
+                {
+                    return Err(
+                        "Scan your library before syncing a rule-based playlist.".into(),
+                    );
                 }
-
-                let games = self
-                    .prepared_games(JunkMode::Default)
-                    .ok_or("Scan your library before syncing a rule-based playlist.")?;
-                let report =
-                    playlist::match_playlist(&pf, &games, &std::collections::HashMap::new())
-                        .map_err(|e| format!("Match failed: {e}"))?;
-
-                Ok(PendingAction::PlaylistSync(PlaylistFile {
-                    vapourfly_schema: pf.vapourfly_schema,
-                    created_by: pf.created_by,
-                    playlist: Playlist {
-                        id: pf.playlist.id,
-                        name: pf.playlist.name,
-                        description: pf.playlist.description,
-                        content: PlaylistContent::Manual {
-                            app_ids: report.owned,
-                        },
-                    },
-                }))
+                Ok(PendingAction::PlaylistSync(pf))
             }
             other => Ok(other),
         }
     }
 
-    fn match_playlist_against_library(&mut self, pf: &PlaylistFile) {
-        if let Some(games) = self.prepared_games(JunkMode::Default) {
-            // Fast first pass on-frame (no cache lookup) for immediate feedback.
-            let empty = std::collections::HashMap::new();
-            match playlist::match_playlist(pf, &games, &empty) {
-                Ok(report) => {
-                    self.playlist_match_report = Some(report);
-                }
-                Err(e) => self.error = Some(format!("Match failed: {e}")),
-            }
+    /// Launch a background Playlist Match using the ctx captured on the last
+    /// frame. Used by non-UI methods (e.g. `adopt_playlist_for_edit`) that do
+    /// not receive an `egui::Context` directly. No-op before the first frame.
+    fn start_playlist_match_from_stored_ctx(&mut self, pf: &PlaylistFile) {
+        if let Some(ctx) = self.ctx.clone() {
+            self.start_playlist_match(&ctx, pf.clone());
         }
     }
 
-    /// Enhanced match with cache lookup, called from UI handlers that have ctx.
+    /// Playlist Match with cache lookup, called from UI handlers that have ctx.
+    /// Runs entirely off-frame (no on-frame first pass): clears any stale report
+    /// and launches the background match.
     fn match_playlist_against_library_background(
         &mut self,
         ctx: &egui::Context,
         pf: &PlaylistFile,
     ) {
-        if let Some(games) = self.prepared_games(JunkMode::Default) {
-            // Fast first pass on-frame for immediate feedback.
-            let empty = std::collections::HashMap::new();
-            match playlist::match_playlist(pf, &games, &empty) {
-                Ok(report) => {
-                    let has_missing = !report.missing.is_empty();
-                    self.playlist_match_report = Some(report);
-                    // Launch background cache-enhanced match.
-                    if has_missing {
-                        self.start_playlist_match(ctx, pf.clone());
-                    }
-                }
-                Err(e) => self.error = Some(format!("Match failed: {e}")),
-            }
-        }
+        self.playlist_match_report = None;
+        self.start_playlist_match(ctx, pf.clone());
     }
 
     /// Refresh the Load existing combo from the local playlist store.
@@ -3171,6 +3223,10 @@ impl VapourflyApp {
 
 /// Generate a [`WritePlan`] without executing it, so the GUI can display a
 /// dry-run diff before the user confirms.
+///
+/// Rule-based Playlist Sync is resolved here (off the egui frame) using the
+/// prepared library `games`: the rule playlist is matched against the library
+/// to produce the owned AppID set, which is then turned into a write operation.
 fn generate_dry_run_plan(
     cloud_path: PathBuf,
     action: &PendingAction,
@@ -3178,6 +3234,7 @@ fn generate_dry_run_plan(
     junk_selected: &std::collections::HashSet<u32>,
     collection_name: &str,
     recommend_results: &[Recommendation],
+    games: &[Game],
 ) -> Result<vapourfly_core::models::WritePlan, String> {
     let cloud = vapourfly_core::steam::read_cloud_storage(&cloud_path)
         .map_err(|e| format!("Failed to read cloud storage: {e}"))?;
@@ -3209,9 +3266,32 @@ fn generate_dry_run_plan(
             disposition::recommend_to_collection(app_ids).map_err(|e| e.to_string())?
         }
         PendingAction::PlaylistSync(pf) => {
-            let app_ids =
-                disposition::playlist_sync_app_ids(pf, None).map_err(|e| e.to_string())?;
-            disposition::playlist_sync(pf, app_ids).map_err(|e| e.to_string())?
+            // Resolve rule-based playlists off-frame: match the rules against
+            // the prepared library to get the owned AppID set, then build a
+            // manual-equivalent sync operation.
+            let resolved_pf = match &pf.playlist.content {
+                PlaylistContent::Manual { .. } => pf.clone(),
+                PlaylistContent::Rules { .. } => {
+                    let empty = std::collections::HashMap::new();
+                    let report = playlist::match_playlist(pf, games, &empty)
+                        .map_err(|e| format!("Match failed: {e}"))?;
+                    PlaylistFile {
+                        vapourfly_schema: pf.vapourfly_schema.clone(),
+                        created_by: pf.created_by.clone(),
+                        playlist: Playlist {
+                            id: pf.playlist.id.clone(),
+                            name: pf.playlist.name.clone(),
+                            description: pf.playlist.description.clone(),
+                            content: PlaylistContent::Manual {
+                                app_ids: report.owned,
+                            },
+                        },
+                    }
+                }
+            };
+            let app_ids = disposition::playlist_sync_app_ids(&resolved_pf, None)
+                .map_err(|e| e.to_string())?;
+            disposition::playlist_sync(&resolved_pf, app_ids).map_err(|e| e.to_string())?
         }
         PendingAction::BackupRestore(_) => {
             return Err("Dry-run not supported for backup restore.".into());
@@ -3329,6 +3409,9 @@ impl eframe::App for VapourflyApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Capture ctx so non-UI methods (e.g. playlist adoption) can spawn
+        // background work and request repaints without a ctx parameter.
+        self.ctx = Some(ctx.clone());
 
         // Keep free-function tokens and egui visuals aligned with the selected theme.
         set_active_theme(self.theme_mode);
@@ -3344,6 +3427,11 @@ impl eframe::App for VapourflyApp {
             match result {
                 Ok(scan) => {
                     self.scan_result = Some(scan);
+                    // New scan result accepted: bump the scan generation so the
+                    // prepare fingerprint changes and any cached snapshot is
+                    // treated as stale (even if the game count is unchanged).
+                    self.scan_generation = self.scan_generation.wrapping_add(1);
+                    self.prepared_snapshot = None;
                     match self.load_collections_from_cloud() {
                         Ok(collections) => self.collections = collections,
                         Err(e) => self.error = Some(e),
@@ -4116,6 +4204,28 @@ impl VapourflyApp {
             return;
         }
 
+        // Scan result exists but the background prepare (hydration + overrides)
+        // has not completed yet: show a loading skeleton instead of hydrating
+        // synchronously on the egui frame.
+        if !self.library_ready() {
+            ui.add_space(SP_4);
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(
+                    RichText::new("Preparing library\u{2026}")
+                        .size(TS_MD)
+                        .color(t().text_secondary),
+                );
+            });
+            ui.add_space(SP_2);
+            ui.label(
+                RichText::new("Hydrating covers and metadata in the background.")
+                    .size(TS_SM)
+                    .color(t().text_secondary),
+            );
+            return;
+        }
+
         // Two-column layout: game grid (left) + insights rail (right).
         ui.horizontal(|ui| {
             // Main grid column.
@@ -4429,7 +4539,10 @@ impl VapourflyApp {
                     if self.junk_preview_loading {
                         ui.spinner();
                     }
-                    if primary_button(ui, "Preview").clicked() {
+                    if ui
+                        .add_enabled(self.library_ready(), primary_button_widget("Preview"))
+                        .clicked()
+                    {
                         self.start_junk_preview(ui.ctx());
                     }
                 });
@@ -4859,7 +4972,10 @@ impl VapourflyApp {
                 if self.recommend_loading {
                     ui.spinner();
                 }
-                if primary_button(ui, "Preview").clicked() {
+                if ui
+                    .add_enabled(self.library_ready(), primary_button_widget("Preview"))
+                    .clicked()
+                {
                     self.start_recommend_preview(ui.ctx());
                 }
             });
@@ -6024,7 +6140,10 @@ impl VapourflyApp {
                 if self.discover_loading {
                     ui.spinner();
                 }
-                if primary_button(ui, "Generate").clicked() {
+                if ui
+                    .add_enabled(self.library_ready(), primary_button_widget("Generate"))
+                    .clicked()
+                {
                     self.start_discover_generate(ui.ctx());
                 }
             });
@@ -6234,7 +6353,10 @@ impl VapourflyApp {
                     if self.dynamic_loading {
                         ui.spinner();
                     }
-                    if primary_button(ui, "Generate").clicked() {
+                    if ui
+                        .add_enabled(self.library_ready(), primary_button_widget("Generate"))
+                        .clicked()
+                    {
                         self.start_dynamic_generate(ui.ctx());
                         self.playlist_chooser = PlaylistChooser::None;
                     }
@@ -6332,7 +6454,10 @@ impl VapourflyApp {
                     if self.mood_loading {
                         ui.spinner();
                     }
-                    if primary_button(ui, "Generate").clicked() {
+                    if ui
+                        .add_enabled(self.library_ready(), primary_button_widget("Generate"))
+                        .clicked()
+                    {
                         self.start_mood_generate(ui.ctx());
                         self.playlist_chooser = PlaylistChooser::None;
                     }
@@ -7727,12 +7852,24 @@ mod tests {
         let mut app = VapourflyApp::new(None, true);
         app.populate_demo_data();
 
-        // Before prepare: snapshot is None, prepared_games falls back to sync.
+        // Before prepare: snapshot is None, prepared_games returns None
+        // (no on-frame fallback; callers show a loading state).
         assert!(app.prepared_snapshot.is_none());
-        let games_sync = app
+        assert!(
+            app.prepared_games(JunkMode::Default).is_none(),
+            "prepared_games must return None before the snapshot is ready"
+        );
+        assert!(!app.library_ready());
+
+        // Inject a snapshot synchronously (test helper) so we have a reference
+        // game count to compare against the background-prepared snapshot.
+        app.inject_prepared_snapshot();
+        let games_injected = app
             .prepared_games(JunkMode::Default)
-            .expect("fallback should work");
-        assert!(!games_sync.is_empty());
+            .expect("injected snapshot should serve prepared_games");
+        assert!(!games_injected.is_empty());
+        // Drop the injected snapshot so the background prepare is the source.
+        app.prepared_snapshot = None;
 
         // Start background prepare.
         let ctx = egui::Context::default();
@@ -7761,7 +7898,8 @@ mod tests {
         let games_snap = app
             .prepared_games(JunkMode::Default)
             .expect("snapshot path should work");
-        assert_eq!(games_snap.len(), games_sync.len());
+        assert_eq!(games_snap.len(), games_injected.len());
+        assert!(app.library_ready());
     }
 
     /// Cache refresh generation bump invalidates the snapshot.
@@ -7777,6 +7915,7 @@ mod tests {
         app.prepared_snapshot = Some(PreparedLibrarySnapshot {
             fingerprint: fp,
             games: vec![],
+            overrides: ManualOverrides::default(),
         });
 
         // Bump the generation — fingerprint changes, snapshot is stale.
@@ -7791,6 +7930,83 @@ mod tests {
                 .as_ref()
                 .is_some_and(|s| s.fingerprint != new_fp),
             "snapshot must be stale after generation bump"
+        );
+    }
+
+    /// Regression: a rescan that produces the same game count but changes
+    /// content (playtime, hidden state, collections) must invalidate the cached
+    /// snapshot. Previously the fingerprint used `scan_job_id` (None after
+    /// completion) + game count, so an unchanged count left the snapshot live.
+    /// `scan_generation` bumps on every accepted scan result, so the
+    /// fingerprint changes and `prepared_games` rejects the stale snapshot.
+    #[test]
+    #[serial]
+    fn rescan_with_same_game_count_invalidates_snapshot() {
+        PREPARED_LIBRARY_RESULT.clear();
+        let mut app = VapourflyApp::new(None, true);
+        app.populate_demo_data();
+        let game_count = app.scan_result.as_ref().unwrap().games.len();
+
+        // Build a snapshot holding a sentinel game that is NOT in the real
+        // library, tagged with the current fingerprint.
+        let fp = app.library_prepare_fingerprint();
+        let mut sentinel = app
+            .scan_result
+            .as_ref()
+            .unwrap()
+            .games
+            .first()
+            .unwrap()
+            .clone();
+        sentinel.app_id = 999_999;
+        sentinel.name = "STALE SENTINEL".into();
+        app.prepared_snapshot = Some(PreparedLibrarySnapshot {
+            fingerprint: fp,
+            games: vec![sentinel.clone()],
+            overrides: ManualOverrides::default(),
+        });
+
+        // Simulate a rescan accepted with the SAME game count but changed
+        // content (scan_generation bumps on acceptance).
+        app.scan_generation = app.scan_generation.wrapping_add(1);
+        assert_eq!(
+            app.scan_result.as_ref().unwrap().games.len(),
+            game_count,
+            "test precondition: game count unchanged"
+        );
+
+        let new_fp = app.library_prepare_fingerprint();
+        assert_ne!(
+            fp, new_fp,
+            "fingerprint must change when scan_generation bumps even with same game count"
+        );
+        assert!(
+            app.prepared_snapshot
+                .as_ref()
+                .is_some_and(|s| s.fingerprint != new_fp),
+            "snapshot must be stale after scan_generation bump"
+        );
+
+        // prepared_games must NOT serve the stale snapshot: with no on-frame
+        // fallback it returns None while the snapshot is stale (library not
+        // ready).
+        assert!(
+            app.prepared_games(JunkMode::Default).is_none(),
+            "prepared_games must return None while the snapshot is stale (no fallback)"
+        );
+        assert!(!app.library_ready());
+
+        // After re-preparing (injected here as a synchronous stand-in for the
+        // background prepare), the fresh snapshot is built from the real scan
+        // result and must NOT contain the stale sentinel.
+        app.inject_prepared_snapshot();
+        assert!(app.library_ready());
+        let games = app
+            .prepared_games(JunkMode::Default)
+            .expect("fresh snapshot should serve prepared_games");
+        assert!(
+            !games.iter().any(|g| g.app_id == sentinel.app_id),
+            "prepared_games must not use the stale snapshot (sentinel leaked)"
         );
     }
 
@@ -8346,6 +8562,9 @@ mod tests {
             games: Vec::new(),
             warnings: Vec::new(),
         });
+        // Inject a prepared snapshot so prepared_games serves the library
+        // without the (removed) on-frame fallback.
+        app.inject_prepared_snapshot();
         app.discover_count = "5".into();
 
         let pf = app.run_discover_generate().unwrap();
@@ -8915,6 +9134,7 @@ mod tests {
             &std::collections::HashSet::new(),
             "junk",
             &[],
+            &[],
         )
         .unwrap();
 
@@ -8931,7 +9151,11 @@ mod tests {
     }
 
     #[test]
-    fn playlist_sync_resolves_rule_playlist_before_dry_run() {
+    fn playlist_sync_resolves_rule_playlist_in_background_dry_run() {
+        // Rule-based Playlist Sync is resolved off-frame inside the dry-run
+        // job (generate_dry_run_plan), not in resolve_dry_run_action. The
+        // rule playlist passes through unchanged and is matched against the
+        // prepared library inside the background job.
         let fixtures =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
         let scan_result = scan_library(&ScanOptions {
@@ -8940,6 +9164,7 @@ mod tests {
             fixtures: Some(fixtures),
         })
         .unwrap();
+        let games = scan_result.games.clone();
         let playlist = PlaylistFile {
             vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
             created_by: "test".into(),
@@ -8955,20 +9180,39 @@ mod tests {
 
         let mut app = VapourflyApp::new(None, false);
         app.scan_result = Some(scan_result);
-
+        app.inject_prepared_snapshot();
+        // resolve_dry_run_action no longer resolves rules on-frame: the rule
+        // playlist passes through unchanged.
         let action = app
-            .resolve_dry_run_action(PendingAction::PlaylistSync(playlist))
+            .resolve_dry_run_action(PendingAction::PlaylistSync(playlist.clone()))
             .unwrap();
-
-        match action {
-            PendingAction::PlaylistSync(pf) => match pf.playlist.content {
-                PlaylistContent::Manual { app_ids } => {
-                    assert_eq!(app_ids, vec![730, 427520]);
-                }
-                PlaylistContent::Rules { .. } => panic!("rule playlist should be resolved"),
-            },
+        match &action {
+            PendingAction::PlaylistSync(pf) => {
+                assert!(
+                    matches!(pf.playlist.content, PlaylistContent::Rules { .. }),
+                    "resolve_dry_run_action must pass rule playlist through unchanged"
+                );
+            }
             other => panic!("unexpected action: {other:?}"),
         }
+
+        // The background dry-run job resolves the rule playlist against the
+        // prepared library games.
+        let temp_dir = TempDir::new().unwrap();
+        let target_path = temp_dir.path().join("cloud-storage-namespace-1.json");
+        std::fs::write(&target_path, "[]").unwrap();
+        let plan = generate_dry_run_plan(
+            target_path,
+            &PendingAction::PlaylistSync(playlist),
+            &[],
+            &std::collections::HashSet::new(),
+            "junk",
+            &[],
+            &games,
+        )
+        .unwrap();
+        // The installed rule matches AppIDs 730 and 427520 (deduped, ordered).
+        assert_eq!(plan.diff.app_ids_added, vec![730, 427520]);
     }
 
     #[test]
