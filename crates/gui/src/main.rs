@@ -405,6 +405,14 @@ struct VapourflyApp {
     playlist_game_search: String,
     /// Master-detail: show Advanced JSON editor instead of visual rules.
     playlist_show_advanced_json: bool,
+    /// Visual rule editor: genre input for parameterized HasGenre rule.
+    playlist_rule_genre: String,
+    /// Visual rule editor: tag input for parameterized HasTag rule.
+    playlist_rule_tag: String,
+    /// Visual rule editor: HLTB max minutes input.
+    playlist_rule_hltb_max: String,
+    /// Visual rule editor: ProtonDB tier for parameterized ProtonAtLeast rule.
+    playlist_rule_proton_tier: Option<ProtonTier>,
     /// Master-detail: pending duplicate-ID replacement (for confirm dialog).
     playlist_dup_id_confirm: Option<(String, PlaylistFile)>,
     /// Master-detail: show Import sub-route panel.
@@ -828,6 +836,65 @@ fn project_library_games(games: &[Game], filters: &LibraryFilters) -> Vec<Game> 
     }
 
     games
+}
+
+/// Human-readable label for a single playlist rule.
+fn rule_label(rule: &PlaylistRule) -> String {
+    match rule {
+        PlaylistRule::Installed => "Installed".into(),
+        PlaylistRule::NotJunk => "NotJunk".into(),
+        PlaylistRule::NotHidden => "NotHidden".into(),
+        PlaylistRule::ControllerSupportFull => "ControllerSupportFull".into(),
+        PlaylistRule::ProtonAtLeast { tier } => format!("ProtonAtLeast({tier:?})"),
+        PlaylistRule::HltbMaxMinutes { minutes } => format!("HltbMaxMinutes({minutes})"),
+        PlaylistRule::PlaytimeBetween { min, max } => format!("PlaytimeBetween({min}-{max})"),
+        PlaylistRule::RatingAtLeast { rating_0_5 } => {
+            format!("RatingAtLeast({rating_0_5})")
+        }
+        PlaylistRule::HasGenre { genre } => format!("HasGenre({genre})"),
+        PlaylistRule::HasTag { tag } => format!("HasTag({tag})"),
+        PlaylistRule::And(rules) => format!("And({} rules)", rules.len()),
+        PlaylistRule::Or(rules) => format!("Or({} rules)", rules.len()),
+        PlaylistRule::Not(_) => "Not(…)".into(),
+    }
+}
+
+/// Recursively render a rule tree with remove buttons.
+/// Nested And/Or/Not rules are rendered with indentation.
+fn render_rule_tree(ui: &mut egui::Ui, rules: &mut Vec<PlaylistRule>, depth: usize) {
+    let mut to_remove: Option<usize> = None;
+    for (i, rule) in rules.iter_mut().enumerate() {
+        let indent = depth as f32 * SP_3;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(SP_1, SP_1);
+            if indent > 0.0 {
+                ui.add_space(indent);
+                ui.label(RichText::new("└").size(TS_XS).color(t().text_muted));
+            }
+            let label = rule_label(rule);
+            status_badge(ui, &label, t().surface_muted, t().text_secondary);
+            if ghost_button(ui, "✕").clicked() {
+                to_remove = Some(i);
+            }
+        });
+        // Recurse into nested rules.
+        match rule {
+            PlaylistRule::And(sub) | PlaylistRule::Or(sub) => {
+                render_rule_tree(ui, sub, depth + 1);
+            }
+            PlaylistRule::Not(inner) => {
+                let mut single = vec![(**inner).clone()];
+                render_rule_tree(ui, &mut single, depth + 1);
+                if let Some(updated) = single.into_iter().next() {
+                    **inner = updated;
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(idx) = to_remove {
+        rules.remove(idx);
+    }
 }
 
 fn manual_playlist_app_ids_csv(pf: &PlaylistFile) -> String {
@@ -1750,6 +1817,10 @@ impl VapourflyApp {
             playlist_detail_tab: PlaylistDetailTab::Games,
             playlist_game_search: String::new(),
             playlist_show_advanced_json: false,
+            playlist_rule_genre: String::new(),
+            playlist_rule_tag: String::new(),
+            playlist_rule_hltb_max: String::new(),
+            playlist_rule_proton_tier: None,
             playlist_dup_id_confirm: None,
             playlist_show_import: false,
             playlist_share_tab: PlaylistShareTab::ShareCode,
@@ -7213,54 +7284,26 @@ impl VapourflyApp {
                     .color(t().text_muted),
                 );
             } else {
-                // Visual rule editor: show current rules as badges + quick-add.
+                // Visual rule editor: show current rules as a tree with
+                // per-rule remove buttons + parameterized quick-add.
                 if self.playlist_edit_rules.is_empty() {
                     ui.label(
-                        RichText::new(
-                            "No rules yet. Add quick rules below or toggle Advanced JSON.",
-                        )
-                        .size(TS_SM)
-                        .color(t().text_muted),
+                        RichText::new("No rules yet. Add rules below or toggle Advanced JSON.")
+                            .size(TS_SM)
+                            .color(t().text_muted),
                     );
                 } else {
-                    // Parse and display rules.
+                    // Parse and display rules as a tree.
                     match serde_json::from_str::<Vec<PlaylistRule>>(&self.playlist_edit_rules) {
                         Ok(rules) => {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.spacing_mut().item_spacing = egui::vec2(SP_1, SP_1);
-                                for rule in &rules {
-                                    let label = match rule {
-                                        PlaylistRule::Installed => "Installed".into(),
-                                        PlaylistRule::NotJunk => "NotJunk".into(),
-                                        PlaylistRule::NotHidden => "NotHidden".into(),
-                                        PlaylistRule::ControllerSupportFull => {
-                                            "ControllerSupportFull".into()
-                                        }
-                                        PlaylistRule::ProtonAtLeast { tier } => {
-                                            format!("ProtonAtLeast({tier:?})")
-                                        }
-                                        PlaylistRule::HltbMaxMinutes { minutes } => {
-                                            format!("HltbMaxMinutes({minutes})")
-                                        }
-                                        PlaylistRule::PlaytimeBetween { min, max } => {
-                                            format!("PlaytimeBetween({min}-{max})")
-                                        }
-                                        PlaylistRule::RatingAtLeast { rating_0_5 } => {
-                                            format!("RatingAtLeast({rating_0_5})")
-                                        }
-                                        PlaylistRule::HasGenre { genre } => {
-                                            format!("HasGenre({genre})")
-                                        }
-                                        PlaylistRule::HasTag { tag } => {
-                                            format!("HasTag({tag})")
-                                        }
-                                        PlaylistRule::And(_) => "And(…)".into(),
-                                        PlaylistRule::Or(_) => "Or(…)".into(),
-                                        PlaylistRule::Not(_) => "Not(…)".into(),
-                                    };
-                                    status_badge(ui, &label, t().surface_muted, t().text_secondary);
-                                }
-                            });
+                            let mut rules_mut = rules.clone();
+                            render_rule_tree(ui, &mut rules_mut, 0);
+                            // Sync back if rules were removed via the tree UI.
+                            let new_json =
+                                serde_json::to_string_pretty(&rules_mut).unwrap_or_default();
+                            if new_json != self.playlist_edit_rules {
+                                self.playlist_edit_rules = new_json;
+                            }
                         }
                         Err(_) => {
                             ui.label(
@@ -7302,6 +7345,139 @@ impl VapourflyApp {
                             rules.push(rule.clone());
                             self.playlist_edit_rules =
                                 serde_json::to_string_pretty(&rules).unwrap_or_default();
+                        }
+                    }
+                });
+
+                // Parameterized rule adders.
+                ui.add_space(SP_2);
+                ui.label(
+                    RichText::new("Parameterized rules:")
+                        .size(TS_SM)
+                        .color(t().text_secondary),
+                );
+
+                // Genre input + add.
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                    ui.label(RichText::new("Genre").size(TS_XS).color(t().text_muted));
+                    ui.add_sized(
+                        [100.0, 24.0],
+                        egui::TextEdit::singleline(&mut self.playlist_rule_genre)
+                            .hint_text("e.g. RPG"),
+                    );
+                    if ui
+                        .add(egui::Button::new(RichText::new("Add").size(TS_XS)))
+                        .clicked()
+                    {
+                        if !self.playlist_rule_genre.trim().is_empty() {
+                            let mut rules: Vec<PlaylistRule> =
+                                serde_json::from_str(&self.playlist_edit_rules).unwrap_or_default();
+                            rules.push(PlaylistRule::HasGenre {
+                                genre: self.playlist_rule_genre.trim().to_string(),
+                            });
+                            self.playlist_edit_rules =
+                                serde_json::to_string_pretty(&rules).unwrap_or_default();
+                            self.playlist_rule_genre.clear();
+                        }
+                    }
+                });
+
+                // Tag input + add.
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                    ui.label(RichText::new("Tag").size(TS_XS).color(t().text_muted));
+                    ui.add_sized(
+                        [100.0, 24.0],
+                        egui::TextEdit::singleline(&mut self.playlist_rule_tag)
+                            .hint_text("e.g. multiplayer"),
+                    );
+                    if ui
+                        .add(egui::Button::new(RichText::new("Add").size(TS_XS)))
+                        .clicked()
+                    {
+                        if !self.playlist_rule_tag.trim().is_empty() {
+                            let mut rules: Vec<PlaylistRule> =
+                                serde_json::from_str(&self.playlist_edit_rules).unwrap_or_default();
+                            rules.push(PlaylistRule::HasTag {
+                                tag: self.playlist_rule_tag.trim().to_string(),
+                            });
+                            self.playlist_edit_rules =
+                                serde_json::to_string_pretty(&rules).unwrap_or_default();
+                            self.playlist_rule_tag.clear();
+                        }
+                    }
+                });
+
+                // HLTB max minutes input + add.
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                    ui.label(RichText::new("HLTB max").size(TS_XS).color(t().text_muted));
+                    ui.add_sized(
+                        [80.0, 24.0],
+                        egui::TextEdit::singleline(&mut self.playlist_rule_hltb_max)
+                            .hint_text("minutes"),
+                    );
+                    if ui
+                        .add(egui::Button::new(RichText::new("Add").size(TS_XS)))
+                        .clicked()
+                    {
+                        if let Ok(mins) = self.playlist_rule_hltb_max.trim().parse::<u32>() {
+                            let mut rules: Vec<PlaylistRule> =
+                                serde_json::from_str(&self.playlist_edit_rules).unwrap_or_default();
+                            rules.push(PlaylistRule::HltbMaxMinutes { minutes: mins });
+                            self.playlist_edit_rules =
+                                serde_json::to_string_pretty(&rules).unwrap_or_default();
+                            self.playlist_rule_hltb_max.clear();
+                        }
+                    }
+                });
+
+                // ProtonDB tier dropdown + add.
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                    ui.label(RichText::new("ProtonDB").size(TS_XS).color(t().text_muted));
+                    let tier_label = match self.playlist_rule_proton_tier {
+                        None => "Any".to_string(),
+                        Some(t) => proton_tier_label(t).to_string(),
+                    };
+                    egui::ComboBox::from_id_salt("playlist_rule_proton")
+                        .selected_text(tier_label)
+                        .width(80.0)
+                        .show_ui(ui, |ui| {
+                            let current = self.playlist_rule_proton_tier;
+                            if ui.selectable_label(current.is_none(), "Any").clicked() {
+                                self.playlist_rule_proton_tier = None;
+                            }
+                            for tier in [
+                                ProtonTier::Native,
+                                ProtonTier::Platinum,
+                                ProtonTier::Gold,
+                                ProtonTier::Silver,
+                                ProtonTier::Bronze,
+                            ] {
+                                if ui
+                                    .selectable_label(
+                                        current == Some(tier),
+                                        proton_tier_label(tier),
+                                    )
+                                    .clicked()
+                                {
+                                    self.playlist_rule_proton_tier = Some(tier);
+                                }
+                            }
+                        });
+                    if let Some(tier) = self.playlist_rule_proton_tier {
+                        if ui
+                            .add(egui::Button::new(RichText::new("Add").size(TS_XS)))
+                            .clicked()
+                        {
+                            let mut rules: Vec<PlaylistRule> =
+                                serde_json::from_str(&self.playlist_edit_rules).unwrap_or_default();
+                            rules.push(PlaylistRule::ProtonAtLeast { tier });
+                            self.playlist_edit_rules =
+                                serde_json::to_string_pretty(&rules).unwrap_or_default();
+                            self.playlist_rule_proton_tier = None;
                         }
                     }
                 });
@@ -9916,6 +10092,44 @@ mod tests {
             .unwrap()
             .is_hidden;
         assert_ne!(was_hidden, is_hidden);
+    }
+
+    #[test]
+    fn rule_label_formats_all_variants() {
+        assert_eq!(rule_label(&PlaylistRule::Installed), "Installed");
+        assert_eq!(rule_label(&PlaylistRule::NotJunk), "NotJunk");
+        assert_eq!(rule_label(&PlaylistRule::NotHidden), "NotHidden");
+        assert_eq!(
+            rule_label(&PlaylistRule::ControllerSupportFull),
+            "ControllerSupportFull"
+        );
+        assert_eq!(
+            rule_label(&PlaylistRule::HltbMaxMinutes { minutes: 120 }),
+            "HltbMaxMinutes(120)"
+        );
+        assert_eq!(
+            rule_label(&PlaylistRule::HasGenre {
+                genre: "RPG".into()
+            }),
+            "HasGenre(RPG)"
+        );
+        assert_eq!(
+            rule_label(&PlaylistRule::HasTag {
+                tag: "multiplayer".into()
+            }),
+            "HasTag(multiplayer)"
+        );
+        assert_eq!(
+            rule_label(&PlaylistRule::And(vec![
+                PlaylistRule::Installed,
+                PlaylistRule::NotJunk
+            ])),
+            "And(2 rules)"
+        );
+        assert_eq!(
+            rule_label(&PlaylistRule::Or(vec![PlaylistRule::Installed])),
+            "Or(1 rules)"
+        );
     }
 
     #[test]
