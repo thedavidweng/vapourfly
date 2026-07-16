@@ -6430,7 +6430,7 @@ impl VapourflyApp {
                                                 }
                                                 Err(e) => {
                                                     self.error =
-                                                        Some(format!("Share code failed: {e}"))
+                                                        Some(format!("Share code failed: {e}"));
                                                 }
                                             }
                                         }
@@ -6462,7 +6462,7 @@ impl VapourflyApp {
                                                     }
                                                     Err(e) => {
                                                         self.error =
-                                                            Some(format!("Export failed: {e}"))
+                                                            Some(format!("Export failed: {e}"));
                                                     }
                                                 }
                                             }
