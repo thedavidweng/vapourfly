@@ -25,7 +25,7 @@ use vapourfly_core::steam::{
 
 mod jobs;
 mod theme;
-use jobs::{JobId, JobRunner, JobSlot, WorkflowKind};
+use jobs::{fingerprint_u64, JobRunner, JobSlot, JobTicket, WorkflowKind};
 use theme::*;
 
 // ---------------------------------------------------------------------------
@@ -152,28 +152,19 @@ fn put_generator_slot(
 
 /// Result of a generator background job (Dynamic / Mood).
 ///
-/// Carries the [`GeneratorIdentity`] and input fingerprint **captured at job
-/// start time** so the consumer can write the result to the correct stable
-/// slot even if the user changes the chooser while the job is running. Without
-/// this, the poll would re-read the current chooser and store the result under
-/// the wrong slot (input drift).
+/// Carries the [`GeneratorIdentity`] captured at job start time so the
+/// consumer can write the result to the correct stable slot even if the user
+/// changes the chooser while the job is running. Without this, the poll would
+/// re-read the current chooser and store the result under the wrong slot
+/// (input drift). Input-drift protection is handled by the [`JobTicket`]
+/// fingerprint compared in [`JobSlot::take_if`].
 #[derive(Clone, Debug)]
 struct GeneratorJobResult {
     identity: GeneratorIdentity,
-    input_fingerprint: u64,
     playlist: PlaylistFile,
 }
 
-/// Stable 64-bit fingerprint of a job's input string, for stale-input
-/// detection. Two jobs with the same logical inputs produce the same
-/// fingerprint; a changed chooser or parameter produces a different one.
-fn fingerprint_u64(s: &str) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    s.hash(&mut h);
-    h.finish()
-}
+// fingerprint_u64 lives in crate::jobs and is imported above.
 
 // ---------------------------------------------------------------------------
 // Playlists generator choosers (ticket 06)
@@ -354,6 +345,10 @@ struct VapourflyApp {
     recommend_deck: bool,
     recommend_installed_only: bool,
     recommend_results: Vec<Recommendation>,
+    /// The `RecommendRequest` captured when the current preview was started,
+    /// so Match % is computed against the submitted inputs (e.g. Deck mode)
+    /// rather than the current inputs which may have changed mid-job.
+    recommend_request_at_start: Option<RecommendRequest>,
     /// Selected recommendation AppID for "Why this pick?" panel.
     recommend_selected: Option<u32>,
     /// Search filter for the seed autocomplete.
@@ -455,27 +450,22 @@ struct VapourflyApp {
     /// adoption) can spawn background work and request repaints. Set at the
     /// top of `ui()`; `None` only before the first frame.
     ctx: Option<egui::Context>,
-    scan_job_id: Option<JobId>,
-    write_job_id: Option<JobId>,
-    enrich_job_id: Option<JobId>,
-    dry_run_job_id: Option<JobId>,
-    junk_preview_job_id: Option<JobId>,
-    recommend_job_id: Option<JobId>,
-    discover_job_id: Option<JobId>,
-    dynamic_job_id: Option<JobId>,
-    mood_job_id: Option<JobId>,
-    playlist_match_job_id: Option<JobId>,
-    /// Expected input fingerprint for the in-flight Dynamic job (captured at
-    /// start time). Used to discard results whose inputs no longer match.
-    dynamic_job_fingerprint: Option<u64>,
-    /// Expected input fingerprint for the in-flight Mood job.
-    mood_job_fingerprint: Option<u64>,
+    scan_job_id: Option<JobTicket>,
+    write_job_id: Option<JobTicket>,
+    enrich_job_id: Option<JobTicket>,
+    dry_run_job_id: Option<JobTicket>,
+    junk_preview_job_id: Option<JobTicket>,
+    recommend_job_id: Option<JobTicket>,
+    discover_job_id: Option<JobTicket>,
+    dynamic_job_id: Option<JobTicket>,
+    mood_job_id: Option<JobTicket>,
+    playlist_match_job_id: Option<JobTicket>,
     /// Cached library snapshot (hydrated games, pre-junk-classification).
     /// Reused across frames when the fingerprint matches so the Library view
     /// does not re-hydrate from the disk cache every frame.
     prepared_snapshot: Option<PreparedLibrarySnapshot>,
     /// JobId of an in-flight background library prepare.
-    prepare_job_id: Option<JobId>,
+    prepare_job_id: Option<JobTicket>,
     /// Fingerprint of the in-flight prepare (to set on the snapshot).
     prepare_fingerprint: Option<u64>,
     /// Increments each time a cache refresh completes, so the library snapshot
@@ -716,6 +706,43 @@ fn playlist_rules_json(pf: &PlaylistFile) -> String {
         PlaylistContent::Rules { rules } => serde_json::to_string_pretty(rules).unwrap_or_default(),
         PlaylistContent::Manual { .. } => String::new(),
     }
+}
+
+/// Stable hash of a playlist's full content (manual AppIDs or rules JSON), so
+/// the Playlist Match fingerprint changes when the content is edited — not just
+/// when the playlist id changes.
+fn playlist_content_hash(pf: &PlaylistFile) -> u64 {
+    match &pf.playlist.content {
+        PlaylistContent::Manual { app_ids } => fingerprint_u64(&format!("manual:{app_ids:?}")),
+        PlaylistContent::Rules { rules } => {
+            fingerprint_u64(&format!("rules:{}", serde_json::to_string(rules).unwrap_or_default()))
+        }
+    }
+}
+
+/// Fingerprint for a dry-run job: the target action + all input AppIDs (junk
+/// selection, recommend results, or playlist AppIDs). Used so a dry-run is
+/// invalidated if the inputs change before the background job completes.
+fn dry_run_fingerprint(
+    action: &PendingAction,
+    junk_selected: &std::collections::HashSet<u32>,
+    recommend_results: &[Recommendation],
+) -> String {
+    let mut app_ids: Vec<u32> = match action {
+        PendingAction::JunkApply | PendingAction::JunkHide => {
+            junk_selected.iter().copied().collect()
+        }
+        PendingAction::RecommendCollection => {
+            recommend_results.iter().map(|r| r.app_id).collect()
+        }
+        PendingAction::PlaylistSync(pf) => manual_playlist_app_ids_csv(pf)
+            .split(',')
+            .filter_map(|s| s.trim().parse::<u32>().ok())
+            .collect(),
+        PendingAction::BackupRestore(_) => vec![],
+    };
+    app_ids.sort_unstable();
+    format!("dry_run:{action:?}:apps={app_ids:?}")
 }
 
 // ---------------------------------------------------------------------------
@@ -1428,6 +1455,7 @@ impl VapourflyApp {
             recommend_deck: false,
             recommend_installed_only: false,
             recommend_results: Vec::new(),
+            recommend_request_at_start: None,
             recommend_selected: None,
             recommend_seed_search: String::new(),
 
@@ -1509,8 +1537,6 @@ impl VapourflyApp {
             dynamic_job_id: None,
             mood_job_id: None,
             playlist_match_job_id: None,
-            dynamic_job_fingerprint: None,
-            mood_job_fingerprint: None,
             prepared_snapshot: None,
             prepare_job_id: None,
             prepare_fingerprint: None,
@@ -2028,7 +2054,7 @@ impl VapourflyApp {
         self.success_msg = None;
 
         // Allocate a request ID for stale-result protection.
-        let job_id = self.job_runner.next_id(WorkflowKind::Scan, "scan");
+        let job_id = self.job_runner.next_ticket(WorkflowKind::Scan, "scan");
         self.scan_job_id = Some(job_id);
         SCAN_RESULT.clear();
 
@@ -2099,7 +2125,7 @@ impl VapourflyApp {
 
             let job_id = self
                 .job_runner
-                .next_id(WorkflowKind::Write, "execute_pending");
+                .next_ticket(WorkflowKind::Write, "execute_pending");
             self.write_job_id = Some(job_id);
             WRITE_RESULT.clear();
 
@@ -2136,7 +2162,7 @@ impl VapourflyApp {
         let allow_steam_running = self.allow_steam_running;
         let retention = self.backup_retention();
 
-        let job_id = self.job_runner.next_id(WorkflowKind::Write, "legacy_write");
+        let job_id = self.job_runner.next_ticket(WorkflowKind::Write, "legacy_write");
         self.write_job_id = Some(job_id);
         WRITE_RESULT.clear();
 
@@ -2211,7 +2237,14 @@ impl VapourflyApp {
         self.dry_run_plan = None;
         self.pending_action = Some(action.clone());
 
-        let job_id = self.job_runner.next_id(WorkflowKind::DryRun, "dry_run");
+        // Fingerprint covers the target action + all input AppIDs (junk
+        // selection, recommend results, or playlist AppIDs) + library
+        // generation, so a dry-run is invalidated if the inputs change before
+        // the background job completes.
+        let dry_run_fp = dry_run_fingerprint(&action, &self.junk_selected, &self.recommend_results);
+        let job_id = self
+            .job_runner
+            .next_ticket(WorkflowKind::DryRun, &dry_run_fp);
         self.dry_run_job_id = Some(job_id);
         DRY_RUN_RESULT.clear();
 
@@ -2269,7 +2302,7 @@ impl VapourflyApp {
         let fingerprint = format!("cache_refresh:{source:?}");
         let job_id = self
             .job_runner
-            .next_id(WorkflowKind::CacheRefresh, &fingerprint);
+            .next_ticket(WorkflowKind::CacheRefresh, &fingerprint);
         self.enrich_job_id = Some(job_id);
         ENRICH_RESULT.clear();
 
@@ -2317,10 +2350,16 @@ impl VapourflyApp {
         };
 
         self.junk_preview_loading = true;
-        let fingerprint = format!("junk_preview:{mode:?}");
+        // Fingerprint covers mode + library generation + override/cache
+        // generation so a rescan or cache refresh invalidates an in-flight
+        // preview (the result would be computed against a stale library).
+        let fingerprint = format!(
+            "junk_preview:{mode:?}:lib={}:ovr={}",
+            self.scan_generation, self.cache_refresh_generation
+        );
         let job_id = self
             .job_runner
-            .next_id(WorkflowKind::JunkPreview, &fingerprint);
+            .next_ticket(WorkflowKind::JunkPreview, &fingerprint);
         self.junk_preview_job_id = Some(job_id);
         JUNK_PREVIEW_RESULT.clear();
 
@@ -2353,11 +2392,18 @@ impl VapourflyApp {
         };
 
         self.recommend_loading = true;
-        let fingerprint = format!("recommend:{request:?}");
+        // Fingerprint covers the full request (minutes, count, deck,
+        // installed-only, seed) + library generation. The request is also
+        // captured at start time (recommend_request) so Match % is computed
+        // against the request the user actually submitted, not the current
+        // inputs (e.g. if Deck mode changes mid-job).
+        let fingerprint = format!("recommend:{request:?}:lib={}", self.scan_generation);
         let job_id = self
             .job_runner
-            .next_id(WorkflowKind::RecommendPreview, &fingerprint);
+            .next_ticket(WorkflowKind::RecommendPreview, &fingerprint);
         self.recommend_job_id = Some(job_id);
+        // Keep the start-time request so Match % uses the submitted inputs.
+        self.recommend_request_at_start = Some(request.clone());
         RECOMMEND_RESULT.clear();
 
         let ctx = ctx.clone();
@@ -2386,10 +2432,11 @@ impl VapourflyApp {
         };
 
         self.discover_loading = true;
-        let fingerprint = format!("discover:{options:?}");
+        // Fingerprint covers the full options + library generation.
+        let fingerprint = format!("discover:{options:?}:lib={}", self.scan_generation);
         let job_id = self
             .job_runner
-            .next_id(WorkflowKind::Discover, &fingerprint);
+            .next_ticket(WorkflowKind::Discover, &fingerprint);
         self.discover_job_id = Some(job_id);
         DISCOVER_RESULT.clear();
 
@@ -2435,13 +2482,13 @@ impl VapourflyApp {
 
         self.dynamic_loading = true;
         let fingerprint = format!("dynamic:{}:{}:{}", template.id(), session_minutes, count);
-        let job_id = self.job_runner.next_id(WorkflowKind::Dynamic, &fingerprint);
+        let job_id = self.job_runner.next_ticket(WorkflowKind::Dynamic, &fingerprint);
         self.dynamic_job_id = Some(job_id);
-        // Capture the identity + fingerprint at start time so the consumer can
-        // write to the correct slot even if the chooser changes mid-job.
+        // Capture the identity at start time so the consumer can write the
+        // result to the correct stable slot even if the chooser changes mid-job.
+        // Input-drift protection is handled by the JobTicket fingerprint
+        // (compared on poll), so the result no longer needs a separate check.
         let identity = GeneratorIdentity::Dynamic(template);
-        let input_fingerprint = fingerprint_u64(&fingerprint);
-        self.dynamic_job_fingerprint = Some(input_fingerprint);
         DYNAMIC_RESULT.clear();
 
         let ctx = ctx.clone();
@@ -2459,7 +2506,6 @@ impl VapourflyApp {
                 job_id,
                 Ok(GeneratorJobResult {
                     identity,
-                    input_fingerprint,
                     playlist: pf,
                 }),
             );
@@ -2485,12 +2531,11 @@ impl VapourflyApp {
 
         self.mood_loading = true;
         let fingerprint = format!("mood:{}", mood.id());
-        let job_id = self.job_runner.next_id(WorkflowKind::Mood, &fingerprint);
+        let job_id = self.job_runner.next_ticket(WorkflowKind::Mood, &fingerprint);
         self.mood_job_id = Some(job_id);
-        // Capture identity + fingerprint at start time (input-drift protection).
+        // Capture identity at start time; input-drift protection is handled by
+        // the JobTicket fingerprint (compared on poll).
         let identity = GeneratorIdentity::Mood(mood);
-        let input_fingerprint = fingerprint_u64(&fingerprint);
-        self.mood_job_fingerprint = Some(input_fingerprint);
         MOOD_RESULT.clear();
 
         let ctx = ctx.clone();
@@ -2501,7 +2546,6 @@ impl VapourflyApp {
                 job_id,
                 Ok(GeneratorJobResult {
                     identity,
-                    input_fingerprint,
                     playlist: pf,
                 }),
             );
@@ -2513,8 +2557,10 @@ impl VapourflyApp {
     /// Each result carries the [`GeneratorIdentity`] and input fingerprint
     /// captured at job start time. The result is written to the slot named by
     /// the **start-time** identity — never the current chooser — so changing
-    /// the chooser mid-job cannot redirect the result (input drift). A
-    /// mismatched fingerprint causes the result to be discarded.
+    /// the chooser mid-job cannot redirect the result (input drift). Input-drift
+    /// protection is handled by the [`JobTicket`] fingerprint compared in
+    /// [`JobSlot::take_if`]: a result computed for different inputs is discarded
+    /// before reaching here.
     fn poll_generator_results(&mut self) {
         // -- Dynamic ---------------------------------------------------------
         if self.dynamic_loading
@@ -2523,24 +2569,16 @@ impl VapourflyApp {
         {
             self.dynamic_loading = false;
             self.dynamic_job_id = None;
-            let expected_fp = self.dynamic_job_fingerprint.take();
             match result {
                 Ok(job_result) => {
-                    // Verify the fingerprint matches the inputs we started with.
-                    if expected_fp.is_some_and(|fp| fp != job_result.input_fingerprint) {
-                        self.error = Some(
-                            "Dynamic result discarded: inputs changed while generating.".into(),
-                        );
-                    } else {
-                        match self
-                            .store_generator_playlist(job_result.identity, job_result.playlist)
-                        {
-                            Ok(stored) => {
-                                self.adopt_playlist_for_edit(&stored);
-                                self.refresh_playlist_store_ids();
-                            }
-                            Err(e) => self.error = Some(e),
+                    match self
+                        .store_generator_playlist(job_result.identity, job_result.playlist)
+                    {
+                        Ok(stored) => {
+                            self.adopt_playlist_for_edit(&stored);
+                            self.refresh_playlist_store_ids();
                         }
+                        Err(e) => self.error = Some(e),
                     }
                 }
                 Err(e) => self.error = Some(e),
@@ -2554,22 +2592,16 @@ impl VapourflyApp {
         {
             self.mood_loading = false;
             self.mood_job_id = None;
-            let expected_fp = self.mood_job_fingerprint.take();
             match result {
                 Ok(job_result) => {
-                    if expected_fp.is_some_and(|fp| fp != job_result.input_fingerprint) {
-                        self.error =
-                            Some("Mood result discarded: inputs changed while generating.".into());
-                    } else {
-                        match self
-                            .store_generator_playlist(job_result.identity, job_result.playlist)
-                        {
-                            Ok(stored) => {
-                                self.adopt_playlist_for_edit(&stored);
-                                self.refresh_playlist_store_ids();
-                            }
-                            Err(e) => self.error = Some(e),
+                    match self
+                        .store_generator_playlist(job_result.identity, job_result.playlist)
+                    {
+                        Ok(stored) => {
+                            self.adopt_playlist_for_edit(&stored);
+                            self.refresh_playlist_store_ids();
                         }
+                        Err(e) => self.error = Some(e),
                     }
                 }
                 Err(e) => self.error = Some(e),
@@ -2588,10 +2620,18 @@ impl VapourflyApp {
         };
 
         self.playlist_match_loading = true;
-        let fingerprint = format!("playlist_match:{}", pf.playlist.id);
+        // Fingerprint covers the playlist id + a hash of the full content
+        // (manual AppIDs or rules) + library generation + price-cache
+        // generation, so editing the playlist, rescanning, or refreshing the
+        // cache invalidates an in-flight match.
+        let content_hash = playlist_content_hash(&pf);
+        let fingerprint = format!(
+            "playlist_match:{}:content={:x}:lib={}:price={}",
+            pf.playlist.id, content_hash, self.scan_generation, self.cache_refresh_generation
+        );
         let job_id = self
             .job_runner
-            .next_id(WorkflowKind::PlaylistMatch, &fingerprint);
+            .next_ticket(WorkflowKind::PlaylistMatch, &fingerprint);
         self.playlist_match_job_id = Some(job_id);
         PLAYLIST_MATCH_RESULT.clear();
 
@@ -2857,7 +2897,7 @@ impl VapourflyApp {
         // Start a new background prepare.
         let job_id = self
             .job_runner
-            .next_id(WorkflowKind::CacheRefresh, &format!("prepare:{fp}"));
+            .next_ticket(WorkflowKind::Prepare, &format!("prepare:{fp}"));
         self.prepare_job_id = Some(job_id);
         self.prepare_fingerprint = Some(fp);
         PREPARED_LIBRARY_RESULT.clear();
@@ -4992,8 +5032,16 @@ impl VapourflyApp {
         }
 
         // Match percent formula: deck mode → score/7.5, normal → score/5.5.
-        // Rounded and clamped to 0–100.
-        let max_score = if self.recommend_deck { 7.5 } else { 5.5 };
+        // Rounded and clamped to 0–100. Uses the Deck mode captured at preview
+        // start time (recommend_request_at_start) so a result computed for one
+        // mode is not re-scored against the current mode if the user toggled it
+        // mid-job.
+        let deck_mode = self
+            .recommend_request_at_start
+            .as_ref()
+            .map(|r| r.deck_mode)
+            .unwrap_or(self.recommend_deck);
+        let max_score = if deck_mode { 7.5 } else { 5.5 };
         let match_pct = |score: f32| -> u32 {
             let pct = (score / max_score * 100.0).round() as i32;
             pct.clamp(0, 100) as u32
@@ -5328,7 +5376,7 @@ impl VapourflyApp {
                                     RichText::new(format!(
                                         "Match % = score / {:.1} ({} mode). Scores combine playtime fit, deck compatibility, ProtonDB tier, and rating signals.",
                                         max_score,
-                                        if self.recommend_deck { "deck" } else { "normal" }
+                                        if deck_mode { "deck" } else { "normal" }
                                     ))
                                     .size(TS_XS)
                                     .color(t().text_muted),
@@ -8728,19 +8776,16 @@ mod tests {
         app.populate_demo_data();
         // Simulate a deck-session job that already produced a result.
         app.dynamic_template = DynamicTemplate::DeckSession.id().into();
-        let fp = fingerprint_u64("dynamic:deck-session:90:25");
         let job_id = app
             .job_runner
-            .next_id(WorkflowKind::Dynamic, "dynamic:deck-session:90:25");
+            .next_ticket(WorkflowKind::Dynamic, "dynamic:deck-session:90:25");
         app.dynamic_job_id = Some(job_id);
-        app.dynamic_job_fingerprint = Some(fp);
         app.dynamic_loading = true;
         let pf = sample_generator_playlist("dynamic-deck-session", vec![1000, 1007]);
         DYNAMIC_RESULT.set(
             job_id,
             Ok(GeneratorJobResult {
                 identity: GeneratorIdentity::Dynamic(DynamicTemplate::DeckSession),
-                input_fingerprint: fp,
                 playlist: pf,
             }),
         );
@@ -8772,19 +8817,16 @@ mod tests {
         app.playlist_store_dir = Some(dir.path().to_path_buf());
         app.populate_demo_data();
         app.editorial_mood = EditorialMood::QuickRound.id().into();
-        let fp = fingerprint_u64("mood:quick-round");
         let job_id = app
             .job_runner
-            .next_id(WorkflowKind::Mood, "mood:quick-round");
+            .next_ticket(WorkflowKind::Mood, "mood:quick-round");
         app.mood_job_id = Some(job_id);
-        app.mood_job_fingerprint = Some(fp);
         app.mood_loading = true;
         let pf = sample_generator_playlist("mood-quick-round", vec![1002, 1009]);
         MOOD_RESULT.set(
             job_id,
             Ok(GeneratorJobResult {
                 identity: GeneratorIdentity::Mood(EditorialMood::QuickRound),
-                input_fingerprint: fp,
                 playlist: pf,
             }),
         );
@@ -8804,42 +8846,15 @@ mod tests {
         assert!(!app.mood_loading);
     }
 
-    /// A result whose fingerprint does not match the expected one is discarded.
-    #[test]
-    #[serial]
-    fn dynamic_result_with_mismatched_fingerprint_is_discarded() {
-        DYNAMIC_RESULT.clear();
-        let dir = TempDir::new().unwrap();
-        let mut app = VapourflyApp::new(None, true);
-        // Use a fresh empty store dir (no demo data) so we can assert the
-        // discarded result wrote nothing.
-        app.playlist_store_dir = Some(dir.path().to_path_buf());
-        app.dynamic_template = DynamicTemplate::DeckSession.id().into();
-        let job_id = app
-            .job_runner
-            .next_id(WorkflowKind::Dynamic, "dynamic:deck-session:90:25");
-        app.dynamic_job_id = Some(job_id);
-        app.dynamic_job_fingerprint = Some(fingerprint_u64("dynamic:deck-session:90:25"));
-        app.dynamic_loading = true;
-        DYNAMIC_RESULT.set(
-            job_id,
-            Ok(GeneratorJobResult {
-                identity: GeneratorIdentity::Dynamic(DynamicTemplate::DeckSession),
-                input_fingerprint: fingerprint_u64("dynamic:deck-session:60:10"),
-                playlist: sample_generator_playlist("dynamic-deck-session", vec![1]),
-            }),
-        );
+    /// A result whose ticket fingerprint does not match the expected one is
+    /// discarded by `JobSlot::take_if`. This scenario is covered at the
+    /// `jobs` module level (see `jobs::tests::take_if_discards_input_drift_result`)
+    /// because with `JobTicket` the thread always uses the ticket captured at
+    /// start time — a drifted fingerprint cannot be produced by normal job
+    /// submission, only by direct slot injection (which the jobs unit test
+    /// does). The integration-level test that previously injected a drifted
+    /// result here has been removed as it tested an impossible production path.
 
-        app.poll_generator_results();
-
-        // Mismatched fingerprint → discarded, loading cleared, nothing stored.
-        assert!(!app.dynamic_loading);
-        assert!(
-            !dir.path().join("dynamic-deck-session.json").exists(),
-            "mismatched-fingerprint result must not be stored"
-        );
-        assert!(app.error.is_some(), "discard should surface an error");
-    }
 
     #[test]
     #[serial]
