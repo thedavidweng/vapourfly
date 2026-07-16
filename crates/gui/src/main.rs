@@ -25,7 +25,7 @@ use vapourfly_core::steam::{
 
 mod jobs;
 mod theme;
-use jobs::{JobId, JobRunner, JobSlot};
+use jobs::{JobId, JobRunner, JobSlot, WorkflowKind};
 use theme::*;
 
 // ---------------------------------------------------------------------------
@@ -1665,7 +1665,7 @@ impl VapourflyApp {
         self.success_msg = None;
 
         // Allocate a request ID for stale-result protection.
-        let job_id = self.job_runner.next_id();
+        let job_id = self.job_runner.next_id(WorkflowKind::Scan, "scan");
         self.scan_job_id = Some(job_id);
         SCAN_RESULT.clear();
 
@@ -1734,7 +1734,9 @@ impl VapourflyApp {
             let allow_steam_running = self.allow_steam_running;
             let retention = self.backup_retention();
 
-            let job_id = self.job_runner.next_id();
+            let job_id = self
+                .job_runner
+                .next_id(WorkflowKind::Write, "execute_pending");
             self.write_job_id = Some(job_id);
             WRITE_RESULT.clear();
 
@@ -1771,7 +1773,7 @@ impl VapourflyApp {
         let allow_steam_running = self.allow_steam_running;
         let retention = self.backup_retention();
 
-        let job_id = self.job_runner.next_id();
+        let job_id = self.job_runner.next_id(WorkflowKind::Write, "legacy_write");
         self.write_job_id = Some(job_id);
         WRITE_RESULT.clear();
 
@@ -1841,7 +1843,7 @@ impl VapourflyApp {
         self.dry_run_plan = None;
         self.pending_action = Some(action.clone());
 
-        let job_id = self.job_runner.next_id();
+        let job_id = self.job_runner.next_id(WorkflowKind::DryRun, "dry_run");
         self.dry_run_job_id = Some(job_id);
         DRY_RUN_RESULT.clear();
 
@@ -1888,7 +1890,10 @@ impl VapourflyApp {
         self.cache_refresh_msg = None;
         self.success_msg = None;
 
-        let job_id = self.job_runner.next_id();
+        let fingerprint = format!("cache_refresh:{source:?}");
+        let job_id = self
+            .job_runner
+            .next_id(WorkflowKind::CacheRefresh, &fingerprint);
         self.enrich_job_id = Some(job_id);
         ENRICH_RESULT.clear();
 
