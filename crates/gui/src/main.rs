@@ -26,7 +26,7 @@ use vapourfly_core::steam::{
 
 mod jobs;
 mod theme;
-use jobs::{fingerprint_u64, JobRunner, JobSlot, JobTicket, WorkflowKind};
+use jobs::{JobRunner, JobSlot, JobTicket, WorkflowKind, fingerprint_u64};
 use theme::*;
 
 // ---------------------------------------------------------------------------
@@ -718,9 +718,10 @@ fn playlist_rules_json(pf: &PlaylistFile) -> String {
 fn playlist_content_hash(pf: &PlaylistFile) -> u64 {
     match &pf.playlist.content {
         PlaylistContent::Manual { app_ids } => fingerprint_u64(&format!("manual:{app_ids:?}")),
-        PlaylistContent::Rules { rules } => {
-            fingerprint_u64(&format!("rules:{}", serde_json::to_string(rules).unwrap_or_default()))
-        }
+        PlaylistContent::Rules { rules } => fingerprint_u64(&format!(
+            "rules:{}",
+            serde_json::to_string(rules).unwrap_or_default()
+        )),
     }
 }
 
@@ -736,9 +737,7 @@ fn dry_run_fingerprint(
         PendingAction::JunkApply | PendingAction::JunkHide => {
             junk_selected.iter().copied().collect()
         }
-        PendingAction::RecommendCollection => {
-            recommend_results.iter().map(|r| r.app_id).collect()
-        }
+        PendingAction::RecommendCollection => recommend_results.iter().map(|r| r.app_id).collect(),
         PendingAction::PlaylistSync(pf) => manual_playlist_app_ids_csv(pf)
             .split(',')
             .filter_map(|s| s.trim().parse::<u32>().ok())
@@ -1001,27 +1000,45 @@ fn empty_state(ui: &mut egui::Ui, icon: &str, title: &str, subtitle: &str) {
 /// Each entry is (top_block, bottom_block) — two distinct shades that make
 /// the placeholder visually identifiable without any network fetch.
 const ARTWORK_PALETTE: [(Color32, Color32); 8] = [
-    (Color32::from_rgb(0x4C, 0x6E, 0xF0), Color32::from_rgb(0x2A, 0x4A, 0xC0)),
-    (Color32::from_rgb(0xE1, 0x70, 0x55), Color32::from_rgb(0xB5, 0x4A, 0x35)),
-    (Color32::from_rgb(0x2E, 0xC4, 0xB6), Color32::from_rgb(0x1A, 0x9A, 0x8E)),
-    (Color32::from_rgb(0xF4, 0xC4, 0x30), Color32::from_rgb(0xC0, 0x98, 0x18)),
-    (Color32::from_rgb(0x9B, 0x59, 0xB6), Color32::from_rgb(0x72, 0x3C, 0x8A)),
-    (Color32::from_rgb(0x34, 0x98, 0xDB), Color32::from_rgb(0x21, 0x70, 0xA8)),
-    (Color32::from_rgb(0xE6, 0x7E, 0x22), Color32::from_rgb(0xB0, 0x5C, 0x12)),
-    (Color32::from_rgb(0x1A, 0xBC, 0x9C), Color32::from_rgb(0x12, 0x8E, 0x76)),
+    (
+        Color32::from_rgb(0x4C, 0x6E, 0xF0),
+        Color32::from_rgb(0x2A, 0x4A, 0xC0),
+    ),
+    (
+        Color32::from_rgb(0xE1, 0x70, 0x55),
+        Color32::from_rgb(0xB5, 0x4A, 0x35),
+    ),
+    (
+        Color32::from_rgb(0x2E, 0xC4, 0xB6),
+        Color32::from_rgb(0x1A, 0x9A, 0x8E),
+    ),
+    (
+        Color32::from_rgb(0xF4, 0xC4, 0x30),
+        Color32::from_rgb(0xC0, 0x98, 0x18),
+    ),
+    (
+        Color32::from_rgb(0x9B, 0x59, 0xB6),
+        Color32::from_rgb(0x72, 0x3C, 0x8A),
+    ),
+    (
+        Color32::from_rgb(0x34, 0x98, 0xDB),
+        Color32::from_rgb(0x21, 0x70, 0xA8),
+    ),
+    (
+        Color32::from_rgb(0xE6, 0x7E, 0x22),
+        Color32::from_rgb(0xB0, 0x5C, 0x12),
+    ),
+    (
+        Color32::from_rgb(0x1A, 0xBC, 0x9C),
+        Color32::from_rgb(0x12, 0x8E, 0x76),
+    ),
 ];
 
 /// Render the deterministic placeholder for a game: two color blocks (top 60%,
 /// bottom 40%), the title initial centered, and the AppID in the bottom-right
 /// corner. Used when CDN art is unavailable (demo mode, offline mode, or
 /// network failure).
-fn render_artwork_placeholder(
-    ui: &mut egui::Ui,
-    app_id: u32,
-    name: &str,
-    width: f32,
-    height: f32,
-) {
+fn render_artwork_placeholder(ui: &mut egui::Ui, app_id: u32, name: &str, width: f32, height: f32) {
     let (top, bottom) = ARTWORK_PALETTE[(app_id as usize) % ARTWORK_PALETTE.len()];
     let initial = name
         .chars()
@@ -1043,7 +1060,8 @@ fn render_artwork_placeholder(
             width,
         );
         ui.painter().galley(
-            top_rect.center() - egui::vec2(initial_galley.size().x * 0.5, initial_galley.size().y * 0.5),
+            top_rect.center()
+                - egui::vec2(initial_galley.size().x * 0.5, initial_galley.size().y * 0.5),
             initial_galley,
             Color32::WHITE,
         );
@@ -1373,7 +1391,11 @@ fn nav_item(ui: &mut egui::Ui, view: View, selected: bool, compact: bool) -> egu
         let painter = ui.painter();
         painter.rect_filled(rect, CORNER_MD, fill);
 
-        let icon_y = if compact { rect.center().y } else { rect.top() + 24.0 };
+        let icon_y = if compact {
+            rect.center().y
+        } else {
+            rect.top() + 24.0
+        };
         let icon_rect = egui::Rect::from_center_size(
             egui::pos2(rect.center().x, icon_y),
             egui::vec2(NAV_ICON_SIZE, NAV_ICON_SIZE),
@@ -2266,7 +2288,9 @@ impl VapourflyApp {
         let allow_steam_running = self.allow_steam_running;
         let retention = self.backup_retention();
 
-        let job_id = self.job_runner.next_ticket(WorkflowKind::Write, "legacy_write");
+        let job_id = self
+            .job_runner
+            .next_ticket(WorkflowKind::Write, "legacy_write");
         self.write_job_id = Some(job_id);
         WRITE_RESULT.clear();
 
@@ -2586,7 +2610,9 @@ impl VapourflyApp {
 
         self.dynamic_loading = true;
         let fingerprint = format!("dynamic:{}:{}:{}", template.id(), session_minutes, count);
-        let job_id = self.job_runner.next_ticket(WorkflowKind::Dynamic, &fingerprint);
+        let job_id = self
+            .job_runner
+            .next_ticket(WorkflowKind::Dynamic, &fingerprint);
         self.dynamic_job_id = Some(job_id);
         // Capture the identity at start time so the consumer can write the
         // result to the correct stable slot even if the chooser changes mid-job.
@@ -2635,7 +2661,9 @@ impl VapourflyApp {
 
         self.mood_loading = true;
         let fingerprint = format!("mood:{}", mood.id());
-        let job_id = self.job_runner.next_ticket(WorkflowKind::Mood, &fingerprint);
+        let job_id = self
+            .job_runner
+            .next_ticket(WorkflowKind::Mood, &fingerprint);
         self.mood_job_id = Some(job_id);
         // Capture identity at start time; input-drift protection is handled by
         // the JobTicket fingerprint (compared on poll).
@@ -2675,9 +2703,7 @@ impl VapourflyApp {
             self.dynamic_job_id = None;
             match result {
                 Ok(job_result) => {
-                    match self
-                        .store_generator_playlist(job_result.identity, job_result.playlist)
-                    {
+                    match self.store_generator_playlist(job_result.identity, job_result.playlist) {
                         Ok(stored) => {
                             self.adopt_playlist_for_edit(&stored);
                             self.refresh_playlist_store_ids();
@@ -2698,9 +2724,7 @@ impl VapourflyApp {
             self.mood_job_id = None;
             match result {
                 Ok(job_result) => {
-                    match self
-                        .store_generator_playlist(job_result.identity, job_result.playlist)
-                    {
+                    match self.store_generator_playlist(job_result.identity, job_result.playlist) {
                         Ok(stored) => {
                             self.adopt_playlist_for_edit(&stored);
                             self.refresh_playlist_store_ids();
@@ -3254,9 +3278,7 @@ impl VapourflyApp {
                 if matches!(pf.playlist.content, PlaylistContent::Rules { .. })
                     && !self.library_ready()
                 {
-                    return Err(
-                        "Scan your library before syncing a rule-based playlist.".into(),
-                    );
+                    return Err("Scan your library before syncing a rule-based playlist.".into());
                 }
                 Ok(PendingAction::PlaylistSync(pf))
             }
@@ -4217,7 +4239,11 @@ fn playlist_cover_app_id(content: &PlaylistContent) -> u32 {
 }
 
 /// Average HLTB main-story time (in minutes) across the AppIDs in a playlist.
-fn playlist_avg_hltb(content: &PlaylistContent, report: Option<&PlaylistMatchReport>, games: &[Game]) -> Option<u32> {
+fn playlist_avg_hltb(
+    content: &PlaylistContent,
+    report: Option<&PlaylistMatchReport>,
+    games: &[Game],
+) -> Option<u32> {
     let ids: Vec<u32> = match content {
         PlaylistContent::Manual { app_ids } => app_ids.clone(),
         PlaylistContent::Rules { .. } => report.map(|r| r.owned.clone()).unwrap_or_default(),
@@ -4228,7 +4254,13 @@ fn playlist_avg_hltb(content: &PlaylistContent, report: Option<&PlaylistMatchRep
     let lookup: HashMap<u32, &Game> = games.iter().map(|g| (g.app_id, g)).collect();
     let hltbs: Vec<u32> = ids
         .iter()
-        .filter_map(|id| lookup.get(id).and_then(|g| g.hltb.as_ref()).and_then(|h| h.main_story_seconds).map(|s| s / 60))
+        .filter_map(|id| {
+            lookup
+                .get(id)
+                .and_then(|g| g.hltb.as_ref())
+                .and_then(|h| h.main_story_seconds)
+                .map(|s| s / 60)
+        })
         .collect();
     if hltbs.is_empty() {
         return None;
@@ -4648,7 +4680,12 @@ impl VapourflyApp {
 
                             ui.add_space(SP_2);
                             ui.vertical_centered(|ui| {
-                                game_image(ui, game.app_id, &game.name, self.ui_demo || self.offline_mode);
+                                game_image(
+                                    ui,
+                                    game.app_id,
+                                    &game.name,
+                                    self.ui_demo || self.offline_mode,
+                                );
                             });
 
                             ui.add_space(SP_2);
@@ -4897,19 +4934,100 @@ impl VapourflyApp {
                         // Lib share
                         .column(egui_extras::Column::auto().at_least(60.0))
                         .header(text_height * 1.4, |mut header| {
-                            header.col(|ui| { let _ = ui.checkbox(&mut false, ""); });
-                            header.col(|ui| { ui.label(RichText::new("").size(TS_SM)); });
-                            header.col(|ui| { ui.label(RichText::new("Name").size(TS_SM).strong().color(t().text_secondary)); });
-                            header.col(|ui| { ui.label(RichText::new("Playtime").size(TS_SM).strong().color(t().text_secondary)); });
-                            header.col(|ui| { ui.label(RichText::new("HLTB").size(TS_SM).strong().color(t().text_secondary)); });
-                            header.col(|ui| { ui.label(RichText::new("Rating").size(TS_SM).strong().color(t().text_secondary)); });
-                            header.col(|ui| { ui.label(RichText::new("Proton").size(TS_SM).strong().color(t().text_secondary)); });
-                            header.col(|ui| { ui.label(RichText::new("Junk?").size(TS_SM).strong().color(t().text_secondary)); });
-                            header.col(|ui| { ui.label(RichText::new("Conf.").size(TS_SM).strong().color(t().text_secondary)); });
-                            header.col(|ui| { ui.label(RichText::new("Signals").size(TS_SM).strong().color(t().text_secondary)); });
-                            header.col(|ui| { ui.label(RichText::new("Missing").size(TS_SM).strong().color(t().text_secondary)); });
-                            header.col(|ui| { ui.label(RichText::new("Hidden").size(TS_SM).strong().color(t().text_secondary)); });
-                            header.col(|ui| { ui.label(RichText::new("Lib %").size(TS_SM).strong().color(t().text_secondary)); });
+                            header.col(|ui| {
+                                let _ = ui.checkbox(&mut false, "");
+                            });
+                            header.col(|ui| {
+                                ui.label(RichText::new("").size(TS_SM));
+                            });
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new("Name")
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(t().text_secondary),
+                                );
+                            });
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new("Playtime")
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(t().text_secondary),
+                                );
+                            });
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new("HLTB")
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(t().text_secondary),
+                                );
+                            });
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new("Rating")
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(t().text_secondary),
+                                );
+                            });
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new("Proton")
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(t().text_secondary),
+                                );
+                            });
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new("Junk?")
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(t().text_secondary),
+                                );
+                            });
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new("Conf.")
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(t().text_secondary),
+                                );
+                            });
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new("Signals")
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(t().text_secondary),
+                                );
+                            });
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new("Missing")
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(t().text_secondary),
+                                );
+                            });
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new("Hidden")
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(t().text_secondary),
+                                );
+                            });
+                            header.col(|ui| {
+                                ui.label(
+                                    RichText::new("Lib %")
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(t().text_secondary),
+                                );
+                            });
                         })
                         .body(|mut body| {
                             for decision in visible_decisions {
@@ -4929,53 +5047,112 @@ impl VapourflyApp {
                                     });
                                     // Cover thumbnail (40x20 landscape capsule).
                                     row.col(|ui| {
-                                        game_artwork(ui, app_id, &decision.name, 40.0, 20.0, demo_or_offline, &steam_capsule_uri(app_id));
+                                        game_artwork(
+                                            ui,
+                                            app_id,
+                                            &decision.name,
+                                            40.0,
+                                            20.0,
+                                            demo_or_offline,
+                                            &steam_capsule_uri(app_id),
+                                        );
                                     });
                                     // Name + AppID tag below.
                                     row.col(|ui| {
                                         ui.vertical(|ui| {
-                                            ui.label(RichText::new(&decision.name).size(TS_BODY).color(t().text_primary));
-                                            ui.label(RichText::new(app_id.to_string()).size(TS_XS).color(t().text_muted).monospace());
+                                            ui.label(
+                                                RichText::new(&decision.name)
+                                                    .size(TS_BODY)
+                                                    .color(t().text_primary),
+                                            );
+                                            ui.label(
+                                                RichText::new(app_id.to_string())
+                                                    .size(TS_XS)
+                                                    .color(t().text_muted)
+                                                    .monospace(),
+                                            );
                                         });
                                     });
                                     // Playtime.
                                     row.col(|ui| {
                                         let pt = game.and_then(|g| g.playtime_minutes).unwrap_or(0);
-                                        ui.label(RichText::new(format_playtime(pt)).size(TS_BODY).color(t().text_primary));
+                                        ui.label(
+                                            RichText::new(format_playtime(pt))
+                                                .size(TS_BODY)
+                                                .color(t().text_primary),
+                                        );
                                     });
                                     // HLTB (main story).
                                     row.col(|ui| {
-                                        let hltb = game.and_then(|g| g.hltb.as_ref()).and_then(|h| h.main_story_seconds);
-                                        let label = hltb.map(|s| format_playtime(s / 60)).unwrap_or_else(|| empty_value_label().to_string());
-                                        ui.label(RichText::new(label).size(TS_BODY).color(t().text_primary));
+                                        let hltb = game
+                                            .and_then(|g| g.hltb.as_ref())
+                                            .and_then(|h| h.main_story_seconds);
+                                        let label = hltb
+                                            .map(|s| format_playtime(s / 60))
+                                            .unwrap_or_else(|| empty_value_label().to_string());
+                                        ui.label(
+                                            RichText::new(label)
+                                                .size(TS_BODY)
+                                                .color(t().text_primary),
+                                        );
                                     });
                                     // Rating (RAWG 0-5).
                                     row.col(|ui| {
-                                        let rating = game.and_then(|g| g.rawg.as_ref()).and_then(|r| r.rating_0_5);
-                                        let label = rating.map(|r| format!("{r:.1}")).unwrap_or_else(|| empty_value_label().to_string());
-                                        ui.label(RichText::new(label).size(TS_BODY).color(t().text_primary));
+                                        let rating = game
+                                            .and_then(|g| g.rawg.as_ref())
+                                            .and_then(|r| r.rating_0_5);
+                                        let label = rating
+                                            .map(|r| format!("{r:.1}"))
+                                            .unwrap_or_else(|| empty_value_label().to_string());
+                                        ui.label(
+                                            RichText::new(label)
+                                                .size(TS_BODY)
+                                                .color(t().text_primary),
+                                        );
                                     });
                                     // Proton/Deck tier.
                                     row.col(|ui| {
-                                        let tier = game.and_then(|g| g.protondb.as_ref()).map(|p| proton_tier_label(p.tier));
+                                        let tier = game
+                                            .and_then(|g| g.protondb.as_ref())
+                                            .map(|p| proton_tier_label(p.tier));
                                         let label = tier.unwrap_or(empty_value_label());
-                                        ui.label(RichText::new(label).size(TS_BODY).color(t().text_primary));
+                                        ui.label(
+                                            RichText::new(label)
+                                                .size(TS_BODY)
+                                                .color(t().text_primary),
+                                        );
                                     });
                                     // Junk?
                                     row.col(|ui| {
                                         if decision.is_junk {
                                             status_badge(ui, "Yes", t().error_soft, t().error);
                                         } else {
-                                            status_badge(ui, "No", t().surface_sunken, t().text_muted);
+                                            status_badge(
+                                                ui,
+                                                "No",
+                                                t().surface_sunken,
+                                                t().text_muted,
+                                            );
                                         }
                                     });
                                     // Confidence.
                                     row.col(|ui| {
-                                        ui.label(RichText::new(format!("{:.0}%", decision.confidence * 100.0)).size(TS_BODY).color(t().text_primary));
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "{:.0}%",
+                                                decision.confidence * 100.0
+                                            ))
+                                            .size(TS_BODY)
+                                            .color(t().text_primary),
+                                        );
                                     });
                                     // Matched signals.
                                     row.col(|ui| {
-                                        let signals: Vec<String> = decision.matched.iter().map(format_junk_signal).collect();
+                                        let signals: Vec<String> = decision
+                                            .matched
+                                            .iter()
+                                            .map(format_junk_signal)
+                                            .collect();
                                         ui.label(
                                             RichText::new(if signals.is_empty() {
                                                 empty_value_label().to_string()
@@ -4988,7 +5165,11 @@ impl VapourflyApp {
                                     });
                                     // Missing signals.
                                     row.col(|ui| {
-                                        let missing: Vec<String> = decision.missing.iter().map(|m| format!("{m:?}")).collect();
+                                        let missing: Vec<String> = decision
+                                            .missing
+                                            .iter()
+                                            .map(|m| format!("{m:?}"))
+                                            .collect();
                                         ui.label(
                                             RichText::new(if missing.is_empty() {
                                                 empty_value_label().to_string()
@@ -5003,20 +5184,34 @@ impl VapourflyApp {
                                     row.col(|ui| {
                                         let hidden = game.map(|g| g.is_hidden).unwrap_or(false);
                                         if hidden {
-                                            status_badge(ui, "Yes", t().surface_sunken, t().text_muted);
+                                            status_badge(
+                                                ui,
+                                                "Yes",
+                                                t().surface_sunken,
+                                                t().text_muted,
+                                            );
                                         } else {
-                                            ui.label(RichText::new("No").size(TS_BODY).color(t().text_muted));
+                                            ui.label(
+                                                RichText::new("No")
+                                                    .size(TS_BODY)
+                                                    .color(t().text_muted),
+                                            );
                                         }
                                     });
                                     // Library share (% of total library playtime).
                                     row.col(|ui| {
-                                        let pt = game.and_then(|g| g.playtime_minutes).unwrap_or(0) as f32;
+                                        let pt = game.and_then(|g| g.playtime_minutes).unwrap_or(0)
+                                            as f32;
                                         let pct = if total_library_playtime > 0 {
                                             pt / total_library_playtime as f32 * 100.0
                                         } else {
                                             0.0
                                         };
-                                        ui.label(RichText::new(format!("{pct:.1}%")).size(TS_BODY).color(t().text_muted));
+                                        ui.label(
+                                            RichText::new(format!("{pct:.1}%"))
+                                                .size(TS_BODY)
+                                                .color(t().text_muted),
+                                        );
                                     });
                                 });
                             }
@@ -5074,7 +5269,11 @@ impl VapourflyApp {
                                 .filter_map(|d| game_lookup.get(&d.app_id))
                                 .map(|g| g.playtime_minutes.unwrap_or(0))
                                 .sum();
-                            insight_metric(ui, "Focus reclaimed", format_playtime(playtime_reclaim));
+                            insight_metric(
+                                ui,
+                                "Focus reclaimed",
+                                format_playtime(playtime_reclaim),
+                            );
                         });
                 },
             );
@@ -5410,7 +5609,8 @@ impl VapourflyApp {
                                     .hltb_minutes
                                     .map(|m| format!("HLTB {}", format_playtime(m)));
                                 let rating = meta.rating_0_5.map(|r| format!("★{r:.1}"));
-                                let proton = meta.proton_tier.map(|t| proton_tier_label(t).to_string());
+                                let proton =
+                                    meta.proton_tier.map(|t| proton_tier_label(t).to_string());
                                 let meta_line = [hltb, rating, proton]
                                     .into_iter()
                                     .flatten()
@@ -5418,9 +5618,17 @@ impl VapourflyApp {
                                     .join(" · ");
                                 ui.label(
                                     RichText::new(if meta_line.is_empty() {
-                                        format!("Played {} · Score {:.2}", format_playtime(pt), rec.score)
+                                        format!(
+                                            "Played {} · Score {:.2}",
+                                            format_playtime(pt),
+                                            rec.score
+                                        )
                                     } else {
-                                        format!("{meta_line} · Played {} · Score {:.2}", format_playtime(pt), rec.score)
+                                        format!(
+                                            "{meta_line} · Played {} · Score {:.2}",
+                                            format_playtime(pt),
+                                            rec.score
+                                        )
                                     })
                                     .size(TS_SM)
                                     .color(t().text_secondary),
@@ -5959,9 +6167,13 @@ impl VapourflyApp {
                 .as_ref()
                 .map(|s| s.games.as_slice())
                 .unwrap_or(&[]);
-            current_pf
-                .as_ref()
-                .and_then(|pf| playlist_avg_hltb(&pf.playlist.content, self.playlist_match_report.as_ref(), games_ref))
+            current_pf.as_ref().and_then(|pf| {
+                playlist_avg_hltb(
+                    &pf.playlist.content,
+                    self.playlist_match_report.as_ref(),
+                    games_ref,
+                )
+            })
         };
         let demo_or_offline = self.ui_demo || self.offline_mode;
 
@@ -5970,9 +6182,9 @@ impl VapourflyApp {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_3);
                 // Cover image (220x124 landscape capsule or deterministic placeholder).
-                let cover_app_id = current_pf.as_ref().map_or(0, |pf| {
-                    playlist_cover_app_id(&pf.playlist.content)
-                });
+                let cover_app_id = current_pf
+                    .as_ref()
+                    .map_or(0, |pf| playlist_cover_app_id(&pf.playlist.content));
                 let cover_name = current_pf
                     .as_ref()
                     .map(|pf| pf.playlist.name.clone())
@@ -6051,10 +6263,25 @@ impl VapourflyApp {
                     let report = self.playlist_match_report.as_ref();
                     let owned = report.map(|r| r.owned.len()).unwrap_or(0);
                     let unplayed = report.map(|r| r.unplayed.len()).unwrap_or(0);
-                    status_badge(ui, &format!("Owned {owned}"), t().surface_sunken, t().text_primary);
-                    status_badge(ui, &format!("Unplayed {unplayed}"), t().surface_sunken, t().text_primary);
+                    status_badge(
+                        ui,
+                        &format!("Owned {owned}"),
+                        t().surface_sunken,
+                        t().text_primary,
+                    );
+                    status_badge(
+                        ui,
+                        &format!("Unplayed {unplayed}"),
+                        t().surface_sunken,
+                        t().text_primary,
+                    );
                     if let Some(h) = avg_hltb {
-                        status_badge(ui, &format!("Avg HLTB {}", format_playtime(h)), t().surface_sunken, t().text_primary);
+                        status_badge(
+                            ui,
+                            &format!("Avg HLTB {}", format_playtime(h)),
+                            t().surface_sunken,
+                            t().text_primary,
+                        );
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -6064,7 +6291,8 @@ impl VapourflyApp {
                                 if self.playlist_store_ids.contains(&pf.playlist.id)
                                     && self.playlist_load_selected != pf.playlist.id
                                 {
-                                    self.playlist_dup_id_confirm = Some((pf.playlist.id.clone(), pf));
+                                    self.playlist_dup_id_confirm =
+                                        Some((pf.playlist.id.clone(), pf));
                                 } else {
                                     match self.store_playlist(&pf) {
                                         Ok(()) => {
@@ -6161,7 +6389,11 @@ impl VapourflyApp {
                                 insight_metric(
                                     ui,
                                     "Game count",
-                                    playlist_game_count(&pf.playlist.content, self.playlist_match_report.as_ref()).to_string(),
+                                    playlist_game_count(
+                                        &pf.playlist.content,
+                                        self.playlist_match_report.as_ref(),
+                                    )
+                                    .to_string(),
                                 );
                                 insight_metric(ui, "Creator", pf.created_by.clone());
                                 insight_metric(ui, "Store", "Local".to_string());
@@ -6176,7 +6408,11 @@ impl VapourflyApp {
                                 // Share code / JSON tabs.
                                 let share_tab = &mut self.playlist_share_tab;
                                 ui.horizontal(|ui| {
-                                    ui.selectable_value(share_tab, PlaylistShareTab::ShareCode, "Share Code");
+                                    ui.selectable_value(
+                                        share_tab,
+                                        PlaylistShareTab::ShareCode,
+                                        "Share Code",
+                                    );
                                     ui.selectable_value(share_tab, PlaylistShareTab::Json, "JSON");
                                 });
                                 match self.playlist_share_tab {
@@ -6184,12 +6420,18 @@ impl VapourflyApp {
                                         if secondary_button(ui, "Copy Share Code").clicked() {
                                             match share_code::encode_share_code(pf) {
                                                 Ok(code) => {
-                                                    self.playlist_share_code_output = Some(code.clone());
+                                                    self.playlist_share_code_output =
+                                                        Some(code.clone());
                                                     ui.ctx().copy_text(code);
-                                                    self.success_msg =
-                                                        Some("Share code copied to clipboard (VF1).".into());
+                                                    self.success_msg = Some(
+                                                        "Share code copied to clipboard (VF1)."
+                                                            .into(),
+                                                    );
                                                 }
-                                                Err(e) => self.error = Some(format!("Share code failed: {e}")),
+                                                Err(e) => {
+                                                    self.error =
+                                                        Some(format!("Share code failed: {e}"))
+                                                }
                                             }
                                         }
                                         if let Some(code) = &self.playlist_share_code_output {
@@ -6208,7 +6450,8 @@ impl VapourflyApp {
                                                 .add_filter("JSON", &["json"])
                                                 .save_file()
                                             {
-                                                self.playlist_export_path = path.display().to_string();
+                                                self.playlist_export_path =
+                                                    path.display().to_string();
                                                 match self.export_loaded_playlist() {
                                                     Ok(()) => {
                                                         self.success_msg = Some(format!(
@@ -6217,7 +6460,10 @@ impl VapourflyApp {
                                                             self.playlist_export_path.trim()
                                                         ));
                                                     }
-                                                    Err(e) => self.error = Some(format!("Export failed: {e}")),
+                                                    Err(e) => {
+                                                        self.error =
+                                                            Some(format!("Export failed: {e}"))
+                                                    }
                                                 }
                                             }
                                         }
@@ -6247,7 +6493,9 @@ impl VapourflyApp {
                                 }
                             } else {
                                 ui.label(
-                                    RichText::new("Save a playlist to see details.").size(TS_SM).color(t().text_muted),
+                                    RichText::new("Save a playlist to see details.")
+                                        .size(TS_SM)
+                                        .color(t().text_muted),
                                 );
                             }
                         });
@@ -8682,7 +8930,10 @@ mod tests {
         // Different app_ids → different palette entries (for small ids).
         let a = ARTWORK_PALETTE[(1000u32 as usize) % ARTWORK_PALETTE.len()];
         let b = ARTWORK_PALETTE[(1001u32 as usize) % ARTWORK_PALETTE.len()];
-        assert_ne!(a, b, "adjacent app_ids should get different palette entries");
+        assert_ne!(
+            a, b,
+            "adjacent app_ids should get different palette entries"
+        );
     }
 
     #[test]
@@ -9349,7 +9600,6 @@ mod tests {
     /// submission, only by direct slot injection (which the jobs unit test
     /// does). The integration-level test that previously injected a drifted
     /// result here has been removed as it tested an impossible production path.
-
 
     #[test]
     #[serial]
