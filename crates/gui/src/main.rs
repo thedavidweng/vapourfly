@@ -165,6 +165,31 @@ enum PlaylistChooser {
     Mood,
 }
 
+/// Right-workspace tab in the Playlists master-detail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum PlaylistDetailTab {
+    #[default]
+    Games,
+    Rules,
+    Match,
+}
+
+/// Share sub-tab in the Playlists right workspace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum PlaylistShareTab {
+    #[default]
+    ShareCode,
+    Json,
+}
+
+/// Match sub-tab in the Playlists right workspace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum PlaylistMatchTab {
+    #[default]
+    Owned,
+    Missing,
+}
+
 // ---------------------------------------------------------------------------
 // Pending action for confirmation dialog
 // ---------------------------------------------------------------------------
@@ -307,6 +332,20 @@ struct VapourflyApp {
     playlist_load_selected: String,
     /// Open generator chooser (Dynamic / Mood only).
     playlist_chooser: PlaylistChooser,
+    /// Master-detail: active tab in the right workspace (Games/Rules/Match).
+    playlist_detail_tab: PlaylistDetailTab,
+    /// Master-detail: game search query for Add/Remove in Games tab.
+    playlist_game_search: String,
+    /// Master-detail: show Advanced JSON editor instead of visual rules.
+    playlist_show_advanced_json: bool,
+    /// Master-detail: pending duplicate-ID replacement (for confirm dialog).
+    playlist_dup_id_confirm: Option<(String, PlaylistFile)>,
+    /// Master-detail: show Import sub-route panel.
+    playlist_show_import: bool,
+    /// Master-detail: active share tab (ShareCode / Json).
+    playlist_share_tab: PlaylistShareTab,
+    /// Master-detail: active match sub-tab (Owned / Missing).
+    playlist_match_sub_tab: PlaylistMatchTab,
     dynamic_template: String,
     dynamic_minutes: String,
     dynamic_count: String,
@@ -1256,6 +1295,13 @@ impl VapourflyApp {
             playlist_store_ids_loaded: false,
             playlist_load_selected: String::new(),
             playlist_chooser: PlaylistChooser::None,
+            playlist_detail_tab: PlaylistDetailTab::Games,
+            playlist_game_search: String::new(),
+            playlist_show_advanced_json: false,
+            playlist_dup_id_confirm: None,
+            playlist_show_import: false,
+            playlist_share_tab: PlaylistShareTab::ShareCode,
+            playlist_match_sub_tab: PlaylistMatchTab::Owned,
             dynamic_template: DynamicTemplate::DeckSession.id().into(),
             dynamic_minutes: "90".into(),
             dynamic_count: "25".into(),
@@ -4889,67 +4935,220 @@ impl VapourflyApp {
                     if secondary_button(ui, "Mood").clicked() {
                         self.playlist_chooser = PlaylistChooser::Mood;
                     }
+                    if secondary_button(ui, "Import").clicked() {
+                        self.playlist_show_import = !self.playlist_show_import;
+                    }
                 });
             },
         );
 
-        // -- Load existing ---------------------------------------------------
-        section_card(ui, "Load existing", |ui| {
-            if self.playlist_store_ids.is_empty() {
-                ui.horizontal(|ui| {
+        // -- Duplicate ID Replace confirm dialog ------------------------------
+        if let Some((existing_id, pending_pf)) = self.playlist_dup_id_confirm.clone() {
+            egui::Window::new("Duplicate Playlist ID")
+                .fixed_size([360.0, 160.0])
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
                     ui.label(
-                        RichText::new(
-                            "No playlists in the local store yet. Save, import, or generate one.",
-                        )
+                        RichText::new(format!(
+                            "A playlist with ID '{existing_id}' already exists. Replace it?"
+                        ))
+                        .size(TS_BODY)
+                        .color(t().text_primary),
+                    );
+                    ui.add_space(SP_2);
+                    ui.label(
+                        RichText::new(format!(
+                            "Incoming: '{}' ({})",
+                            pending_pf.playlist.name, pending_pf.playlist.id
+                        ))
                         .size(TS_SM)
-                        .color(t().text_muted),
+                        .color(t().text_secondary),
+                    );
+                    ui.add_space(SP_3);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                        if primary_button(ui, "Replace").clicked() {
+                            match self.store_playlist(&pending_pf) {
+                                Ok(()) => {
+                                    self.adopt_playlist_for_edit(&pending_pf);
+                                    self.match_playlist_against_library_background(
+                                        ui.ctx(),
+                                        &pending_pf,
+                                    );
+                                    self.refresh_playlist_store_ids();
+                                    self.playlist_load_selected = pending_pf.playlist.id.clone();
+                                    self.success_msg = Some(format!(
+                                        "Replaced playlist '{}'",
+                                        pending_pf.playlist.name
+                                    ));
+                                }
+                                Err(e) => self.error = Some(e),
+                            }
+                            self.playlist_dup_id_confirm = None;
+                        }
+                        if ghost_button(ui, "Cancel").clicked() {
+                            self.playlist_dup_id_confirm = None;
+                        }
+                    });
+                });
+        }
+
+        // -- Import sub-route panel ------------------------------------------
+        if self.playlist_show_import {
+            section_card(ui, "Import", |ui| {
+                form_field(ui, "File path", |ui| {
+                    ui.add_sized(
+                        [280.0, 28.0],
+                        egui::TextEdit::singleline(&mut self.playlist_import_path)
+                            .hint_text("/path/to/playlist.json"),
+                    );
+                    if secondary_button(ui, "Import File").clicked()
+                        && !self.playlist_import_path.is_empty()
+                    {
+                        match playlist::import_playlist(Path::new(&self.playlist_import_path)) {
+                            Ok(pf) => {
+                                // Check for duplicate ID.
+                                if self.playlist_store_ids.contains(&pf.playlist.id) {
+                                    self.playlist_dup_id_confirm =
+                                        Some((pf.playlist.id.clone(), pf));
+                                } else if let Err(e) = self.store_playlist(&pf) {
+                                    self.error = Some(e);
+                                } else {
+                                    self.adopt_playlist_for_edit(&pf);
+                                    self.refresh_playlist_store_ids();
+                                    self.playlist_load_selected = pf.playlist.id.clone();
+                                    self.success_msg =
+                                        Some(format!("Imported playlist '{}'", pf.playlist.name));
+                                }
+                            }
+                            Err(e) => self.error = Some(format!("Import failed: {e}")),
+                        }
+                    }
+                });
+                ui.add_space(SP_2);
+                form_field(ui, "Share code", |ui| {
+                    ui.add_sized(
+                        [280.0, 28.0],
+                        egui::TextEdit::singleline(&mut self.playlist_share_code_input)
+                            .hint_text("VF1:…"),
+                    );
+                    if secondary_button(ui, "Import Code").clicked()
+                        && !self.playlist_share_code_input.is_empty()
+                    {
+                        match share_code::decode_share_code(&self.playlist_share_code_input) {
+                            Ok(pf) => {
+                                if self.playlist_store_ids.contains(&pf.playlist.id) {
+                                    self.playlist_dup_id_confirm =
+                                        Some((pf.playlist.id.clone(), pf));
+                                } else if let Err(e) = self.store_playlist(&pf) {
+                                    self.error = Some(e);
+                                } else {
+                                    self.adopt_playlist_for_edit(&pf);
+                                    self.refresh_playlist_store_ids();
+                                    self.playlist_load_selected = pf.playlist.id.clone();
+                                    self.success_msg = Some(format!(
+                                        "Imported share code as '{}'",
+                                        pf.playlist.name
+                                    ));
+                                }
+                            }
+                            Err(e) => self.error = Some(format!("Share code import failed: {e}")),
+                        }
+                    }
+                });
+                ui.add_space(SP_2);
+                if ghost_button(ui, "Close").clicked() {
+                    self.playlist_show_import = false;
+                }
+            });
+        }
+
+        // -- Master-detail layout --------------------------------------------
+        ui.horizontal(|ui| {
+            // Left rail: playlist list.
+            ui.vertical(|ui| {
+                ui.set_min_width(220.0);
+                ui.set_max_width(260.0);
+                ui.label(
+                    RichText::new("Playlists")
+                        .size(TS_SM)
+                        .strong()
+                        .color(t().text_secondary),
+                );
+                ui.add_space(SP_1);
+
+                if self.playlist_store_ids.is_empty() {
+                    ui.label(
+                        RichText::new("No playlists yet.")
+                            .size(TS_SM)
+                            .color(t().text_muted),
                     );
                     if ghost_button(ui, "Refresh list").clicked() {
                         self.refresh_playlist_store_ids();
                     }
-                });
-            } else {
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
-                    egui::ComboBox::from_id_salt("playlist_load_combo")
-                        .selected_text(if self.playlist_load_selected.is_empty() {
-                            "Select playlist…".to_string()
-                        } else {
-                            self.playlist_load_selected.clone()
-                        })
-                        .width(220.0)
-                        .show_ui(ui, |ui| {
-                            for id in &self.playlist_store_ids {
-                                ui.selectable_value(
-                                    &mut self.playlist_load_selected,
-                                    id.clone(),
-                                    id,
-                                );
+                } else {
+                    // "+ New" entry.
+                    let is_new_selected = self.playlist_load_selected.is_empty()
+                        && self.playlist_last_import.is_none();
+                    if ui
+                        .selectable_label(is_new_selected, "+ New playlist")
+                        .clicked()
+                    {
+                        self.playlist_edit_id = String::new();
+                        self.playlist_edit_name = String::new();
+                        self.playlist_edit_description = String::new();
+                        self.playlist_edit_app_ids = String::new();
+                        self.playlist_edit_rules = String::new();
+                        self.playlist_last_import = None;
+                        self.playlist_match_report = None;
+                        self.playlist_load_selected = String::new();
+                        self.playlist_detail_tab = PlaylistDetailTab::Games;
+                    }
+                    ui.separator();
+                    ui.add_space(SP_1);
+
+                    let ids = self.playlist_store_ids.clone();
+                    for id in &ids {
+                        let is_selected = self.playlist_load_selected == *id;
+                        let label = if let Some(pf) = &self.playlist_last_import {
+                            if pf.playlist.id == *id {
+                                format!("{} · {}", id, pf.playlist.name)
+                            } else {
+                                id.clone()
                             }
-                        });
-                    if secondary_button(ui, "Load").clicked() {
-                        let id = self.playlist_load_selected.clone();
-                        if id.is_empty() {
-                            self.error = Some("Select a playlist id to load.".into());
                         } else {
-                            match self.load_playlist_from_store(&id) {
+                            id.clone()
+                        };
+                        if ui.selectable_label(is_selected, &label).clicked() {
+                            match self.load_playlist_from_store(id) {
                                 Ok(()) => {
-                                    self.success_msg =
-                                        Some(format!("Loaded playlist '{id}' from store."));
+                                    self.playlist_load_selected = id.clone();
                                 }
                                 Err(e) => self.error = Some(e),
                             }
                         }
                     }
+                    ui.add_space(SP_2);
                     if ghost_button(ui, "Refresh list").clicked() {
                         self.refresh_playlist_store_ids();
                     }
-                });
-            }
-        });
+                }
+            });
 
-        // -- Create / Edit ---------------------------------------------------
-        section_card(ui, "Create / Edit", |ui| {
+            ui.separator();
+
+            // Right workspace.
+            ui.vertical(|ui| {
+                self.render_playlist_workspace(ui);
+            });
+        });
+    }
+
+    /// Render the right workspace of the Playlists master-detail.
+    fn render_playlist_workspace(&mut self, ui: &mut egui::Ui) {
+        // Hero: ID, Name, Description fields + Save.
+        section_card(ui, "Playlist", |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_2);
                 form_field(ui, "ID", |ui| {
@@ -4974,159 +5173,88 @@ impl VapourflyApp {
                         .hint_text("Optional"),
                 );
             });
-            ui.add_space(SP_2);
-            form_field(ui, "App IDs", |ui| {
-                ui.add_sized(
-                    [360.0, 28.0],
-                    egui::TextEdit::singleline(&mut self.playlist_edit_app_ids)
-                        .hint_text("730, 440, …"),
-                );
-            });
-            ui.label(
-                RichText::new("Comma-separated Steam AppIDs for manual playlists.")
-                    .size(TS_XS)
-                    .color(t().text_muted),
-            );
-            ui.add_space(SP_2);
-            form_field(ui, "Rules JSON", |ui| {
-                ui.add_sized(
-                    [360.0, 72.0],
-                    egui::TextEdit::multiline(&mut self.playlist_edit_rules)
-                        .code_editor()
-                        .desired_width(360.0)
-                        .hint_text(r#"[{\"op\":\"Installed\"}]"#),
-                );
-            });
-            ui.label(
-                RichText::new(
-                    "Optional. When provided, App IDs are ignored and a rule-based playlist is created.",
-                )
-                .size(TS_XS)
-                .color(t().text_muted),
-            );
             ui.add_space(SP_3);
-            if primary_button(ui, "Save Playlist").clicked() {
-                match self.build_playlist_from_edit_fields() {
-                    Ok(pf) => match self.store_playlist(&pf) {
-                        Ok(()) => {
-                            self.playlist_last_import = Some(pf.clone());
-                            self.match_playlist_against_library_background(ui.ctx(), &pf);
-                            self.refresh_playlist_store_ids();
-                            self.playlist_load_selected = pf.playlist.id.clone();
-                            self.success_msg =
-                                Some(format!("Saved playlist '{}'", pf.playlist.name));
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                if primary_button(ui, "Save Playlist").clicked() {
+                    match self.build_playlist_from_edit_fields() {
+                        Ok(pf) => {
+                            // Check for duplicate ID.
+                            if self.playlist_store_ids.contains(&pf.playlist.id)
+                                && self.playlist_load_selected != pf.playlist.id
+                            {
+                                self.playlist_dup_id_confirm = Some((pf.playlist.id.clone(), pf));
+                            } else {
+                                match self.store_playlist(&pf) {
+                                    Ok(()) => {
+                                        self.playlist_last_import = Some(pf.clone());
+                                        self.match_playlist_against_library_background(
+                                            ui.ctx(),
+                                            &pf,
+                                        );
+                                        self.refresh_playlist_store_ids();
+                                        self.playlist_load_selected = pf.playlist.id.clone();
+                                        self.success_msg =
+                                            Some(format!("Saved playlist '{}'", pf.playlist.name));
+                                    }
+                                    Err(e) => self.error = Some(e),
+                                }
+                            }
                         }
                         Err(e) => self.error = Some(e),
-                    },
-                    Err(e) => self.error = Some(e),
-                }
-            }
-        });
-
-        // -- Import ----------------------------------------------------------
-        section_card(ui, "Import", |ui| {
-            form_field(ui, "File path", |ui| {
-                ui.add_sized(
-                    [280.0, 28.0],
-                    egui::TextEdit::singleline(&mut self.playlist_import_path)
-                        .hint_text("/path/to/playlist.json"),
-                );
-                if secondary_button(ui, "Import File").clicked()
-                    && !self.playlist_import_path.is_empty()
-                {
-                    match playlist::import_playlist(Path::new(&self.playlist_import_path)) {
-                        Ok(pf) => {
-                            if let Err(e) = self.store_playlist(&pf) {
-                                self.error = Some(e);
-                            } else {
-                                self.adopt_playlist_for_edit(&pf);
-                                self.refresh_playlist_store_ids();
-                                self.playlist_load_selected = pf.playlist.id.clone();
-                                self.success_msg =
-                                    Some(format!("Imported playlist '{}'", pf.playlist.name));
-                            }
-                        }
-                        Err(e) => self.error = Some(format!("Import failed: {e}")),
                     }
                 }
-            });
-            ui.add_space(SP_2);
-            form_field(ui, "Share code", |ui| {
-                ui.add_sized(
-                    [280.0, 28.0],
-                    egui::TextEdit::singleline(&mut self.playlist_share_code_input)
-                        .hint_text("VF1:…"),
-                );
-                if secondary_button(ui, "Import Code").clicked()
-                    && !self.playlist_share_code_input.is_empty()
-                {
-                    match share_code::decode_share_code(&self.playlist_share_code_input) {
-                        Ok(pf) => {
-                            if let Err(e) = self.store_playlist(&pf) {
-                                self.error = Some(e);
-                            } else {
-                                self.adopt_playlist_for_edit(&pf);
-                                self.refresh_playlist_store_ids();
-                                self.playlist_load_selected = pf.playlist.id.clone();
-                                self.success_msg =
-                                    Some(format!("Imported share code as '{}'", pf.playlist.name));
-                            }
-                        }
-                        Err(e) => self.error = Some(format!("Share code import failed: {e}")),
-                    }
-                }
-            });
-        });
-
-        // -- Loaded playlist actions + match ---------------------------------
-        if let Some(pf) = self.playlist_last_import.clone() {
-            section_card(ui, &format!("Loaded: {}", pf.playlist.name), |ui| {
-                stat_inline(ui, "ID", &pf.playlist.id);
-                if !pf.playlist.description.is_empty() {
-                    stat_inline(ui, "Description", &pf.playlist.description);
-                }
-                match &pf.playlist.content {
-                    PlaylistContent::Manual { app_ids } => {
-                        stat_inline(ui, "Type", &format!("Manual · {} AppIDs", app_ids.len()));
-                    }
-                    PlaylistContent::Rules { rules } => {
-                        stat_inline(ui, "Type", &format!("Rules · {} rules", rules.len()));
-                    }
-                }
-
-                ui.add_space(SP_3);
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
-                    if secondary_button(ui, "Copy Share Code").clicked() {
-                        match share_code::encode_share_code(&pf) {
-                            Ok(code) => {
-                                self.playlist_share_code_output = Some(code.clone());
-                                ui.ctx().copy_text(code);
-                                self.success_msg =
-                                    Some("Share code copied to clipboard (VF1).".into());
-                            }
-                            Err(e) => self.error = Some(format!("Share code failed: {e}")),
-                        }
-                    }
-                    if secondary_button(ui, "Export…").clicked() {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .set_file_name(format!("{}.json", pf.playlist.id))
-                            .add_filter("JSON", &["json"])
-                            .save_file()
-                        {
-                            self.playlist_export_path = path.display().to_string();
-                            match self.export_loaded_playlist() {
-                                Ok(()) => {
-                                    self.success_msg = Some(format!(
-                                        "Exported playlist '{}' to {}",
-                                        pf.playlist.name,
-                                        self.playlist_export_path.trim()
-                                    ));
+                // Share code / JSON tabs.
+                ui.separator();
+                let share_tab = &mut self.playlist_share_tab;
+                ui.selectable_value(share_tab, PlaylistShareTab::ShareCode, "Share Code");
+                ui.selectable_value(share_tab, PlaylistShareTab::Json, "JSON");
+                if let Some(pf) = &self.playlist_last_import {
+                    match self.playlist_share_tab {
+                        PlaylistShareTab::ShareCode => {
+                            if secondary_button(ui, "Copy Share Code").clicked() {
+                                match share_code::encode_share_code(pf) {
+                                    Ok(code) => {
+                                        self.playlist_share_code_output = Some(code.clone());
+                                        ui.ctx().copy_text(code);
+                                        self.success_msg =
+                                            Some("Share code copied to clipboard (VF1).".into());
+                                    }
+                                    Err(e) => self.error = Some(format!("Share code failed: {e}")),
                                 }
-                                Err(e) => self.error = Some(format!("Export failed: {e}")),
+                            }
+                            if let Some(code) = &self.playlist_share_code_output {
+                                ui.label(
+                                    RichText::new(format!("VF1: {code}"))
+                                        .size(TS_SM)
+                                        .color(t().text_muted)
+                                        .monospace(),
+                                );
+                            }
+                        }
+                        PlaylistShareTab::Json => {
+                            if secondary_button(ui, "Export…").clicked() {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .set_file_name(format!("{}.json", pf.playlist.id))
+                                    .add_filter("JSON", &["json"])
+                                    .save_file()
+                                {
+                                    self.playlist_export_path = path.display().to_string();
+                                    match self.export_loaded_playlist() {
+                                        Ok(()) => {
+                                            self.success_msg = Some(format!(
+                                                "Exported playlist '{}' to {}",
+                                                pf.playlist.name,
+                                                self.playlist_export_path.trim()
+                                            ));
+                                        }
+                                        Err(e) => self.error = Some(format!("Export failed: {e}")),
+                                    }
+                                }
                             }
                         }
                     }
+                    // Sync button.
                     let busy = self.write_loading || self.dry_run_loading;
                     if ui
                         .add_enabled(
@@ -5144,114 +5272,396 @@ impl VapourflyApp {
                     {
                         self.start_dry_run(PendingAction::PlaylistSync(pf.clone()));
                     }
-                });
-                if let Some(code) = &self.playlist_share_code_output {
-                    ui.add_space(SP_2);
+                    if self.dry_run_loading {
+                        ui.spinner();
+                    }
+                }
+            });
+        });
+
+        // Tabs: Games / Rules / Match.
+        ui.add_space(SP_3);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(SP_1, SP_1);
+            let tab = &mut self.playlist_detail_tab;
+            ui.selectable_value(tab, PlaylistDetailTab::Games, "Games");
+            ui.selectable_value(tab, PlaylistDetailTab::Rules, "Rules");
+            ui.selectable_value(tab, PlaylistDetailTab::Match, "Match");
+        });
+        ui.separator();
+        ui.add_space(SP_2);
+
+        match self.playlist_detail_tab {
+            PlaylistDetailTab::Games => self.render_playlist_games_tab(ui),
+            PlaylistDetailTab::Rules => self.render_playlist_rules_tab(ui),
+            PlaylistDetailTab::Match => self.render_playlist_match_tab(ui),
+        }
+    }
+
+    /// Games tab: App IDs CSV editor + game search Add/Remove.
+    fn render_playlist_games_tab(&mut self, ui: &mut egui::Ui) {
+        section_card(ui, "App IDs", |ui| {
+            form_field(ui, "App IDs", |ui| {
+                ui.add_sized(
+                    [360.0, 28.0],
+                    egui::TextEdit::singleline(&mut self.playlist_edit_app_ids)
+                        .hint_text("730, 440, …"),
+                );
+            });
+            ui.label(
+                RichText::new("Comma-separated Steam AppIDs for manual playlists.")
+                    .size(TS_XS)
+                    .color(t().text_muted),
+            );
+        });
+
+        // Game search Add/Remove.
+        ui.add_space(SP_3);
+        section_card(ui, "Search & Add", |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                ui.label(
+                    RichText::new("Search:")
+                        .size(TS_SM)
+                        .color(t().text_secondary),
+                );
+                ui.add_sized(
+                    [200.0, 28.0],
+                    egui::TextEdit::singleline(&mut self.playlist_game_search)
+                        .hint_text("game name or AppID"),
+                );
+            });
+            ui.add_space(SP_2);
+
+            // Parse current App IDs into a set.
+            let mut current_ids: std::collections::HashSet<u32> = self
+                .playlist_edit_app_ids
+                .split(',')
+                .filter_map(|s| s.trim().parse::<u32>().ok())
+                .collect();
+
+            // Show matching games from library.
+            if let Some(scan) = &self.scan_result {
+                let q = self.playlist_game_search.to_lowercase();
+                let matches: Vec<&Game> = scan
+                    .games
+                    .iter()
+                    .filter(|g| {
+                        q.is_empty()
+                            || g.name.to_lowercase().contains(&q)
+                            || g.app_id.to_string().contains(&q)
+                    })
+                    .take(12)
+                    .collect();
+                if matches.is_empty() && !q.is_empty() {
                     ui.label(
-                        RichText::new(format!("Share code: {code}"))
+                        RichText::new("No matching games in library.")
                             .size(TS_SM)
-                            .color(t().text_muted)
-                            .monospace(),
+                            .color(t().text_muted),
                     );
                 }
-                if self.dry_run_loading {
-                    ui.add_space(SP_2);
+                for game in matches {
+                    let already = current_ids.contains(&game.app_id);
                     ui.horizontal(|ui| {
-                        ui.spinner();
+                        ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_1);
+                        app_id_tag(ui, game.app_id);
                         ui.label(
-                            RichText::new("Preparing dry-run diff")
+                            RichText::new(&game.name)
                                 .size(TS_SM)
-                                .color(t().text_secondary),
+                                .color(t().text_primary),
                         );
+                        if already {
+                            if ghost_button(ui, "Remove").clicked() {
+                                current_ids.remove(&game.app_id);
+                                self.playlist_edit_app_ids = current_ids
+                                    .iter()
+                                    .map(|id| id.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                            }
+                            status_badge(ui, "added", t().accent_soft, t().accent_text);
+                        } else if secondary_button(ui, "Add").clicked() {
+                            current_ids.insert(game.app_id);
+                            self.playlist_edit_app_ids = current_ids
+                                .iter()
+                                .map(|id| id.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                        }
                     });
                 }
+            } else {
+                ui.label(
+                    RichText::new("Scan your library to search for games to add.")
+                        .size(TS_SM)
+                        .color(t().text_muted),
+                );
+            }
+        });
+    }
+
+    /// Rules tab: visual rule editor + Advanced JSON toggle.
+    fn render_playlist_rules_tab(&mut self, ui: &mut egui::Ui) {
+        section_card(ui, "Rules", |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                ui.label(
+                    RichText::new(if self.playlist_show_advanced_json {
+                        "Advanced JSON"
+                    } else {
+                        "Visual editor"
+                    })
+                    .size(TS_SM)
+                    .strong()
+                    .color(t().text_secondary),
+                );
+                if ghost_button(ui, "Toggle Advanced JSON").clicked() {
+                    self.playlist_show_advanced_json = !self.playlist_show_advanced_json;
+                }
+            });
+            ui.add_space(SP_2);
+
+            if self.playlist_show_advanced_json {
+                // Advanced JSON editor.
+                form_field(ui, "Rules JSON", |ui| {
+                    ui.add_sized(
+                        [360.0, 120.0],
+                        egui::TextEdit::multiline(&mut self.playlist_edit_rules)
+                            .code_editor()
+                            .desired_width(360.0)
+                            .hint_text(r#"[{"op":"Installed"}]"#),
+                    );
+                });
                 ui.label(
                     RichText::new(
-                        "Sync always shows a dry-run diff before writing Steam cloud storage.",
+                        "When provided, App IDs are ignored and a rule-based playlist is created.",
                     )
                     .size(TS_XS)
                     .color(t().text_muted),
                 );
-            });
-        }
-
-        if let Some(report) = &self.playlist_match_report {
-            section_card(ui, "Match report", |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
-                    metric_pill(ui, "Owned", report.owned.len().to_string());
-                    metric_pill(ui, "Missing", report.missing.len().to_string());
-                    metric_pill(ui, "Played", report.played.len().to_string());
-                    metric_pill(ui, "Unplayed", report.unplayed.len().to_string());
-                    metric_pill(ui, "Hidden", report.hidden.len().to_string());
-                    metric_pill(ui, "Junk", report.junk.len().to_string());
-                });
-                if let Some(price) = &report.completion_price {
-                    ui.add_space(SP_2);
-                    ui.label(
-                        RichText::new(format!("Completion price: {}", price.format()))
-                            .size(TS_BODY)
-                            .color(t().text_secondary),
-                    );
-                    if let Some(coverage) = &report.price_coverage
-                        && let Some(ratio) = coverage.ratio()
-                        && ratio < 1.0
-                    {
-                        ui.label(
-                            RichText::new(format!(
-                                "Price coverage: {}/{} confirmed non-free priced ({:.0}%), {} free, {} unknown",
-                                coverage.confirmed_non_free_priced,
-                                coverage.confirmed_non_free(),
-                                ratio * 100.0,
-                                coverage.confirmed_free,
-                                coverage.unknown
-                            ))
-                            .size(TS_SM)
-                            .color(t().text_muted),
-                        );
-                    }
-                } else if report.missing.is_empty() {
-                    ui.add_space(SP_2);
-                    ui.label(
-                        RichText::new("No missing entries — library is complete.")
-                            .size(TS_SM)
-                            .color(t().text_muted),
-                    );
-                } else {
-                    ui.add_space(SP_2);
+            } else {
+                // Visual rule editor: show current rules as badges + quick-add.
+                if self.playlist_edit_rules.is_empty() {
                     ui.label(
                         RichText::new(
-                            "Completion price unavailable — run cache refresh --source steam-store when online.",
+                            "No rules yet. Add quick rules below or toggle Advanced JSON.",
                         )
                         .size(TS_SM)
                         .color(t().text_muted),
                     );
-                }
-
-                // Preview matched owned games (names when library is scanned).
-                if !report.owned.is_empty() {
-                    let owned_ids = report.owned.clone();
-                    ui.add_space(SP_3);
-                    ui.label(
-                        RichText::new("Owned preview")
-                            .size(TS_SM)
-                            .strong()
-                            .color(t().text_primary),
-                    );
-                    ui.add_space(SP_1);
-                    let names = self.playlist_owned_preview_labels(&owned_ids);
-                    for line in names {
-                        ui.label(RichText::new(line).size(TS_SM).color(t().text_secondary));
+                } else {
+                    // Parse and display rules.
+                    match serde_json::from_str::<Vec<PlaylistRule>>(&self.playlist_edit_rules) {
+                        Ok(rules) => {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = egui::vec2(SP_1, SP_1);
+                                for rule in &rules {
+                                    let label = match rule {
+                                        PlaylistRule::Installed => "Installed".into(),
+                                        PlaylistRule::NotJunk => "NotJunk".into(),
+                                        PlaylistRule::NotHidden => "NotHidden".into(),
+                                        PlaylistRule::ControllerSupportFull => {
+                                            "ControllerSupportFull".into()
+                                        }
+                                        PlaylistRule::ProtonAtLeast { tier } => {
+                                            format!("ProtonAtLeast({tier:?})")
+                                        }
+                                        PlaylistRule::HltbMaxMinutes { minutes } => {
+                                            format!("HltbMaxMinutes({minutes})")
+                                        }
+                                        PlaylistRule::PlaytimeBetween { min, max } => {
+                                            format!("PlaytimeBetween({min}-{max})")
+                                        }
+                                        PlaylistRule::RatingAtLeast { rating_0_5 } => {
+                                            format!("RatingAtLeast({rating_0_5})")
+                                        }
+                                        PlaylistRule::HasGenre { genre } => {
+                                            format!("HasGenre({genre})")
+                                        }
+                                        PlaylistRule::HasTag { tag } => {
+                                            format!("HasTag({tag})")
+                                        }
+                                        PlaylistRule::And(_) => "And(…)".into(),
+                                        PlaylistRule::Or(_) => "Or(…)".into(),
+                                        PlaylistRule::Not(_) => "Not(…)".into(),
+                                    };
+                                    status_badge(ui, &label, t().surface_muted, t().text_secondary);
+                                }
+                            });
+                        }
+                        Err(_) => {
+                            ui.label(
+                                RichText::new("Invalid JSON. Toggle Advanced JSON to edit.")
+                                    .size(TS_SM)
+                                    .color(t().error),
+                            );
+                        }
                     }
                 }
+                // Quick-add rule buttons.
+                ui.add_space(SP_2);
+                ui.label(
+                    RichText::new("Quick add:")
+                        .size(TS_SM)
+                        .color(t().text_secondary),
+                );
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(SP_1, SP_1);
+                    let quick_rules: &[(&str, PlaylistRule)] = &[
+                        ("Installed", PlaylistRule::Installed),
+                        ("NotHidden", PlaylistRule::NotHidden),
+                        ("NotJunk", PlaylistRule::NotJunk),
+                        ("ControllerSupportFull", PlaylistRule::ControllerSupportFull),
+                    ];
+                    for (label, rule) in quick_rules {
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new(*label).size(TS_XS))
+                                    .fill(t().surface)
+                                    .stroke(egui::Stroke::new(1.0, t().border_soft))
+                                    .corner_radius(CORNER_PILL),
+                            )
+                            .clicked()
+                        {
+                            // Add rule to JSON.
+                            let mut rules: Vec<PlaylistRule> =
+                                serde_json::from_str(&self.playlist_edit_rules).unwrap_or_default();
+                            rules.push(rule.clone());
+                            self.playlist_edit_rules =
+                                serde_json::to_string_pretty(&rules).unwrap_or_default();
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    /// Match tab: Owned/Missing tabs + completion price + match summary.
+    fn render_playlist_match_tab(&mut self, ui: &mut egui::Ui) {
+        if self.playlist_match_loading {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(
+                    RichText::new("Matching against library…")
+                        .size(TS_SM)
+                        .color(t().text_secondary),
+                );
             });
-        } else if self.playlist_last_import.is_none() {
+            return;
+        }
+
+        let Some(report) = &self.playlist_match_report else {
             empty_state(
                 ui,
-                "\u{1F3B5}",
-                "No playlist loaded",
-                "Create and Save, Load existing, Import a file or VF1 share code, or open Dynamic / Mood.",
+                "\u{1F50D}",
+                "No match report",
+                "Save or load a playlist to see the match report.",
             );
+            return;
+        };
+
+        // Match summary metrics.
+        section_card(ui, "Match summary", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                metric_pill(ui, "Owned", report.owned.len().to_string());
+                metric_pill(ui, "Missing", report.missing.len().to_string());
+                metric_pill(ui, "Played", report.played.len().to_string());
+                metric_pill(ui, "Unplayed", report.unplayed.len().to_string());
+                metric_pill(ui, "Hidden", report.hidden.len().to_string());
+                metric_pill(ui, "Junk", report.junk.len().to_string());
+            });
+
+            // Completion price.
+            if let Some(price) = &report.completion_price {
+                ui.add_space(SP_2);
+                ui.label(
+                    RichText::new(format!("Completion price: {}", price.format()))
+                        .size(TS_BODY)
+                        .color(t().text_secondary),
+                );
+                if let Some(coverage) = &report.price_coverage
+                    && let Some(ratio) = coverage.ratio()
+                    && ratio < 1.0
+                {
+                    ui.label(
+                        RichText::new(format!(
+                            "Price coverage: {}/{} confirmed non-free priced ({:.0}%), {} free, {} unknown",
+                            coverage.confirmed_non_free_priced,
+                            coverage.confirmed_non_free(),
+                            ratio * 100.0,
+                            coverage.confirmed_free,
+                            coverage.unknown
+                        ))
+                        .size(TS_SM)
+                        .color(t().text_muted),
+                    );
+                }
+            } else if report.missing.is_empty() {
+                ui.add_space(SP_2);
+                ui.label(
+                    RichText::new("No missing entries — library is complete.")
+                        .size(TS_SM)
+                        .color(t().text_muted),
+                );
+            } else {
+                ui.add_space(SP_2);
+                ui.label(
+                    RichText::new(
+                        "Completion price unavailable — run cache refresh --source steam-store when online.",
+                    )
+                    .size(TS_SM)
+                    .color(t().text_muted),
+                );
+            }
+        });
+
+        // Owned / Missing sub-tabs.
+        ui.add_space(SP_3);
+        let owned_ids = report.owned.clone();
+        let missing_ids = report.missing.clone();
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(SP_1, SP_1);
+            ui.selectable_value(
+                &mut self.playlist_match_sub_tab,
+                PlaylistMatchTab::Owned,
+                "Owned",
+            );
+            ui.selectable_value(
+                &mut self.playlist_match_sub_tab,
+                PlaylistMatchTab::Missing,
+                "Missing",
+            );
+        });
+        ui.separator();
+        ui.add_space(SP_2);
+
+        let ids = match self.playlist_match_sub_tab {
+            PlaylistMatchTab::Owned => &owned_ids,
+            PlaylistMatchTab::Missing => &missing_ids,
+        };
+
+        if ids.is_empty() {
+            ui.label(
+                RichText::new(match self.playlist_match_sub_tab {
+                    PlaylistMatchTab::Owned => "No owned entries.",
+                    PlaylistMatchTab::Missing => "No missing entries — library is complete.",
+                })
+                .size(TS_SM)
+                .color(t().text_muted),
+            );
+        } else {
+            let names = self.playlist_owned_preview_labels(ids);
+            for line in names {
+                ui.label(RichText::new(line).size(TS_SM).color(t().text_secondary));
+            }
+            if ids.len() > 12 {
+                ui.label(
+                    RichText::new(format!("… and {} more", ids.len() - 12))
+                        .size(TS_XS)
+                        .color(t().text_muted),
+                );
+            }
         }
     }
 
