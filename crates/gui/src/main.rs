@@ -81,30 +81,30 @@ impl View {
 enum QuickView {
     #[default]
     All,
-    Installed,
-    Unplayed,
-    Hidden,
-    Junk,
+    Cozy,
+    StoryRich,
+    GreatOnDeck,
+    ShortSessions,
 }
 
 impl QuickView {
     fn label(self) -> &'static str {
         match self {
             Self::All => "All",
-            Self::Installed => "Installed",
-            Self::Unplayed => "Unplayed",
-            Self::Hidden => "Hidden",
-            Self::Junk => "Junk",
+            Self::Cozy => "Cozy",
+            Self::StoryRich => "Story-rich",
+            Self::GreatOnDeck => "Great on Deck",
+            Self::ShortSessions => "Short sessions",
         }
     }
 
     fn all() -> [Self; 5] {
         [
             Self::All,
-            Self::Installed,
-            Self::Unplayed,
-            Self::Hidden,
-            Self::Junk,
+            Self::Cozy,
+            Self::StoryRich,
+            Self::GreatOnDeck,
+            Self::ShortSessions,
         ]
     }
 }
@@ -251,8 +251,8 @@ struct VapourflyApp {
     filter_unplayed_only: bool,
     /// Quick view selector for the Library grid.
     library_quick_view: QuickView,
-    /// Current pagination page (0-indexed).
-    library_page: usize,
+    /// "Load more" pagination: how many games to show (incremented by 48).
+    library_visible_count: usize,
     /// Selected game card AppID (enables Recommend without hover).
     library_selected_app_id: Option<u32>,
     /// Junk is a Library panel (not a sidebar destination).
@@ -437,11 +437,14 @@ struct LibraryFilters {
     installed_only: bool,
     not_hidden: bool,
     not_junk: bool,
+    is_hidden_only: bool,
+    is_junk_only: bool,
     search: String,
     genre: String,
     proton_tier: Option<ProtonTier>,
     deck_compatible: bool,
     unplayed_only: bool,
+    hltb_max_minutes: Option<u32>,
 }
 
 /// Whether a single game matches the Library filters and search query.
@@ -453,6 +456,12 @@ fn game_matches_library_filters(game: &Game, filters: &LibraryFilters) -> bool {
         return false;
     }
     if filters.not_junk && game.is_junk {
+        return false;
+    }
+    if filters.is_hidden_only && !game.is_hidden {
+        return false;
+    }
+    if filters.is_junk_only && !game.is_junk {
         return false;
     }
     if filters.unplayed_only && game.playtime_minutes.unwrap_or(0) > 0 {
@@ -502,6 +511,17 @@ fn game_matches_library_filters(game: &Game, filters: &LibraryFilters) -> bool {
             .as_ref()
             .is_some_and(|p| p.controller_support == ControllerSupport::Full);
         if !has_deck {
+            return false;
+        }
+    }
+    if let Some(max_minutes) = filters.hltb_max_minutes {
+        let fits = game
+            .igdb
+            .as_ref()
+            .and_then(|i| i.time_to_beat.as_ref())
+            .and_then(|t| t.normally_seconds)
+            .is_some_and(|secs| secs / 60 <= max_minutes);
+        if !fits {
             return false;
         }
     }
@@ -1162,7 +1182,7 @@ impl VapourflyApp {
             filter_deck_compatible: false,
             filter_unplayed_only: false,
             library_quick_view: QuickView::All,
-            library_page: 0,
+            library_visible_count: 48,
             library_selected_app_id: None,
             show_junk_panel: false,
 
@@ -1933,15 +1953,24 @@ impl VapourflyApp {
             None => return Vec::new(),
         };
 
+        let hltb_max = if self.library_quick_view == QuickView::ShortSessions {
+            Some(120)
+        } else {
+            None
+        };
+
         let filters = LibraryFilters {
             installed_only: self.filter_installed_only,
             not_hidden: self.filter_not_hidden,
             not_junk: self.filter_not_junk,
+            is_hidden_only: false,
+            is_junk_only: false,
             search: self.search_query.clone(),
             genre: self.filter_genre.clone(),
             proton_tier: self.filter_proton_tier,
             deck_compatible: self.filter_deck_compatible,
             unplayed_only: self.filter_unplayed_only,
+            hltb_max_minutes: hltb_max,
         };
         project_library_games(games, &filters)
     }
@@ -3109,8 +3138,29 @@ impl VapourflyApp {
 
         ui.add_space(SP_3);
 
+        // Core filters (always visible).
+        section_card(ui, "Core Filters", |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_2);
+                let prev_installed = self.filter_installed_only;
+                let prev_hidden = self.filter_not_hidden;
+                let prev_junk = self.filter_not_junk;
+                filter_toggle(ui, &mut self.filter_installed_only, "Installed only");
+                filter_toggle(ui, &mut self.filter_not_hidden, "Not hidden");
+                filter_toggle(ui, &mut self.filter_not_junk, "Not junk");
+                if prev_installed != self.filter_installed_only
+                    || prev_hidden != self.filter_not_hidden
+                    || prev_junk != self.filter_not_junk
+                {
+                    self.library_visible_count = 48;
+                }
+            });
+        });
+
+        ui.add_space(SP_3);
+
         // Search & advanced filters card.
-        section_card(ui, "Search & Filter", |ui| {
+        section_card(ui, "Search & Advanced Filters", |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
                 ui.label(
@@ -3118,16 +3168,24 @@ impl VapourflyApp {
                         .size(TS_SM)
                         .color(t().text_secondary),
                 );
+                let prev_search = self.search_query.clone();
                 ui.add_sized(
                     [260.0, 30.0],
                     egui::TextEdit::singleline(&mut self.search_query).hint_text("Title or AppID"),
                 );
+                if prev_search != self.search_query {
+                    self.library_visible_count = 48;
+                }
                 ui.separator();
                 ui.label(RichText::new("Genre").size(TS_SM).color(t().text_secondary));
+                let prev_genre = self.filter_genre.clone();
                 ui.add_sized(
                     [140.0, 30.0],
                     egui::TextEdit::singleline(&mut self.filter_genre).hint_text("e.g. Cozy"),
                 );
+                if prev_genre != self.filter_genre {
+                    self.library_visible_count = 48;
+                }
                 ui.separator();
                 // ProtonDB tier dropdown.
                 ui.label(
@@ -3135,6 +3193,7 @@ impl VapourflyApp {
                         .size(TS_SM)
                         .color(t().text_secondary),
                 );
+                let prev_tier = self.filter_proton_tier;
                 let tier_label = match self.filter_proton_tier {
                     None => "Any".to_string(),
                     Some(t) => proton_tier_label(t).to_string(),
@@ -3162,9 +3221,19 @@ impl VapourflyApp {
                             }
                         }
                     });
+                if prev_tier != self.filter_proton_tier {
+                    self.library_visible_count = 48;
+                }
                 ui.separator();
+                let prev_deck = self.filter_deck_compatible;
+                let prev_unplayed = self.filter_unplayed_only;
                 filter_toggle(ui, &mut self.filter_deck_compatible, "Deck");
                 filter_toggle(ui, &mut self.filter_unplayed_only, "Unplayed");
+                if prev_deck != self.filter_deck_compatible
+                    || prev_unplayed != self.filter_unplayed_only
+                {
+                    self.library_visible_count = 48;
+                }
             });
         });
 
@@ -3201,55 +3270,10 @@ impl VapourflyApp {
                     return;
                 }
 
-                // Pagination.
-                const PAGE_SIZE: usize = 60;
-                let total_pages = games.len().div_ceil(PAGE_SIZE);
-                if self.library_page >= total_pages {
-                    self.library_page = 0;
-                }
-                let start = self.library_page * PAGE_SIZE;
-                let end = (start + PAGE_SIZE).min(games.len());
-                let page_games = &games[start..end];
-
-                // Pagination controls.
-                if total_pages > 1 {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
-                        let prev_enabled = self.library_page > 0;
-                        let next_enabled = self.library_page + 1 < total_pages;
-                        if ui
-                            .add_enabled(
-                                prev_enabled,
-                                egui::Button::new(RichText::new("‹ Prev").size(TS_SM)),
-                            )
-                            .clicked()
-                        {
-                            self.library_page -= 1;
-                        }
-                        ui.label(
-                            RichText::new(format!(
-                                "Page {} of {} ({}–{} of {})",
-                                self.library_page + 1,
-                                total_pages,
-                                start + 1,
-                                end,
-                                games.len(),
-                            ))
-                            .size(TS_SM)
-                            .color(t().text_secondary),
-                        );
-                        if ui
-                            .add_enabled(
-                                next_enabled,
-                                egui::Button::new(RichText::new("Next ›").size(TS_SM)),
-                            )
-                            .clicked()
-                        {
-                            self.library_page += 1;
-                        }
-                    });
-                    ui.add_space(SP_2);
-                }
+                // "Load more" pagination: show 48 initially, +48 each click.
+                const LOAD_INCREMENT: usize = 48;
+                let visible = self.library_visible_count.min(games.len());
+                let page_games = &games[..visible];
 
                 ui.with_layout(
                     egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),
@@ -3259,6 +3283,33 @@ impl VapourflyApp {
                             self.render_game_card(ui, game);
                         }
                     },
+                );
+
+                // Load more button + count.
+                if visible < games.len() {
+                    ui.add_space(SP_2);
+                    ui.horizontal(|ui| {
+                        let remaining = games.len() - visible;
+                        if ui
+                            .button(
+                                RichText::new(format!(
+                                    "Load more (+{} of {} remaining)",
+                                    LOAD_INCREMENT.min(remaining),
+                                    remaining
+                                ))
+                                .size(TS_SM),
+                            )
+                            .clicked()
+                        {
+                            self.library_visible_count += LOAD_INCREMENT;
+                        }
+                    });
+                }
+                ui.add_space(SP_1);
+                ui.label(
+                    RichText::new(format!("Showing {} of {}", visible, games.len()))
+                        .size(TS_XS)
+                        .color(t().text_muted),
                 );
             });
 
@@ -3301,42 +3352,41 @@ impl VapourflyApp {
     /// Apply a quick-view preset by setting/clearing the filter toggles.
     fn apply_quick_view(&mut self, qv: QuickView) {
         self.library_quick_view = qv;
-        self.library_page = 0;
+        self.library_visible_count = 48;
+        // Core filters are always shown and user-controllable; quick views
+        // set the advanced filters on top of whatever core filters are active.
         match qv {
             QuickView::All => {
-                self.filter_installed_only = false;
-                self.filter_not_hidden = false;
-                self.filter_not_junk = false;
+                self.filter_genre.clear();
+                self.filter_proton_tier = None;
+                self.filter_deck_compatible = false;
                 self.filter_unplayed_only = false;
             }
-            QuickView::Installed => {
-                self.filter_installed_only = true;
-                self.filter_not_hidden = false;
-                self.filter_not_junk = false;
+            QuickView::Cozy => {
+                self.filter_genre = "Cozy".into();
+                self.filter_proton_tier = None;
+                self.filter_deck_compatible = false;
                 self.filter_unplayed_only = false;
             }
-            QuickView::Unplayed => {
-                self.filter_installed_only = false;
-                self.filter_not_hidden = false;
-                self.filter_not_junk = false;
-                self.filter_unplayed_only = true;
-            }
-            QuickView::Hidden => {
-                self.filter_installed_only = false;
-                self.filter_not_hidden = false;
-                self.filter_not_junk = true;
+            QuickView::StoryRich => {
+                self.filter_genre = "Story Rich".into();
+                self.filter_proton_tier = None;
+                self.filter_deck_compatible = false;
                 self.filter_unplayed_only = false;
-                // Invert: show ONLY hidden. We use not_hidden=false (include hidden)
-                // and not_junk=true (exclude junk). The quick view is a starting
-                // point; users can refine with search.
             }
-            QuickView::Junk => {
-                self.filter_installed_only = false;
-                self.filter_not_hidden = false;
-                self.filter_not_junk = false;
+            QuickView::GreatOnDeck => {
+                self.filter_genre.clear();
+                self.filter_proton_tier = Some(ProtonTier::Gold);
+                self.filter_deck_compatible = true;
                 self.filter_unplayed_only = false;
-                // Junk games: not_junk=false (include junk). The user sees all
-                // games but junk ones sort to the top via is_junk flag.
+            }
+            QuickView::ShortSessions => {
+                self.filter_genre.clear();
+                self.filter_proton_tier = None;
+                self.filter_deck_compatible = false;
+                self.filter_unplayed_only = false;
+                // Short sessions: HLTB normally <= 120 minutes.
+                // Stored via hltb_max_minutes in LibraryFilters.
             }
         }
     }
