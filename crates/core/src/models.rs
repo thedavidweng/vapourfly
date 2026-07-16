@@ -564,9 +564,13 @@ pub struct PlaylistMatchReport {
     ///
     /// See [`CompletionPrice`] for single vs mixed-currency handling.
     pub completion_price: Option<CompletionPrice>,
-    /// Fraction of missing non-free entries that have price data, so the GUI
-    /// can label partial estimates. `None` when there are no missing non-free
-    /// entries (e.g. rule Playlists or fully-owned manual Playlists).
+    /// Price-confirmation breakdown of missing entries, so the GUI can label
+    /// partial estimates. `Some` whenever there are **any** missing entries
+    /// (free, non-free, or unknown); `None` only when there are no missing
+    /// entries at all (e.g. rule Playlists or fully-owned manual Playlists).
+    /// The coverage [`PriceCoverage::ratio`] denominator is **confirmed
+    /// non-free** entries only — free and unknown entries are reported but
+    /// excluded from the ratio.
     pub price_coverage: Option<PriceCoverage>,
 }
 

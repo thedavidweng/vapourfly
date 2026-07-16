@@ -182,7 +182,7 @@ pub const SP_6: f32 = 24.0;
 // ---------------------------------------------------------------------------
 
 pub const TOPBAR_HEIGHT: f32 = 58.0;
-pub const SIDEBAR_WIDTH: f32 = 144.0;
+pub const SIDEBAR_WIDTH: f32 = 132.0;
 pub const CORNER_SM: f32 = 6.0;
 pub const CORNER_MD: f32 = 10.0;
 pub const CORNER_LG: f32 = 14.0;

@@ -12,7 +12,10 @@ document covers the interactive flows that require a running GUI.
   `cargo run -p vapourfly-gui -- --ui-demo`
   Demo mode populates every page with deterministic fixture data (24 games,
   5 Playlists, 4 Steam Collections, junk decisions, recommendations, discover
-  results, accounts, and backups). Write actions are disabled in demo mode.
+  results, accounts, and backups). Write actions, cache refresh, account
+  detection, settings save, and backup operations are all disabled in demo
+  mode. All I/O is isolated inside a unique per-launch temp directory so no
+  real user config, cache, playlist store, or Steam data is read or written.
 - Junk write-action checks require at least one low-playtime game with a second
   junk signal from cached metadata (low rating or short completion time).
   `steam_minimal` by itself has only playtime data; without a seeded cache or a

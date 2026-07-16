@@ -106,7 +106,18 @@ impl JobRunner {
 
     /// Allocate the next [`JobId`]. Never returns 0 (0 is reserved as
     /// "no active job").
-    pub fn next_id(&mut self, _kind: WorkflowKind, _fingerprint: &str) -> JobId {
+    ///
+    /// `kind` and `fingerprint` are accepted so callers document which workflow
+    /// and inputs a job corresponds to. Stale-result protection is provided by
+    /// the monotonic [`JobId`] (see [`JobSlot::take_if`]); input-drift
+    /// protection is the caller's responsibility — generator jobs capture the
+    /// fingerprint in their result and the consumer verifies it on poll.
+    pub fn next_id(&mut self, kind: WorkflowKind, fingerprint: &str) -> JobId {
+        // The kind/fingerprint are intentionally not stored: the JobId alone
+        // guards against stale results, and fingerprint verification happens
+        // via the result payload (see GeneratorJobResult). Logging here would
+        // add noise without changing behaviour.
+        let _ = (kind, fingerprint);
         let id = JobId(self.next);
         self.next += 1;
         id

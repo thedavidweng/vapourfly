@@ -150,6 +150,31 @@ fn put_generator_slot(
     Ok(playlist)
 }
 
+/// Result of a generator background job (Dynamic / Mood).
+///
+/// Carries the [`GeneratorIdentity`] and input fingerprint **captured at job
+/// start time** so the consumer can write the result to the correct stable
+/// slot even if the user changes the chooser while the job is running. Without
+/// this, the poll would re-read the current chooser and store the result under
+/// the wrong slot (input drift).
+#[derive(Clone, Debug)]
+struct GeneratorJobResult {
+    identity: GeneratorIdentity,
+    input_fingerprint: u64,
+    playlist: PlaylistFile,
+}
+
+/// Stable 64-bit fingerprint of a job's input string, for stale-input
+/// detection. Two jobs with the same logical inputs produce the same
+/// fingerprint; a changed chooser or parameter produces a different one.
+fn fingerprint_u64(s: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
+}
+
 // ---------------------------------------------------------------------------
 // Playlists generator choosers (ticket 06)
 // ---------------------------------------------------------------------------
@@ -235,9 +260,22 @@ static DRY_RUN_RESULT: JobSlot<vapourfly_core::models::WritePlan> = JobSlot::new
 static JUNK_PREVIEW_RESULT: JobSlot<Vec<JunkDecision>> = JobSlot::new();
 static RECOMMEND_RESULT: JobSlot<Vec<Recommendation>> = JobSlot::new();
 static DISCOVER_RESULT: JobSlot<(Vec<DiscoverPick>, PlaylistFile)> = JobSlot::new();
-static DYNAMIC_RESULT: JobSlot<PlaylistFile> = JobSlot::new();
-static MOOD_RESULT: JobSlot<PlaylistFile> = JobSlot::new();
+static DYNAMIC_RESULT: JobSlot<GeneratorJobResult> = JobSlot::new();
+static MOOD_RESULT: JobSlot<GeneratorJobResult> = JobSlot::new();
 static PLAYLIST_MATCH_RESULT: JobSlot<PlaylistMatchReport> = JobSlot::new();
+/// Background-prepared library snapshot (hydrated games, pre-junk-classification).
+/// Produced off the egui frame so the Library view does not re-hydrate from
+/// the disk cache every frame.
+static PREPARED_LIBRARY_RESULT: JobSlot<PreparedLibrarySnapshot> = JobSlot::new();
+
+/// Cached library snapshot: hydrated games + the fingerprint that identifies
+/// the inputs used to produce them. The games are pre-junk-classification so
+/// different JunkMode callers can classify on top without re-hydrating.
+#[derive(Clone, Debug)]
+struct PreparedLibrarySnapshot {
+    fingerprint: u64,
+    games: Vec<Game>,
+}
 
 // ---------------------------------------------------------------------------
 // App state
@@ -265,6 +303,14 @@ struct VapourflyApp {
     playlist_store_dir: Option<PathBuf>,
     /// Cache directory (temp dir in --ui-demo mode, default otherwise).
     cache_dir: PathBuf,
+    /// Optional override for the manual overrides JSON path. In --ui-demo mode
+    /// this points inside the demo temp root so the real platform default path
+    /// is never read.
+    manual_overrides_path: Option<PathBuf>,
+    /// Root of the --ui-demo temp tree (unique per launch). `None` outside demo.
+    /// Kept so tests can assert demo I/O stays inside this root.
+    #[allow(dead_code)]
+    demo_root: Option<PathBuf>,
 
     // Library view
     search_query: String,
@@ -412,6 +458,22 @@ struct VapourflyApp {
     dynamic_job_id: Option<JobId>,
     mood_job_id: Option<JobId>,
     playlist_match_job_id: Option<JobId>,
+    /// Expected input fingerprint for the in-flight Dynamic job (captured at
+    /// start time). Used to discard results whose inputs no longer match.
+    dynamic_job_fingerprint: Option<u64>,
+    /// Expected input fingerprint for the in-flight Mood job.
+    mood_job_fingerprint: Option<u64>,
+    /// Cached library snapshot (hydrated games, pre-junk-classification).
+    /// Reused across frames when the fingerprint matches so the Library view
+    /// does not re-hydrate from the disk cache every frame.
+    prepared_snapshot: Option<PreparedLibrarySnapshot>,
+    /// JobId of an in-flight background library prepare.
+    prepare_job_id: Option<JobId>,
+    /// Fingerprint of the in-flight prepare (to set on the snapshot).
+    prepare_fingerprint: Option<u64>,
+    /// Increments each time a cache refresh completes, so the library snapshot
+    /// is invalidated and re-hydrated with the new cache data.
+    cache_refresh_generation: u64,
 
     // Loading flags for off-frame operations
     junk_preview_loading: bool,
@@ -580,12 +642,19 @@ fn game_matches_library_filters(game: &Game, filters: &LibraryFilters) -> bool {
         }
     }
     if let Some(max_minutes) = filters.hltb_max_minutes {
-        let fits = game
-            .igdb
+        // Prefer the canonical, normalized HLTB main_story_seconds; fall back
+        // to the raw IGDB time_to_beat.normally_seconds for games without HLTB.
+        let completion_seconds = game
+            .hltb
             .as_ref()
-            .and_then(|i| i.time_to_beat.as_ref())
-            .and_then(|t| t.normally_seconds)
-            .is_some_and(|secs| secs / 60 <= max_minutes);
+            .and_then(|h| h.main_story_seconds)
+            .or_else(|| {
+                game.igdb
+                    .as_ref()
+                    .and_then(|i| i.time_to_beat.as_ref())
+                    .and_then(|t| t.normally_seconds)
+            });
+        let fits = completion_seconds.is_some_and(|secs| secs / 60 <= max_minutes);
         if !fits {
             return false;
         }
@@ -882,15 +951,35 @@ fn empty_state(ui: &mut egui::Ui, icon: &str, title: &str, subtitle: &str) {
     ui.add_space(SP_6);
 }
 
-fn game_image(ui: &mut egui::Ui, app_id: u32, name: &str) {
-    ui.add(
-        egui::Image::from_uri(steam_capsule_uri(app_id))
-            .fit_to_exact_size(egui::vec2(POSTER_W, POSTER_H))
+fn game_image(ui: &mut egui::Ui, app_id: u32, name: &str, offline: bool) {
+    if offline {
+        // Offline fallback: show a named placeholder instead of attempting
+        // a network image load that will hang until timeout.
+        egui::Frame::NONE
+            .fill(t().surface_sunken)
             .corner_radius(CORNER_SM)
-            .bg_fill(t().surface_sunken)
-            .show_loading_spinner(true)
-            .alt_text(format!("{name} cover")),
-    );
+            .inner_margin(egui::Margin::same(m(SP_4)))
+            .show(ui, |ui| {
+                ui.set_min_size(egui::vec2(POSTER_W, POSTER_H));
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        RichText::new(name)
+                            .size(TS_SM)
+                            .color(t().text_muted)
+                            .strong(),
+                    );
+                });
+            });
+    } else {
+        ui.add(
+            egui::Image::from_uri(steam_capsule_uri(app_id))
+                .fit_to_exact_size(egui::vec2(POSTER_W, POSTER_H))
+                .corner_radius(CORNER_SM)
+                .bg_fill(t().surface_sunken)
+                .show_loading_spinner(true)
+                .alt_text(format!("{name} cover")),
+        );
+    }
 }
 
 fn app_id_tag(ui: &mut egui::Ui, app_id: u32) {
@@ -1186,14 +1275,69 @@ fn insight_metric(ui: &mut egui::Ui, label: &str, value: String) {
     });
 }
 
+/// Build a unique per-launch temp root for --ui-demo mode.
+///
+/// Uses nanosecond timestamp + process id so concurrent demo sessions and
+/// repeated launches do not share state. The fixed `vapourfly-ui-demo` path is
+/// avoided to keep demo sessions deterministic.
+fn unique_demo_root() -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    std::env::temp_dir().join(format!("vapourfly-ui-demo-{nanos}-{pid}"))
+}
+
 impl VapourflyApp {
     fn new(fixtures_path: Option<PathBuf>, ui_demo: bool) -> Self {
-        // Load configuration
-        let config = VapourflyConfig::from_cli_and_env(vapourfly_core::config::CliOverrides {
-            steam_dir: fixtures_path.clone(),
-            account: None,
-        })
-        .ok();
+        // -- Configuration ---------------------------------------------------
+        // In --ui-demo mode, build an isolated in-memory config rooted at a
+        // unique temp directory. The real Vapourfly config file, Steam paths,
+        // account directories, and API credentials are NEVER read.
+        let (config, playlist_store_dir, cache_root, manual_overrides_path, demo_root) = if ui_demo
+        {
+            let root = unique_demo_root();
+            let _ = std::fs::create_dir_all(&root);
+            let playlists = root.join("playlists");
+            let cache = root.join("cache");
+            let steam = root.join("steam");
+            let overrides = root.join("manual_overrides.json");
+            let _ = std::fs::create_dir_all(&playlists);
+            let _ = std::fs::create_dir_all(&cache);
+            let _ = std::fs::create_dir_all(&steam);
+            let demo_config = VapourflyConfig {
+                steam_dir: steam,
+                account: Some("demo_user".into()),
+                cache_root: root.clone(),
+                app_data_root: root.clone(),
+                has_igdb_credentials: false,
+                has_rawg_credentials: false,
+                cc: "US".into(),
+                lang: "english".into(),
+                backup_retention_count: 5,
+            };
+            (
+                Some(demo_config),
+                Some(playlists),
+                cache,
+                Some(overrides),
+                Some(root),
+            )
+        } else {
+            let cfg = VapourflyConfig::from_cli_and_env(vapourfly_core::config::CliOverrides {
+                steam_dir: fixtures_path.clone(),
+                account: None,
+            })
+            .ok();
+            (
+                cfg,
+                None,
+                vapourfly_core::config::default_cache_dir(),
+                None,
+                None,
+            )
+        };
 
         let steam_dir_edit = config
             .as_ref()
@@ -1221,20 +1365,6 @@ impl VapourflyApp {
 
         let has_rawg = config.as_ref().is_some_and(|c| c.has_rawg_credentials);
 
-        // In --ui-demo mode, redirect all I/O to a temp directory so no real
-        // cache, playlist store, or account data is read or written.
-        let (playlist_store_dir, cache_root) = if ui_demo {
-            let temp_root = std::env::temp_dir().join("vapourfly-ui-demo");
-            let _ = std::fs::create_dir_all(&temp_root);
-            let playlists = temp_root.join("playlists");
-            let cache = temp_root.join("cache");
-            let _ = std::fs::create_dir_all(&playlists);
-            let _ = std::fs::create_dir_all(&cache);
-            (Some(playlists), cache)
-        } else {
-            (None, vapourfly_core::config::default_cache_dir())
-        };
-
         // Load source cache statuses
         let source_statuses = vapourfly_api::enrichment::source_status(&cache_root);
 
@@ -1251,6 +1381,8 @@ impl VapourflyApp {
             config,
             playlist_store_dir,
             cache_dir: cache_root,
+            manual_overrides_path,
+            demo_root,
 
             search_query: String::new(),
             filter_installed_only: false,
@@ -1357,6 +1489,12 @@ impl VapourflyApp {
             dynamic_job_id: None,
             mood_job_id: None,
             playlist_match_job_id: None,
+            dynamic_job_fingerprint: None,
+            mood_job_fingerprint: None,
+            prepared_snapshot: None,
+            prepare_job_id: None,
+            prepare_fingerprint: None,
+            cache_refresh_generation: 0,
             junk_preview_loading: false,
             recommend_loading: false,
             discover_loading: false,
@@ -1750,6 +1888,8 @@ impl VapourflyApp {
         // -- Playlist store ids -----------------------------------------------
         // In --ui-demo mode, write real loadable demo Playlist files to the
         // temp playlist store so "Load existing" and generator slots work.
+        // All demo playlists use the canonical schema so playlist_store::put
+        // succeeds and the files are genuinely loadable.
         let demo_ids: Vec<String> = vec![
             "my-favorites".into(),
             "story-games".into(),
@@ -1759,75 +1899,68 @@ impl VapourflyApp {
         ];
         if self.ui_demo {
             let store_path = self.playlist_store_path();
-            let _ = std::fs::create_dir_all(&store_path);
-            // Manual playlist: my-favorites (games 1000, 1002, 1005)
-            let pf_favorites = PlaylistFile {
-                vapourfly_schema: "1.0".into(),
-                created_by: "demo".into(),
-                playlist: Playlist {
-                    id: "my-favorites".into(),
-                    name: "My Favorites".into(),
-                    description: "Demo favorites collection".into(),
-                    content: PlaylistContent::Manual {
-                        app_ids: vec![1000, 1002, 1005],
+            if let Err(e) = std::fs::create_dir_all(&store_path) {
+                self.error = Some(format!(
+                    "demo init: failed to create playlist store {}: {e}",
+                    store_path.display()
+                ));
+                return;
+            }
+            let demo_playlist =
+                |id: &str, name: &str, desc: &str, app_ids: Vec<u32>| PlaylistFile {
+                    vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
+                    created_by: "demo".into(),
+                    playlist: Playlist {
+                        id: id.into(),
+                        name: name.into(),
+                        description: desc.into(),
+                        content: PlaylistContent::Manual { app_ids },
                     },
-                },
-            };
-            let _ = playlist_store::put(&store_path, &pf_favorites);
-            // Manual playlist: story-games (games 1001, 1003, 1008)
-            let pf_story = PlaylistFile {
-                vapourfly_schema: "1.0".into(),
-                created_by: "demo".into(),
-                playlist: Playlist {
-                    id: "story-games".into(),
-                    name: "Story Games".into(),
-                    description: "Narrative-focused picks".into(),
-                    content: PlaylistContent::Manual {
-                        app_ids: vec![1001, 1003, 1008],
-                    },
-                },
-            };
-            let _ = playlist_store::put(&store_path, &pf_story);
-            // Generator slots: discover, dynamic-deck-session, mood-quick-round
-            let pf_discover = PlaylistFile {
-                vapourfly_schema: "1.0".into(),
-                created_by: "demo".into(),
-                playlist: Playlist {
-                    id: "discover".into(),
-                    name: "Discover Picks".into(),
-                    description: "Auto-generated discover slot".into(),
-                    content: PlaylistContent::Manual {
-                        app_ids: vec![1004, 1006, 1010, 1012],
-                    },
-                },
-            };
-            let _ = playlist_store::put(&store_path, &pf_discover);
-            let pf_dynamic = PlaylistFile {
-                vapourfly_schema: "1.0".into(),
-                created_by: "demo".into(),
-                playlist: Playlist {
-                    id: "dynamic-deck-session".into(),
-                    name: "Deck Session".into(),
-                    description: "Dynamic template: deck-session".into(),
-                    content: PlaylistContent::Manual {
-                        app_ids: vec![1000, 1007, 1011, 1015],
-                    },
-                },
-            };
-            let _ = playlist_store::put(&store_path, &pf_dynamic);
-            let pf_mood = PlaylistFile {
-                vapourfly_schema: "1.0".into(),
-                created_by: "demo".into(),
-                playlist: Playlist {
-                    id: "mood-quick-round".into(),
-                    name: "Quick Round".into(),
-                    description: "Editorial mood: quick-round".into(),
-                    content: PlaylistContent::Manual {
-                        app_ids: vec![1002, 1009, 1013],
-                    },
-                },
-            };
-            let _ = playlist_store::put(&store_path, &pf_mood);
+                };
+            let demo_playlists = [
+                demo_playlist(
+                    "my-favorites",
+                    "My Favorites",
+                    "Demo favorites collection",
+                    vec![1000, 1002, 1005],
+                ),
+                demo_playlist(
+                    "story-games",
+                    "Story Games",
+                    "Narrative-focused picks",
+                    vec![1001, 1003, 1008],
+                ),
+                demo_playlist(
+                    "discover",
+                    "Discover Picks",
+                    "Auto-generated discover slot",
+                    vec![1004, 1006, 1010, 1012],
+                ),
+                demo_playlist(
+                    "dynamic-deck-session",
+                    "Deck Session",
+                    "Dynamic template: deck-session",
+                    vec![1000, 1007, 1011, 1015],
+                ),
+                demo_playlist(
+                    "mood-quick-round",
+                    "Quick Round",
+                    "Editorial mood: quick-round",
+                    vec![1002, 1009, 1013],
+                ),
+            ];
+            for pf in &demo_playlists {
+                if let Err(e) = playlist_store::put(&store_path, pf) {
+                    // Propagate the failure instead of silently swallowing it.
+                    // A demo session with missing playlist files is worse than
+                    // an explicit error that surfaces in the UI banner.
+                    self.error = Some(format!(
+                        "demo init: failed to write playlist {}: {e}",
+                        pf.playlist.id
+                    ));
+                    return;
+                }
+            }
         }
         self.playlist_store_ids = demo_ids;
         self.playlist_store_ids_loaded = true;
@@ -1856,6 +1989,15 @@ impl VapourflyApp {
         if self.loading {
             return;
         }
+
+        // Demo mode: never scan the real Steam library. Re-populate the
+        // deterministic demo data so "Refresh" stays a no-op on real data.
+        if self.ui_demo {
+            self.populate_demo_data();
+            self.success_msg = Some("Demo library refreshed.".into());
+            return;
+        }
+
         self.loading = true;
         self.error = None;
         self.success_msg = None;
@@ -2067,6 +2209,13 @@ impl VapourflyApp {
             return;
         }
 
+        // Demo mode: no network fetches, no real cache writes.
+        if self.ui_demo {
+            self.cache_refresh_msg =
+                Some("Cache refresh is disabled in demo mode (--ui-demo).".into());
+            return;
+        }
+
         if self.offline_mode {
             self.cache_refresh_msg =
                 Some("Offline mode is on. Cache refresh requires network access.".into());
@@ -2144,9 +2293,11 @@ impl VapourflyApp {
         self.junk_preview_job_id = Some(job_id);
         JUNK_PREVIEW_RESULT.clear();
 
+        // Load overrides here (in the UI thread) so the demo path is used in
+        // --ui-demo mode, not the real platform default path inside the thread.
+        let overrides = self.manual_overrides();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let overrides = load_default_manual_overrides();
             let results = evaluate_junk(&games, &JunkRules::default(), &mode, &overrides);
             ctx.request_repaint();
             JUNK_PREVIEW_RESULT.set(job_id, Ok(results));
@@ -2255,6 +2406,11 @@ impl VapourflyApp {
         let fingerprint = format!("dynamic:{}:{}:{}", template.id(), session_minutes, count);
         let job_id = self.job_runner.next_id(WorkflowKind::Dynamic, &fingerprint);
         self.dynamic_job_id = Some(job_id);
+        // Capture the identity + fingerprint at start time so the consumer can
+        // write to the correct slot even if the chooser changes mid-job.
+        let identity = GeneratorIdentity::Dynamic(template);
+        let input_fingerprint = fingerprint_u64(&fingerprint);
+        self.dynamic_job_fingerprint = Some(input_fingerprint);
         DYNAMIC_RESULT.clear();
 
         let ctx = ctx.clone();
@@ -2268,7 +2424,14 @@ impl VapourflyApp {
                 },
             );
             ctx.request_repaint();
-            DYNAMIC_RESULT.set(job_id, Ok(pf));
+            DYNAMIC_RESULT.set(
+                job_id,
+                Ok(GeneratorJobResult {
+                    identity,
+                    input_fingerprint,
+                    playlist: pf,
+                }),
+            );
         });
     }
 
@@ -2293,14 +2456,94 @@ impl VapourflyApp {
         let fingerprint = format!("mood:{}", mood.id());
         let job_id = self.job_runner.next_id(WorkflowKind::Mood, &fingerprint);
         self.mood_job_id = Some(job_id);
+        // Capture identity + fingerprint at start time (input-drift protection).
+        let identity = GeneratorIdentity::Mood(mood);
+        let input_fingerprint = fingerprint_u64(&fingerprint);
+        self.mood_job_fingerprint = Some(input_fingerprint);
         MOOD_RESULT.clear();
 
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let pf = mood::compile_editorial_mood(mood, &games, 25);
             ctx.request_repaint();
-            MOOD_RESULT.set(job_id, Ok(pf));
+            MOOD_RESULT.set(
+                job_id,
+                Ok(GeneratorJobResult {
+                    identity,
+                    input_fingerprint,
+                    playlist: pf,
+                }),
+            );
         });
+    }
+
+    /// Consume finished Dynamic + Mood generator results.
+    ///
+    /// Each result carries the [`GeneratorIdentity`] and input fingerprint
+    /// captured at job start time. The result is written to the slot named by
+    /// the **start-time** identity — never the current chooser — so changing
+    /// the chooser mid-job cannot redirect the result (input drift). A
+    /// mismatched fingerprint causes the result to be discarded.
+    fn poll_generator_results(&mut self) {
+        // -- Dynamic ---------------------------------------------------------
+        if self.dynamic_loading
+            && let Some(expected) = self.dynamic_job_id
+            && let Some(result) = DYNAMIC_RESULT.take_if(expected)
+        {
+            self.dynamic_loading = false;
+            self.dynamic_job_id = None;
+            let expected_fp = self.dynamic_job_fingerprint.take();
+            match result {
+                Ok(job_result) => {
+                    // Verify the fingerprint matches the inputs we started with.
+                    if expected_fp.is_some_and(|fp| fp != job_result.input_fingerprint) {
+                        self.error = Some(
+                            "Dynamic result discarded: inputs changed while generating.".into(),
+                        );
+                    } else {
+                        match self
+                            .store_generator_playlist(job_result.identity, job_result.playlist)
+                        {
+                            Ok(stored) => {
+                                self.adopt_playlist_for_edit(&stored);
+                                self.refresh_playlist_store_ids();
+                            }
+                            Err(e) => self.error = Some(e),
+                        }
+                    }
+                }
+                Err(e) => self.error = Some(e),
+            }
+        }
+
+        // -- Mood ------------------------------------------------------------
+        if self.mood_loading
+            && let Some(expected) = self.mood_job_id
+            && let Some(result) = MOOD_RESULT.take_if(expected)
+        {
+            self.mood_loading = false;
+            self.mood_job_id = None;
+            let expected_fp = self.mood_job_fingerprint.take();
+            match result {
+                Ok(job_result) => {
+                    if expected_fp.is_some_and(|fp| fp != job_result.input_fingerprint) {
+                        self.error =
+                            Some("Mood result discarded: inputs changed while generating.".into());
+                    } else {
+                        match self
+                            .store_generator_playlist(job_result.identity, job_result.playlist)
+                        {
+                            Ok(stored) => {
+                                self.adopt_playlist_for_edit(&stored);
+                                self.refresh_playlist_store_ids();
+                            }
+                            Err(e) => self.error = Some(e),
+                        }
+                    }
+                }
+                Err(e) => self.error = Some(e),
+            }
+        }
     }
 
     /// Start Playlist Match in a background thread.
@@ -2412,11 +2655,15 @@ impl VapourflyApp {
     }
 
     fn run_setup_diagnostics(&mut self) {
-        let steam_dir = self
-            .config
-            .as_ref()
-            .map(|c| c.steam_dir.clone())
-            .or_else(VapourflyConfig::detect_steam_dir);
+        // Demo mode: use the demo config's steam_dir; never auto-detect real Steam.
+        let steam_dir = if self.ui_demo {
+            self.config.as_ref().map(|c| c.steam_dir.clone())
+        } else {
+            self.config
+                .as_ref()
+                .map(|c| c.steam_dir.clone())
+                .or_else(VapourflyConfig::detect_steam_dir)
+        };
 
         let mut lines = vec!["Vapourfly Setup Diagnostics".to_string()];
 
@@ -2523,18 +2770,119 @@ impl VapourflyApp {
             .unwrap_or(vapourfly_core::write::DEFAULT_BACKUP_RETENTION)
     }
 
+    /// Load manual overrides from the configured path. In --ui-demo mode this
+    /// is the demo temp root; otherwise the platform default path. Keeps demo
+    /// mode from reading the user's real overrides file.
+    fn manual_overrides(&self) -> ManualOverrides {
+        match &self.manual_overrides_path {
+            Some(p) => vapourfly_core::junk::load_manual_overrides_or_default(p),
+            None => load_default_manual_overrides(),
+        }
+    }
+
+    /// Fingerprint identifying the current library snapshot inputs. Changes
+    /// when: a new scan completes, the cache is refreshed, or the cache /
+    /// overrides paths change. Two matching fingerprints mean the cached
+    /// hydrated games are still valid.
+    fn library_prepare_fingerprint(&self) -> u64 {
+        let scan_id = self.scan_job_id.map(|j| j.0).unwrap_or(0);
+        let refresh_gen = self.cache_refresh_generation;
+        let cache_dir = self.cache_dir.to_string_lossy();
+        let overrides = self
+            .manual_overrides_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let scan_games = self
+            .scan_result
+            .as_ref()
+            .map(|s| s.games.len())
+            .unwrap_or(0);
+        fingerprint_u64(&format!(
+            "prepare:scan_id={scan_id}:gen={refresh_gen}:games={scan_games}:cache={cache_dir}:ovr={overrides}"
+        ))
+    }
+
+    /// Ensure a background library prepare is in flight if the snapshot is
+    /// stale. Called once per frame from the UI update. The result is polled
+    /// in [`poll_library_prepare`].
+    fn ensure_library_prepared(&mut self, ctx: &egui::Context) {
+        // No scan result yet — nothing to prepare.
+        if self.scan_result.is_none() {
+            return;
+        }
+        // Already have a fresh snapshot — no work needed.
+        let fp = self.library_prepare_fingerprint();
+        if let Some(snap) = &self.prepared_snapshot {
+            if snap.fingerprint == fp {
+                return;
+            }
+        }
+        // A prepare is already in flight for this fingerprint — wait for it.
+        if self.prepare_job_id.is_some() && self.prepare_fingerprint == Some(fp) {
+            return;
+        }
+        // Start a new background prepare.
+        let job_id = self
+            .job_runner
+            .next_id(WorkflowKind::CacheRefresh, &format!("prepare:{fp}"));
+        self.prepare_job_id = Some(job_id);
+        self.prepare_fingerprint = Some(fp);
+        PREPARED_LIBRARY_RESULT.clear();
+
+        let games = self
+            .scan_result
+            .as_ref()
+            .map(|s| s.games.clone())
+            .unwrap_or_default();
+        let cache_dir = self.cache_dir.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let mut games = games;
+            let cache = vapourfly_api::cache::DiskCache::new(cache_dir);
+            vapourfly_api::enrichment::hydrate_from_cache(&mut games, &cache);
+            ctx.request_repaint();
+            PREPARED_LIBRARY_RESULT.set(
+                job_id,
+                Ok(PreparedLibrarySnapshot {
+                    fingerprint: fp,
+                    games,
+                }),
+            );
+        });
+    }
+
+    /// Consume a finished background library prepare result.
+    fn poll_library_prepare(&mut self) {
+        if let Some(expected) = self.prepare_job_id
+            && let Some(result) = PREPARED_LIBRARY_RESULT.take_if(expected)
+        {
+            self.prepare_job_id = None;
+            self.prepare_fingerprint = None;
+            // Hydration errors are non-fatal: keep the old snapshot.
+            if let Ok(snap) = result {
+                self.prepared_snapshot = Some(snap);
+            }
+        }
+    }
+
     fn prepared_games(&self, junk_mode: JunkMode) -> Option<Vec<Game>> {
         let scan = self.scan_result.as_ref()?;
+        // Fast path: use the background-prepared snapshot if it's fresh.
+        // The snapshot stores pre-junk-classification hydrated games; we clone
+        // and classify for the requested mode (cheap, in-memory).
+        if let Some(snap) = &self.prepared_snapshot {
+            let mut games = snap.games.clone();
+            let overrides = self.manual_overrides();
+            apply_junk_flags(&mut games, &JunkRules::default(), &junk_mode, &overrides);
+            return Some(games);
+        }
+        // Fallback (first frames before the background prepare completes, or
+        // in tests that don't run the UI loop): hydrate synchronously.
         let mut games = scan.games.clone();
-        // Re-hydrate from cache so that a cache refresh (which writes to disk but
-        // does not update scan_result) is reflected in views without a re-scan.
-        // hydrate_from_cache is idempotent: it only fills in fields that have
-        // cached data, never overwriting with None.
         let cache = vapourfly_api::cache::DiskCache::new(self.cache_dir.clone());
         vapourfly_api::enrichment::hydrate_from_cache(&mut games, &cache);
-        // Same overrides as workflow::prepare so re-classification does not wipe
-        // force-include / force-exclude / manual HLTB / rating.
-        let overrides = load_default_manual_overrides();
+        let overrides = self.manual_overrides();
         apply_junk_flags(&mut games, &JunkRules::default(), &junk_mode, &overrides);
         Some(games)
     }
@@ -2558,6 +2906,12 @@ impl VapourflyApp {
     }
 
     fn refresh_detected_accounts(&mut self) {
+        // Demo mode: do not scan the real Steam account directories.
+        if self.ui_demo {
+            self.account_list_msg =
+                Some("Account detection is disabled in demo mode (--ui-demo).".into());
+            return;
+        }
         let steam_dir = self
             .config
             .as_ref()
@@ -3033,6 +3387,9 @@ impl eframe::App for VapourflyApp {
                         summary.errors.len()
                     ));
                     self.reload_source_statuses();
+                    // Invalidate the library snapshot so the next frame
+                    // re-hydrates from the freshly-written cache.
+                    self.cache_refresh_generation = self.cache_refresh_generation.wrapping_add(1);
                 }
                 Err(e) => self.cache_refresh_msg = Some(format!("Error: {e}")),
             }
@@ -3126,55 +3483,14 @@ impl eframe::App for VapourflyApp {
             }
         }
 
-        // Poll background dynamic result.
-        if self.dynamic_loading
-            && let Some(expected) = self.dynamic_job_id
-            && let Some(result) = DYNAMIC_RESULT.take_if(expected)
-        {
-            self.dynamic_loading = false;
-            self.dynamic_job_id = None;
-            match result {
-                Ok(pf) => {
-                    let template = match DynamicTemplate::parse(&self.dynamic_template) {
-                        Some(t) => t,
-                        None => return,
-                    };
-                    match self.store_generator_playlist(GeneratorIdentity::Dynamic(template), pf) {
-                        Ok(stored) => {
-                            self.adopt_playlist_for_edit(&stored);
-                            self.refresh_playlist_store_ids();
-                        }
-                        Err(e) => self.error = Some(e),
-                    }
-                }
-                Err(e) => self.error = Some(e),
-            }
-        }
+        // Poll background Dynamic + Mood generator results. Extracted so tests
+        // can exercise the input-drift protection without a full egui frame.
+        self.poll_generator_results();
 
-        // Poll background mood result.
-        if self.mood_loading
-            && let Some(expected) = self.mood_job_id
-            && let Some(result) = MOOD_RESULT.take_if(expected)
-        {
-            self.mood_loading = false;
-            self.mood_job_id = None;
-            match result {
-                Ok(pf) => {
-                    let mood = match EditorialMood::parse(&self.editorial_mood) {
-                        Some(m) => m,
-                        None => return,
-                    };
-                    match self.store_generator_playlist(GeneratorIdentity::Mood(mood), pf) {
-                        Ok(stored) => {
-                            self.adopt_playlist_for_edit(&stored);
-                            self.refresh_playlist_store_ids();
-                        }
-                        Err(e) => self.error = Some(e),
-                    }
-                }
-                Err(e) => self.error = Some(e),
-            }
-        }
+        // Poll background library prepare (off-frame hydration) and kick off a
+        // new one if the snapshot is stale (e.g. after a scan or cache refresh).
+        self.poll_library_prepare();
+        self.ensure_library_prepared(&ctx);
 
         // Poll background playlist match result.
         if self.playlist_match_loading
@@ -3981,7 +4297,7 @@ impl VapourflyApp {
 
                             ui.add_space(SP_2);
                             ui.vertical_centered(|ui| {
-                                game_image(ui, game.app_id, &game.name);
+                                game_image(ui, game.app_id, &game.name, self.offline_mode);
                             });
 
                             ui.add_space(SP_2);
@@ -6501,17 +6817,23 @@ impl VapourflyApp {
         });
 
         if refresh {
-            self.backups.clear();
-            match self.cloud_storage_path() {
-                Ok(cloud_path) => {
-                    if cloud_path.exists() {
-                        match list_backups(&cloud_path) {
-                            Ok(backups) => self.backups = backups,
-                            Err(e) => self.error = Some(format!("Failed to list backups: {e}")),
+            // Demo mode: do not scan the real Steam cloud storage for backups.
+            if self.ui_demo {
+                self.account_list_msg =
+                    Some("Backup refresh is disabled in demo mode (--ui-demo).".into());
+            } else {
+                self.backups.clear();
+                match self.cloud_storage_path() {
+                    Ok(cloud_path) => {
+                        if cloud_path.exists() {
+                            match list_backups(&cloud_path) {
+                                Ok(backups) => self.backups = backups,
+                                Err(e) => self.error = Some(format!("Failed to list backups: {e}")),
+                            }
                         }
                     }
+                    Err(e) => self.error = Some(e),
                 }
-                Err(e) => self.error = Some(e),
             }
         }
         if let Some(path) = restore_path {
@@ -6894,6 +7216,13 @@ impl VapourflyApp {
     fn save_settings(&mut self) {
         use vapourfly_core::config::{ConfigField, ConfigUpdate, apply_config_updates};
 
+        // Demo mode: never write the real config.toml.
+        if self.ui_demo {
+            self.settings_save_msg =
+                Some("Saving settings is disabled in demo mode (--ui-demo).".into());
+            return;
+        }
+
         // Validate every input first. If any field is invalid, we abort before
         // touching the config file so the user never sees a "Failed to save"
         // message for a save that partially succeeded.
@@ -7275,6 +7604,196 @@ mod tests {
         assert!(!app.backups.is_empty());
     }
 
+    /// Demo playlists must be real, loadable files with the canonical schema.
+    /// Regression for the "1.0" schema bug that silently failed to write.
+    #[test]
+    #[serial]
+    fn populate_demo_data_writes_loadable_playlists() {
+        let mut app = VapourflyApp::new(None, true);
+        app.populate_demo_data();
+
+        let store = app.playlist_store_path();
+        let expected = [
+            ("my-favorites", "My Favorites", &[1000u32, 1002, 1005][..]),
+            ("story-games", "Story Games", &[1001, 1003, 1008]),
+            ("discover", "Discover Picks", &[1004, 1006, 1010, 1012]),
+            (
+                "dynamic-deck-session",
+                "Deck Session",
+                &[1000, 1007, 1011, 1015],
+            ),
+            ("mood-quick-round", "Quick Round", &[1002, 1009, 1013]),
+        ];
+
+        for (id, name, app_ids) in expected {
+            let pf = playlist_store::get(&store, id)
+                .unwrap_or_else(|e| panic!("demo playlist {id} should be loadable: {e}"));
+            assert_eq!(
+                pf.vapourfly_schema, VAPOURFLY_PLAYLIST_SCHEMA,
+                "demo playlist {id} has wrong schema"
+            );
+            assert_eq!(pf.playlist.id, id);
+            assert_eq!(pf.playlist.name, name);
+            match &pf.playlist.content {
+                PlaylistContent::Manual { app_ids: got } => {
+                    let mut want: Vec<u32> = app_ids.to_vec();
+                    want.sort_unstable();
+                    assert_eq!(got, &want, "demo playlist {id} app_ids mismatch");
+                }
+                other => panic!("demo playlist {id} expected Manual, got {other:?}"),
+            }
+        }
+    }
+
+    /// --ui-demo mode must isolate all I/O inside a unique temp root and never
+    /// touch the real config, playlist, cache, or overrides paths.
+    #[test]
+    #[serial]
+    fn ui_demo_isolates_io_from_real_user_paths() {
+        let app = VapourflyApp::new(None, true);
+
+        let demo_root = app
+            .demo_root
+            .clone()
+            .expect("demo_root must be set in --ui-demo mode");
+        // Unique per launch — must NOT be the old fixed path.
+        let fixed = std::env::temp_dir().join("vapourfly-ui-demo");
+        assert_ne!(
+            demo_root, fixed,
+            "demo root must be unique per launch, not the fixed shared path"
+        );
+        assert!(demo_root.starts_with(std::env::temp_dir()));
+
+        // All demo paths live inside the demo root.
+        let cache = &app.cache_dir;
+        let store = app.playlist_store_path();
+        let overrides = app
+            .manual_overrides_path
+            .clone()
+            .expect("manual_overrides_path must be set in demo mode");
+        assert!(
+            cache.starts_with(&demo_root),
+            "cache must be inside demo root"
+        );
+        assert!(
+            store.starts_with(&demo_root),
+            "playlist store must be inside demo root"
+        );
+        assert!(
+            overrides.starts_with(&demo_root),
+            "manual overrides must be inside demo root"
+        );
+
+        // Demo paths must differ from the real platform defaults.
+        let real_cache = vapourfly_core::config::default_cache_dir();
+        let real_playlists = vapourfly_core::config::default_playlists_dir();
+        let real_overrides = vapourfly_core::config::default_manual_overrides_path();
+        assert_ne!(cache, &real_cache);
+        assert_ne!(store, real_playlists);
+        assert_ne!(overrides, real_overrides);
+
+        // Demo config must not carry real credentials.
+        let cfg = app.config.as_ref().expect("demo config must be set");
+        assert!(!cfg.has_igdb_credentials);
+        assert!(!cfg.has_rawg_credentials);
+        assert!(cfg.steam_dir.starts_with(&demo_root));
+    }
+
+    /// populate_demo_data writes only into the demo playlist store, never the
+    /// real default playlists directory.
+    #[test]
+    #[serial]
+    fn ui_demo_populate_does_not_write_real_playlist_dir() {
+        let real_playlists = vapourfly_core::config::default_playlists_dir();
+        // Snapshot any pre-existing ids in the real dir (we must not add to it).
+        let before = vapourfly_core::playlist_store::list_ids(&real_playlists).unwrap_or_default();
+
+        let mut app = VapourflyApp::new(None, true);
+        app.populate_demo_data();
+
+        let after = vapourfly_core::playlist_store::list_ids(&real_playlists).unwrap_or_default();
+        assert_eq!(
+            before, after,
+            "demo populate must not create files in the real playlist dir"
+        );
+    }
+
+    /// The background library prepare populates the snapshot, after which
+    /// `prepared_games` uses the snapshot instead of re-hydrating from disk.
+    #[test]
+    #[serial]
+    fn library_prepare_snapshot_populates_and_is_reused() {
+        PREPARED_LIBRARY_RESULT.clear();
+        let mut app = VapourflyApp::new(None, true);
+        app.populate_demo_data();
+
+        // Before prepare: snapshot is None, prepared_games falls back to sync.
+        assert!(app.prepared_snapshot.is_none());
+        let games_sync = app
+            .prepared_games(JunkMode::Default)
+            .expect("fallback should work");
+        assert!(!games_sync.is_empty());
+
+        // Start background prepare.
+        let ctx = egui::Context::default();
+        app.ensure_library_prepared(&ctx);
+        assert!(app.prepare_job_id.is_some(), "prepare should be in flight");
+
+        // Wait for the background thread to complete.
+        let job_id = app.prepare_job_id.unwrap();
+        let mut tries = 0;
+        while app.prepare_job_id.is_some() && tries < 1000 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            app.poll_library_prepare();
+            tries += 1;
+        }
+        assert!(app.prepare_job_id.is_none(), "prepare should complete");
+        let _ = job_id;
+
+        // Snapshot is now populated.
+        let snap = app
+            .prepared_snapshot
+            .as_ref()
+            .expect("snapshot should be populated after prepare");
+        assert!(!snap.games.is_empty());
+
+        // prepared_games now uses the snapshot (fast path).
+        let games_snap = app
+            .prepared_games(JunkMode::Default)
+            .expect("snapshot path should work");
+        assert_eq!(games_snap.len(), games_sync.len());
+    }
+
+    /// Cache refresh generation bump invalidates the snapshot.
+    #[test]
+    #[serial]
+    fn cache_refresh_generation_invalidates_snapshot() {
+        PREPARED_LIBRARY_RESULT.clear();
+        let mut app = VapourflyApp::new(None, true);
+        app.populate_demo_data();
+
+        // Manually set a snapshot.
+        let fp = app.library_prepare_fingerprint();
+        app.prepared_snapshot = Some(PreparedLibrarySnapshot {
+            fingerprint: fp,
+            games: vec![],
+        });
+
+        // Bump the generation — fingerprint changes, snapshot is stale.
+        app.cache_refresh_generation = app.cache_refresh_generation.wrapping_add(1);
+        let new_fp = app.library_prepare_fingerprint();
+        assert_ne!(
+            fp, new_fp,
+            "fingerprint must change when cache_refresh_generation bumps"
+        );
+        assert!(
+            app.prepared_snapshot
+                .as_ref()
+                .is_some_and(|s| s.fingerprint != new_fp),
+            "snapshot must be stale after generation bump"
+        );
+    }
+
     #[test]
     fn theme_mode_round_trips_through_u8() {
         assert_eq!(
@@ -7571,6 +8090,88 @@ mod tests {
         };
         assert!(game_matches_library_filters(&platinum, &filters));
         assert!(!game_matches_library_filters(&borked, &filters));
+    }
+
+    #[test]
+    fn library_filters_short_sessions_prefers_hltb_main_story() {
+        // Game with HLTB main_story_seconds but NO igdb.time_to_beat.
+        // Short sessions must use hltb.main_story_seconds (the canonical,
+        // normalized field), not only igdb.time_to_beat.normally_seconds.
+        let mut short_hltb = test_game(100, "Short HLTB");
+        short_hltb.hltb = Some(vapourfly_core::models::HltbData {
+            main_story_seconds: Some(4800), // 80 min — fits a 120 min session
+            main_extra_seconds: None,
+            completionist_seconds: None,
+            source: vapourfly_core::models::HltbSource::IgdbGameTimeToBeat,
+        });
+        // No igdb.time_to_beat — the old code would exclude this game.
+        short_hltb.igdb = Some(vapourfly_core::models::IgdbData {
+            igdb_id: 100,
+            name: "Short HLTB".into(),
+            slug: None,
+            rating_0_100: None,
+            total_rating_0_100: None,
+            genres: vec![],
+            themes: vec![],
+            keywords: vec![],
+            similar_game_ids: vec![],
+            steam_app_id_confirmed: true,
+            time_to_beat: None,
+        });
+
+        let mut long_hltb = test_game(101, "Long HLTB");
+        long_hltb.hltb = Some(vapourfly_core::models::HltbData {
+            main_story_seconds: Some(14_400), // 240 min — too long
+            main_extra_seconds: None,
+            completionist_seconds: None,
+            source: vapourfly_core::models::HltbSource::IgdbGameTimeToBeat,
+        });
+
+        let filters = LibraryFilters {
+            hltb_max_minutes: Some(120),
+            ..Default::default()
+        };
+        assert!(
+            game_matches_library_filters(&short_hltb, &filters),
+            "short HLTB game (80 min) must match a 120 min session filter"
+        );
+        assert!(
+            !game_matches_library_filters(&long_hltb, &filters),
+            "long HLTB game (240 min) must not match a 120 min session filter"
+        );
+    }
+
+    #[test]
+    fn library_filters_short_sessions_igdb_time_to_beat_is_fallback() {
+        // A game with only igdb.time_to_beat (no HLTB) still matches via fallback.
+        let mut igdb_only = test_game(200, "IGDB only");
+        igdb_only.igdb = Some(vapourfly_core::models::IgdbData {
+            igdb_id: 200,
+            name: "IGDB only".into(),
+            slug: None,
+            rating_0_100: None,
+            total_rating_0_100: None,
+            genres: vec![],
+            themes: vec![],
+            keywords: vec![],
+            similar_game_ids: vec![],
+            steam_app_id_confirmed: true,
+            time_to_beat: Some(vapourfly_core::models::IgdbTimeToBeat {
+                normally_seconds: Some(3600), // 60 min
+                hastily_seconds: None,
+                completely_seconds: None,
+                submission_count: None,
+            }),
+        });
+
+        let filters = LibraryFilters {
+            hltb_max_minutes: Some(120),
+            ..Default::default()
+        };
+        assert!(
+            game_matches_library_filters(&igdb_only, &filters),
+            "igdb.time_to_beat fallback must still work"
+        );
     }
 
     #[test]
@@ -7892,6 +8493,133 @@ mod tests {
         assert_eq!(pf.playlist.id, "discover");
         assert!(dir.path().join("discover.json").is_file());
         assert!(!dir.path().join("ignored-id.json").exists());
+    }
+
+    /// Regression: a Dynamic result started with `deck-session` must land in the
+    /// `dynamic-deck-session` slot even if the user switches the chooser to
+    /// `finish-it` while the job is running. The result carries the identity
+    /// captured at start time; the poll must use it, not the current chooser.
+    #[test]
+    #[serial]
+    fn dynamic_result_uses_start_time_identity_not_current_chooser() {
+        DYNAMIC_RESULT.clear();
+        let dir = TempDir::new().unwrap();
+        let mut app = VapourflyApp::new(None, true);
+        app.playlist_store_dir = Some(dir.path().to_path_buf());
+        app.populate_demo_data();
+        // Simulate a deck-session job that already produced a result.
+        app.dynamic_template = DynamicTemplate::DeckSession.id().into();
+        let fp = fingerprint_u64("dynamic:deck-session:90:25");
+        let job_id = app
+            .job_runner
+            .next_id(WorkflowKind::Dynamic, "dynamic:deck-session:90:25");
+        app.dynamic_job_id = Some(job_id);
+        app.dynamic_job_fingerprint = Some(fp);
+        app.dynamic_loading = true;
+        let pf = sample_generator_playlist("dynamic-deck-session", vec![1000, 1007]);
+        DYNAMIC_RESULT.set(
+            job_id,
+            Ok(GeneratorJobResult {
+                identity: GeneratorIdentity::Dynamic(DynamicTemplate::DeckSession),
+                input_fingerprint: fp,
+                playlist: pf,
+            }),
+        );
+        // User switches chooser to finish-it AFTER the job started.
+        app.dynamic_template = DynamicTemplate::FinishIt.id().into();
+
+        app.poll_generator_results();
+
+        // Result must be stored under the start-time identity's slot.
+        assert!(
+            dir.path().join("dynamic-deck-session.json").is_file(),
+            "result must land in dynamic-deck-session, not dynamic-finish-it"
+        );
+        assert!(
+            !dir.path().join("dynamic-finish-it.json").exists(),
+            "drifted chooser must not redirect the result"
+        );
+        assert!(!app.dynamic_loading);
+    }
+
+    /// Regression: a Mood result must use the start-time mood identity even if
+    /// the user changes the mood chooser mid-job.
+    #[test]
+    #[serial]
+    fn mood_result_uses_start_time_identity_not_current_chooser() {
+        MOOD_RESULT.clear();
+        let dir = TempDir::new().unwrap();
+        let mut app = VapourflyApp::new(None, true);
+        app.playlist_store_dir = Some(dir.path().to_path_buf());
+        app.populate_demo_data();
+        app.editorial_mood = EditorialMood::QuickRound.id().into();
+        let fp = fingerprint_u64("mood:quick-round");
+        let job_id = app
+            .job_runner
+            .next_id(WorkflowKind::Mood, "mood:quick-round");
+        app.mood_job_id = Some(job_id);
+        app.mood_job_fingerprint = Some(fp);
+        app.mood_loading = true;
+        let pf = sample_generator_playlist("mood-quick-round", vec![1002, 1009]);
+        MOOD_RESULT.set(
+            job_id,
+            Ok(GeneratorJobResult {
+                identity: GeneratorIdentity::Mood(EditorialMood::QuickRound),
+                input_fingerprint: fp,
+                playlist: pf,
+            }),
+        );
+        // User switches mood mid-job.
+        app.editorial_mood = EditorialMood::FridayParty.id().into();
+
+        app.poll_generator_results();
+
+        assert!(
+            dir.path().join("mood-quick-round.json").is_file(),
+            "result must land in mood-quick-round, not mood-friday-party"
+        );
+        assert!(
+            !dir.path().join("mood-friday-party.json").exists(),
+            "drifted chooser must not redirect the result"
+        );
+        assert!(!app.mood_loading);
+    }
+
+    /// A result whose fingerprint does not match the expected one is discarded.
+    #[test]
+    #[serial]
+    fn dynamic_result_with_mismatched_fingerprint_is_discarded() {
+        DYNAMIC_RESULT.clear();
+        let dir = TempDir::new().unwrap();
+        let mut app = VapourflyApp::new(None, true);
+        // Use a fresh empty store dir (no demo data) so we can assert the
+        // discarded result wrote nothing.
+        app.playlist_store_dir = Some(dir.path().to_path_buf());
+        app.dynamic_template = DynamicTemplate::DeckSession.id().into();
+        let job_id = app
+            .job_runner
+            .next_id(WorkflowKind::Dynamic, "dynamic:deck-session:90:25");
+        app.dynamic_job_id = Some(job_id);
+        app.dynamic_job_fingerprint = Some(fingerprint_u64("dynamic:deck-session:90:25"));
+        app.dynamic_loading = true;
+        DYNAMIC_RESULT.set(
+            job_id,
+            Ok(GeneratorJobResult {
+                identity: GeneratorIdentity::Dynamic(DynamicTemplate::DeckSession),
+                input_fingerprint: fingerprint_u64("dynamic:deck-session:60:10"),
+                playlist: sample_generator_playlist("dynamic-deck-session", vec![1]),
+            }),
+        );
+
+        app.poll_generator_results();
+
+        // Mismatched fingerprint → discarded, loading cleared, nothing stored.
+        assert!(!app.dynamic_loading);
+        assert!(
+            !dir.path().join("dynamic-deck-session.json").exists(),
+            "mismatched-fingerprint result must not be stored"
+        );
+        assert!(app.error.is_some(), "discard should surface an error");
     }
 
     #[test]
