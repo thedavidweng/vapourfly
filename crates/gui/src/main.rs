@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use eframe::egui;
 use egui::{Color32, RichText};
@@ -262,13 +263,18 @@ static PREPARED_LIBRARY_RESULT: JobSlot<PreparedLibrarySnapshot> = JobSlot::new(
 
 /// Cached library snapshot: hydrated games + the manual overrides that were
 /// loaded alongside them, plus the fingerprint identifying the inputs used to
-/// produce them. The games are pre-junk-classification so different JunkMode
-/// callers can classify on top without re-hydrating; the overrides are captured
-/// here so `prepared_games` never reads the overrides file on the egui frame.
+/// produce them. The games are **pre-classified with `JunkMode::Default`** so
+/// the common path (Library, Recommendations, Discover, Playlist Match) never
+/// needs to reclassify on the egui frame — it just clones the `Arc`. Non-Default
+/// modes (Junk Preview Strict/Aggressive) reclassify inside their own background
+/// job. The overrides are captured here so `prepared_games` never reads the
+/// overrides file on the egui frame.
 #[derive(Clone, Debug)]
 struct PreparedLibrarySnapshot {
     fingerprint: u64,
-    games: Vec<Game>,
+    /// Games hydrated and pre-classified with `JunkMode::Default`.
+    games: Arc<[Game]>,
+    /// Manual overrides snapshot (for non-Default reclassification in background jobs).
     overrides: ManualOverrides,
 }
 
@@ -671,10 +677,11 @@ fn game_matches_library_filters(game: &Game, filters: &LibraryFilters) -> bool {
 }
 
 /// Filter + sort games for the Library poster grid.
-fn project_library_games(games: Vec<Game>, filters: &LibraryFilters) -> Vec<Game> {
+fn project_library_games(games: &[Game], filters: &LibraryFilters) -> Vec<Game> {
     let mut games: Vec<Game> = games
-        .into_iter()
+        .iter()
         .filter(|g| game_matches_library_filters(g, filters))
+        .cloned()
         .collect();
 
     games.sort_by(|a, b| {
@@ -732,6 +739,7 @@ fn dry_run_fingerprint(
     action: &PendingAction,
     junk_selected: &std::collections::HashSet<u32>,
     recommend_results: &[Recommendation],
+    scan_generation: u64,
 ) -> String {
     let mut app_ids: Vec<u32> = match action {
         PendingAction::JunkApply | PendingAction::JunkHide => {
@@ -745,7 +753,7 @@ fn dry_run_fingerprint(
         PendingAction::BackupRestore(_) => vec![],
     };
     app_ids.sort_unstable();
-    format!("dry_run:{action:?}:apps={app_ids:?}")
+    format!("dry_run:{action:?}:apps={app_ids:?}:lib={scan_generation}")
 }
 
 // ---------------------------------------------------------------------------
@@ -2162,6 +2170,33 @@ impl VapourflyApp {
         ))
     }
 
+    /// Current scan fingerprint — used at poll time to detect scan-config
+    /// drift (steam_dir, account, fixtures, offline changed mid-scan).
+    fn current_scan_fingerprint(&self) -> String {
+        let steam_dir = self
+            .config
+            .as_ref()
+            .map(|c| c.steam_dir.clone())
+            .or_else(vapourfly_core::config::VapourflyConfig::detect_steam_dir)
+            .unwrap_or_else(|| {
+                dirs::home_dir()
+                    .unwrap_or_default()
+                    .join(".steam")
+                    .join("steam")
+            });
+        let account = self.config.as_ref().and_then(|c| c.account.clone());
+        format!(
+            "scan:dir={}:acct={}:fix={}:offline={}",
+            steam_dir.display(),
+            account.as_deref().unwrap_or(""),
+            self.fixtures_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            self.offline_mode
+        )
+    }
+
     fn start_scan(&mut self, ctx: &egui::Context) {
         if self.loading {
             return;
@@ -2180,14 +2215,8 @@ impl VapourflyApp {
         self.success_msg = None;
 
         // Allocate a request ID for stale-result protection.
-        let job_id = self.job_runner.next_ticket(WorkflowKind::Scan, "scan");
-        self.scan_job_id = Some(job_id);
-        SCAN_RESULT.clear();
-
-        let ctx = ctx.clone();
-        let fixtures = self.fixtures_path.clone();
-
-        // Use config steam_dir if available, otherwise auto-detect
+        // Fingerprint includes steam_dir, account, fixtures, and offline so
+        // changing the scan config invalidates an in-flight scan.
         let steam_dir = self
             .config
             .as_ref()
@@ -2199,9 +2228,24 @@ impl VapourflyApp {
                     .join(".steam")
                     .join("steam")
             });
-
         let account = self.config.as_ref().and_then(|c| c.account.clone());
         let offline = self.offline_mode;
+        let scan_fp = format!(
+            "scan:dir={}:acct={}:fix={}:offline={}",
+            steam_dir.display(),
+            account.as_deref().unwrap_or(""),
+            self.fixtures_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            offline
+        );
+        let job_id = self.job_runner.next_ticket(WorkflowKind::Scan, &scan_fp);
+        self.scan_job_id = Some(job_id);
+        SCAN_RESULT.clear();
+
+        let ctx = ctx.clone();
+        let fixtures = self.fixtures_path.clone();
 
         std::thread::spawn(move || {
             // Use the Workflow module (ADR-0002 lazy hydration + junk classification).
@@ -2369,7 +2413,12 @@ impl VapourflyApp {
         // selection, recommend results, or playlist AppIDs) + library
         // generation, so a dry-run is invalidated if the inputs change before
         // the background job completes.
-        let dry_run_fp = dry_run_fingerprint(&action, &self.junk_selected, &self.recommend_results);
+        let dry_run_fp = dry_run_fingerprint(
+            &action,
+            &self.junk_selected,
+            &self.recommend_results,
+            self.scan_generation,
+        );
         let job_id = self
             .job_runner
             .next_ticket(WorkflowKind::DryRun, &dry_run_fp);
@@ -2476,6 +2525,13 @@ impl VapourflyApp {
             Some(g) => g,
             None => return,
         };
+        // The snapshot already loaded overrides off-frame; reuse them instead
+        // of re-reading the overrides file on the egui frame.
+        let overrides = self
+            .prepared_snapshot
+            .as_ref()
+            .map(|s| s.overrides.clone())
+            .unwrap_or_default();
 
         self.junk_preview_loading = true;
         // Fingerprint covers mode + library generation + override/cache
@@ -2491,9 +2547,6 @@ impl VapourflyApp {
         self.junk_preview_job_id = Some(job_id);
         JUNK_PREVIEW_RESULT.clear();
 
-        // Load overrides here (in the UI thread) so the demo path is used in
-        // --ui-demo mode, not the real platform default path inside the thread.
-        let overrides = self.manual_overrides();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let results = evaluate_junk(&games, &JunkRules::default(), &mode, &overrides);
@@ -2609,7 +2662,13 @@ impl VapourflyApp {
         };
 
         self.dynamic_loading = true;
-        let fingerprint = format!("dynamic:{}:{}:{}", template.id(), session_minutes, count);
+        let fingerprint = format!(
+            "dynamic:{}:{}:{}:lib={}",
+            template.id(),
+            session_minutes,
+            count,
+            self.scan_generation
+        );
         let job_id = self
             .job_runner
             .next_ticket(WorkflowKind::Dynamic, &fingerprint);
@@ -2660,7 +2719,7 @@ impl VapourflyApp {
         };
 
         self.mood_loading = true;
-        let fingerprint = format!("mood:{}", mood.id());
+        let fingerprint = format!("mood:{}:lib={}", mood.id(), self.scan_generation);
         let job_id = self
             .job_runner
             .next_ticket(WorkflowKind::Mood, &fingerprint);
@@ -2695,44 +2754,78 @@ impl VapourflyApp {
     /// before reaching here.
     fn poll_generator_results(&mut self) {
         // -- Dynamic ---------------------------------------------------------
+        // Validate fingerprint against current template + params + library
+        // generation so a rescan or chooser change invalidates an in-flight job.
         if self.dynamic_loading
             && let Some(expected) = self.dynamic_job_id
-            && let Some(result) = DYNAMIC_RESULT.take_if(expected)
         {
-            self.dynamic_loading = false;
-            self.dynamic_job_id = None;
-            match result {
-                Ok(job_result) => {
-                    match self.store_generator_playlist(job_result.identity, job_result.playlist) {
-                        Ok(stored) => {
-                            self.adopt_playlist_for_edit(&stored);
-                            self.refresh_playlist_store_ids();
-                        }
-                        Err(e) => self.error = Some(e),
-                    }
+            // Recompute fingerprint from current inputs.
+            let template = DynamicTemplate::parse(&self.dynamic_template);
+            let session_minutes = parse_required_u32("Session minutes", &self.dynamic_minutes).ok();
+            let count = parse_required_usize("Count", &self.dynamic_count).ok();
+            let current_fp = match (template, session_minutes, count) {
+                (Some(t), Some(sm), Some(c)) => {
+                    format!(
+                        "dynamic:{}:{}:{}:lib={}",
+                        t.id(),
+                        sm,
+                        c,
+                        self.scan_generation
+                    )
                 }
-                Err(e) => self.error = Some(e),
+                _ => String::new(),
+            };
+            if !current_fp.is_empty() && expected.fingerprint != fingerprint_u64(&current_fp) {
+                self.dynamic_loading = false;
+                self.dynamic_job_id = None;
+            } else if let Some(result) = DYNAMIC_RESULT.take_if(expected) {
+                self.dynamic_loading = false;
+                self.dynamic_job_id = None;
+                match result {
+                    Ok(job_result) => {
+                        match self
+                            .store_generator_playlist(job_result.identity, job_result.playlist)
+                        {
+                            Ok(stored) => {
+                                self.adopt_playlist_for_edit(&stored);
+                                self.refresh_playlist_store_ids();
+                            }
+                            Err(e) => self.error = Some(e),
+                        }
+                    }
+                    Err(e) => self.error = Some(e),
+                }
             }
         }
 
         // -- Mood ------------------------------------------------------------
+        // Validate fingerprint against current mood + library generation.
         if self.mood_loading
             && let Some(expected) = self.mood_job_id
-            && let Some(result) = MOOD_RESULT.take_if(expected)
         {
-            self.mood_loading = false;
-            self.mood_job_id = None;
-            match result {
-                Ok(job_result) => {
-                    match self.store_generator_playlist(job_result.identity, job_result.playlist) {
-                        Ok(stored) => {
-                            self.adopt_playlist_for_edit(&stored);
-                            self.refresh_playlist_store_ids();
+            let current_fp = EditorialMood::parse(&self.editorial_mood)
+                .map(|m| format!("mood:{}:lib={}", m.id(), self.scan_generation))
+                .unwrap_or_default();
+            if !current_fp.is_empty() && expected.fingerprint != fingerprint_u64(&current_fp) {
+                self.mood_loading = false;
+                self.mood_job_id = None;
+            } else if let Some(result) = MOOD_RESULT.take_if(expected) {
+                self.mood_loading = false;
+                self.mood_job_id = None;
+                match result {
+                    Ok(job_result) => {
+                        match self
+                            .store_generator_playlist(job_result.identity, job_result.playlist)
+                        {
+                            Ok(stored) => {
+                                self.adopt_playlist_for_edit(&stored);
+                                self.refresh_playlist_store_ids();
+                            }
+                            Err(e) => self.error = Some(e),
                         }
-                        Err(e) => self.error = Some(e),
                     }
+                    Err(e) => self.error = Some(e),
                 }
-                Err(e) => self.error = Some(e),
             }
         }
     }
@@ -2765,6 +2858,12 @@ impl VapourflyApp {
 
         let ctx = ctx.clone();
         let cache_dir = self.cache_dir.clone();
+        let offline = self.offline_mode;
+        let (cc, lang) = self
+            .config
+            .as_ref()
+            .map(|c| (c.cc.clone(), c.lang.clone()))
+            .unwrap_or_else(|| ("us".to_string(), "english".to_string()));
         std::thread::spawn(move || {
             // First pass: find missing AppIDs with empty store details.
             let empty = std::collections::HashMap::new();
@@ -2776,12 +2875,18 @@ impl VapourflyApp {
                     return;
                 }
             };
-            // Second pass: with cached store details for missing entries.
+            // Resolve store details for missing entries (online fetch + cache).
             let missing_details = if preliminary.missing.is_empty() {
                 std::collections::HashMap::new()
             } else {
                 let cache = vapourfly_api::cache::DiskCache::new(cache_dir);
-                vapourfly_api::enrichment::missing_store_details(&preliminary.missing, &cache)
+                vapourfly_api::enrichment::resolve_missing_store_details(
+                    &preliminary.missing,
+                    &cache,
+                    offline,
+                    &cc,
+                    &lang,
+                )
             };
             let report = match playlist::match_playlist(&pf, &games, &missing_details) {
                 Ok(r) => r,
@@ -2801,6 +2906,7 @@ impl VapourflyApp {
             Some(games) => games,
             None => return Vec::new(),
         };
+        let games: &[Game] = &games;
 
         let hltb_max = if self.library_quick_view == QuickView::ShortSessions {
             Some(120)
@@ -2972,6 +3078,7 @@ impl VapourflyApp {
     /// Load manual overrides from the configured path. In --ui-demo mode this
     /// is the demo temp root; otherwise the platform default path. Keeps demo
     /// mode from reading the user's real overrides file.
+    #[cfg(test)]
     fn manual_overrides(&self) -> ManualOverrides {
         match &self.manual_overrides_path {
             Some(p) => vapourfly_core::junk::load_manual_overrides_or_default(p),
@@ -3048,6 +3155,15 @@ impl VapourflyApp {
                 Some(p) => vapourfly_core::junk::load_manual_overrides_or_default(p),
                 None => load_default_manual_overrides(),
             };
+            // Pre-classify with Default mode so the common rendering path
+            // (Library, Recommendations, etc.) never reclassifies on-frame.
+            apply_junk_flags(
+                &mut games,
+                &JunkRules::default(),
+                &JunkMode::Default,
+                &overrides,
+            );
+            let games: Arc<[Game]> = Arc::from(games);
             ctx.request_repaint();
             PREPARED_LIBRARY_RESULT.set(
                 job_id,
@@ -3080,23 +3196,38 @@ impl VapourflyApp {
     /// cache refresh): callers must show a loading state and disable dependent
     /// operations instead of synchronously hydrating on the egui frame.
     ///
+    /// For `JunkMode::Default` (the common path used by Library,
+    /// Recommendations, Discover, and Playlist Match) this returns the
+    /// pre-classified `Arc<[Game]>` with **no per-frame clone or
+    /// reclassification** — just a cheap Arc reference count bump.
+    ///
+    /// For non-Default modes (Strict/Aggressive, used only by Junk Preview),
+    /// this clones the slice and reclassifies. The Junk Preview runs in a
+    /// background thread so this cost is not on the egui frame.
+    ///
     /// Tests inject a snapshot via [`VapourflyApp::inject_prepared_snapshot`]
     /// rather than relying on a production fallback.
-    fn prepared_games(&self, junk_mode: JunkMode) -> Option<Vec<Game>> {
+    fn prepared_games(&self, junk_mode: JunkMode) -> Option<Arc<[Game]>> {
         // Only the snapshot path remains: no on-frame hydration fallback.
         let current_fp = self.library_prepare_fingerprint();
         let snap = self.prepared_snapshot.as_ref()?;
         if snap.fingerprint != current_fp {
             return None;
         }
-        let mut games = snap.games.clone();
+        if junk_mode == JunkMode::Default {
+            // Pre-classified in the background job — zero per-frame work.
+            return Some(Arc::clone(&snap.games));
+        }
+        // Non-Default mode: clone + reclassify. Only called from
+        // start_junk_preview which runs in a background thread.
+        let mut games: Vec<Game> = snap.games.to_vec();
         apply_junk_flags(
             &mut games,
             &JunkRules::default(),
             &junk_mode,
             &snap.overrides,
         );
-        Some(games)
+        Some(Arc::from(games))
     }
 
     /// Whether the prepared library snapshot is fresh and ready to serve
@@ -3123,6 +3254,14 @@ impl VapourflyApp {
         let cache = vapourfly_api::cache::DiskCache::new(self.cache_dir.clone());
         vapourfly_api::enrichment::hydrate_from_cache(&mut games, &cache);
         let overrides = self.manual_overrides();
+        // Pre-classify with Default mode (same as the background job).
+        apply_junk_flags(
+            &mut games,
+            &JunkRules::default(),
+            &JunkMode::Default,
+            &overrides,
+        );
+        let games: Arc<[Game]> = Arc::from(games);
         self.prepared_snapshot = Some(PreparedLibrarySnapshot {
             fingerprint: fp,
             games,
@@ -3583,27 +3722,36 @@ impl eframe::App for VapourflyApp {
         set_active_theme(self.theme_mode);
         configure_ui(&ctx, self.theme_mode);
 
-        // Poll background scan result (stale-result protected via JobId).
+        // Poll background scan result.
+        // Validate the ticket fingerprint against the current scan config so
+        // a config change (steam_dir, account, offline) invalidates an
+        // in-flight scan.
         if self.loading
             && let Some(expected) = self.scan_job_id
-            && let Some(result) = SCAN_RESULT.take_if(expected)
         {
-            self.loading = false;
-            self.scan_job_id = None;
-            match result {
-                Ok(scan) => {
-                    self.scan_result = Some(scan);
-                    // New scan result accepted: bump the scan generation so the
-                    // prepare fingerprint changes and any cached snapshot is
-                    // treated as stale (even if the game count is unchanged).
-                    self.scan_generation = self.scan_generation.wrapping_add(1);
-                    self.prepared_snapshot = None;
-                    match self.load_collections_from_cloud() {
-                        Ok(collections) => self.collections = collections,
-                        Err(e) => self.error = Some(e),
+            let current_scan_fp = self.current_scan_fingerprint();
+            if expected.fingerprint != fingerprint_u64(&current_scan_fp) {
+                // Scan config changed mid-job — discard the stale job.
+                self.loading = false;
+                self.scan_job_id = None;
+            } else if let Some(result) = SCAN_RESULT.take_if(expected) {
+                self.loading = false;
+                self.scan_job_id = None;
+                match result {
+                    Ok(scan) => {
+                        self.scan_result = Some(scan);
+                        // New scan result accepted: bump the scan generation so the
+                        // prepare fingerprint changes and any cached snapshot is
+                        // treated as stale (even if the game count is unchanged).
+                        self.scan_generation = self.scan_generation.wrapping_add(1);
+                        self.prepared_snapshot = None;
+                        match self.load_collections_from_cloud() {
+                            Ok(collections) => self.collections = collections,
+                            Err(e) => self.error = Some(e),
+                        }
                     }
+                    Err(e) => self.error = Some(e),
                 }
-                Err(e) => self.error = Some(e),
             }
         }
 
@@ -3654,86 +3802,135 @@ impl eframe::App for VapourflyApp {
 
         // -- Confirmation dialog -----------------------------------------------
         // Poll background dry-run result.
+        // Validate fingerprint against current inputs (action + selection +
+        // library generation) so a rescan or selection change invalidates
+        // an in-flight dry-run.
         if self.dry_run_loading
             && let Some(expected) = self.dry_run_job_id
-            && let Some(result) = DRY_RUN_RESULT.take_if(expected)
         {
-            self.dry_run_loading = false;
-            self.dry_run_job_id = None;
-            match result {
-                Ok(plan) => {
-                    self.dry_run_plan = Some(plan);
-                    self.dry_run_error = None;
-                    self.show_confirm_dialog = true;
-                }
-                Err(e) => {
-                    self.dry_run_error = Some(e);
-                    self.pending_action = None;
+            let action = self.pending_action.as_ref();
+            let current_fp = if let Some(action) = action {
+                dry_run_fingerprint(
+                    action,
+                    &self.junk_selected,
+                    &self.recommend_results,
+                    self.scan_generation,
+                )
+            } else {
+                String::new()
+            };
+            if !current_fp.is_empty() && expected.fingerprint != fingerprint_u64(&current_fp) {
+                self.dry_run_loading = false;
+                self.dry_run_job_id = None;
+            } else if let Some(result) = DRY_RUN_RESULT.take_if(expected) {
+                self.dry_run_loading = false;
+                self.dry_run_job_id = None;
+                match result {
+                    Ok(plan) => {
+                        self.dry_run_plan = Some(plan);
+                        self.dry_run_error = None;
+                        self.show_confirm_dialog = true;
+                    }
+                    Err(e) => {
+                        self.dry_run_error = Some(e);
+                        self.pending_action = None;
+                    }
                 }
             }
         }
 
         // Poll background junk preview result.
+        // Validate fingerprint against current mode + library generation.
         if self.junk_preview_loading
             && let Some(expected) = self.junk_preview_job_id
-            && let Some(result) = JUNK_PREVIEW_RESULT.take_if(expected)
         {
-            self.junk_preview_loading = false;
-            self.junk_preview_job_id = None;
-            match result {
-                Ok(results) => {
-                    self.junk_results = results;
-                    // Auto-select all junk candidates after Preview.
-                    self.junk_selected = self
-                        .junk_results
-                        .iter()
-                        .filter(|d| d.is_junk)
-                        .map(|d| d.app_id)
-                        .collect();
+            let mode = match self.junk_mode {
+                JunkModeChoice::Default => JunkMode::Default,
+                JunkModeChoice::Strict => JunkMode::Strict,
+                JunkModeChoice::Aggressive => JunkMode::Aggressive,
+            };
+            let current_fp = format!(
+                "junk_preview:{mode:?}:lib={}:ovr={}",
+                self.scan_generation, self.cache_refresh_generation
+            );
+            if expected.fingerprint != fingerprint_u64(&current_fp) {
+                self.junk_preview_loading = false;
+                self.junk_preview_job_id = None;
+            } else if let Some(result) = JUNK_PREVIEW_RESULT.take_if(expected) {
+                self.junk_preview_loading = false;
+                self.junk_preview_job_id = None;
+                match result {
+                    Ok(results) => {
+                        self.junk_results = results;
+                        self.junk_selected = self
+                            .junk_results
+                            .iter()
+                            .filter(|d| d.is_junk)
+                            .map(|d| d.app_id)
+                            .collect();
+                    }
+                    Err(e) => self.error = Some(e),
                 }
-                Err(e) => self.error = Some(e),
             }
         }
 
         // Poll background recommend preview result.
+        // Validate fingerprint against current request + library generation.
         if self.recommend_loading
             && let Some(expected) = self.recommend_job_id
-            && let Some(result) = RECOMMEND_RESULT.take_if(expected)
         {
-            self.recommend_loading = false;
-            self.recommend_job_id = None;
-            match result {
-                Ok(results) => {
-                    self.recommend_results = results;
-                    self.recommend_selected = self.recommend_results.first().map(|r| r.app_id);
+            let current_fp = match self.recommend_request_from_inputs() {
+                Ok(req) => format!("recommend:{req:?}:lib={}", self.scan_generation),
+                Err(_) => String::new(),
+            };
+            if !current_fp.is_empty() && expected.fingerprint != fingerprint_u64(&current_fp) {
+                self.recommend_loading = false;
+                self.recommend_job_id = None;
+            } else if let Some(result) = RECOMMEND_RESULT.take_if(expected) {
+                self.recommend_loading = false;
+                self.recommend_job_id = None;
+                match result {
+                    Ok(results) => {
+                        self.recommend_results = results;
+                        self.recommend_selected = self.recommend_results.first().map(|r| r.app_id);
+                    }
+                    Err(e) => self.error = Some(e),
                 }
-                Err(e) => self.error = Some(e),
             }
         }
 
         // Poll background discover result.
+        // Validate fingerprint against current options + library generation.
         if self.discover_loading
             && let Some(expected) = self.discover_job_id
-            && let Some(result) = DISCOVER_RESULT.take_if(expected)
         {
-            self.discover_loading = false;
-            self.discover_job_id = None;
-            match result {
-                Ok((picks, pf)) => {
-                    let stored =
-                        match self.store_generator_playlist(GeneratorIdentity::Discover, pf) {
-                            Ok(s) => s,
-                            Err(e) => {
-                                self.error = Some(e);
-                                return;
-                            }
-                        };
-                    self.discover_results = picks;
-                    self.discover_last_playlist = Some(stored.clone());
-                    self.adopt_playlist_for_edit(&stored);
-                    self.refresh_playlist_store_ids();
+            let current_fp = match self.discover_options_from_inputs() {
+                Ok(opts) => format!("discover:{opts:?}:lib={}", self.scan_generation),
+                Err(_) => String::new(),
+            };
+            if !current_fp.is_empty() && expected.fingerprint != fingerprint_u64(&current_fp) {
+                self.discover_loading = false;
+                self.discover_job_id = None;
+            } else if let Some(result) = DISCOVER_RESULT.take_if(expected) {
+                self.discover_loading = false;
+                self.discover_job_id = None;
+                match result {
+                    Ok((picks, pf)) => {
+                        let stored =
+                            match self.store_generator_playlist(GeneratorIdentity::Discover, pf) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    self.error = Some(e);
+                                    return;
+                                }
+                            };
+                        self.discover_results = picks;
+                        self.discover_last_playlist = Some(stored.clone());
+                        self.adopt_playlist_for_edit(&stored);
+                        self.refresh_playlist_store_ids();
+                    }
+                    Err(e) => self.error = Some(e),
                 }
-                Err(e) => self.error = Some(e),
             }
         }
 
@@ -3747,15 +3944,35 @@ impl eframe::App for VapourflyApp {
         self.ensure_library_prepared(&ctx);
 
         // Poll background playlist match result.
+        // Validate fingerprint against current playlist content + library
+        // generation + price-cache generation.
         if self.playlist_match_loading
             && let Some(expected) = self.playlist_match_job_id
-            && let Some(result) = PLAYLIST_MATCH_RESULT.take_if(expected)
         {
-            self.playlist_match_loading = false;
-            self.playlist_match_job_id = None;
-            match result {
-                Ok(report) => self.playlist_match_report = Some(report),
-                Err(e) => self.error = Some(e),
+            let current_fp = self
+                .playlist_last_import
+                .as_ref()
+                .map(|pf| {
+                    let content_hash = playlist_content_hash(pf);
+                    format!(
+                        "playlist_match:{}:content={:x}:lib={}:price={}",
+                        pf.playlist.id,
+                        content_hash,
+                        self.scan_generation,
+                        self.cache_refresh_generation
+                    )
+                })
+                .unwrap_or_default();
+            if !current_fp.is_empty() && expected.fingerprint != fingerprint_u64(&current_fp) {
+                self.playlist_match_loading = false;
+                self.playlist_match_job_id = None;
+            } else if let Some(result) = PLAYLIST_MATCH_RESULT.take_if(expected) {
+                self.playlist_match_loading = false;
+                self.playlist_match_job_id = None;
+                match result {
+                    Ok(report) => self.playlist_match_report = Some(report),
+                    Err(e) => self.error = Some(e),
+                }
             }
         }
 
@@ -8692,7 +8909,7 @@ mod tests {
         let fp = app.library_prepare_fingerprint();
         app.prepared_snapshot = Some(PreparedLibrarySnapshot {
             fingerprint: fp,
-            games: vec![],
+            games: Arc::from(vec![]),
             overrides: ManualOverrides::default(),
         });
 
@@ -8740,7 +8957,7 @@ mod tests {
         sentinel.name = "STALE SENTINEL".into();
         app.prepared_snapshot = Some(PreparedLibrarySnapshot {
             fingerprint: fp,
-            games: vec![sentinel.clone()],
+            games: Arc::from(vec![sentinel.clone()]),
             overrides: ManualOverrides::default(),
         });
 
@@ -9027,7 +9244,7 @@ mod tests {
         c.installed = true;
         c.playtime_minutes = Some(100);
 
-        let projected = project_library_games(vec![a, b, c], &LibraryFilters::default());
+        let projected = project_library_games(&[a, b, c], &LibraryFilters::default());
         assert_eq!(
             projected.iter().map(|g| g.app_id).collect::<Vec<_>>(),
             vec![3, 2, 1]

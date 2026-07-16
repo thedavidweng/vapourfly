@@ -1092,21 +1092,32 @@ fn scan_library_hydrated(
     Ok(result)
 }
 
-/// Run a playlist match with cache-hydrated Steam Store details for missing
-/// entries, so `completion_price` reflects the corrected semantics (missing
+/// Run a playlist match with Steam Store details for missing entries,
+/// so `completion_price` reflects the corrected semantics (missing
 /// non-free entries only).
+///
+/// Uses the shared [`vapourfly_api::enrichment::resolve_missing_store_details`]
+/// API: in online mode it fetches uncached missing AppIDs via SteamStoreClient
+/// and writes them to cache; in offline mode it uses cache-only lookups.
 fn match_playlist_with_missing(
     pf: &PlaylistFile,
     games: &[vapourfly_core::models::Game],
+    offline: bool,
 ) -> Result<vapourfly_core::models::PlaylistMatchReport, Box<dyn std::error::Error>> {
     use std::collections::HashMap;
     // First pass: find missing AppIDs with no store details.
     let empty: HashMap<u32, vapourfly_core::models::SteamStoreDetails> = HashMap::new();
     let preliminary = playlist::match_playlist(pf, games, &empty)?;
-    // Fetch cached store details for missing entries.
+    // Resolve store details for missing entries (online fetch + cache).
     let cache = vapourfly_api::cache::DiskCache::new(vapourfly_core::config::default_cache_dir());
-    let missing_details =
-        vapourfly_api::enrichment::missing_store_details(&preliminary.missing, &cache);
+    let cfg = vapourfly_core::config::VapourflyConfig::from_cli_and_env(Default::default())?;
+    let missing_details = vapourfly_api::enrichment::resolve_missing_store_details(
+        &preliminary.missing,
+        &cache,
+        offline,
+        &cfg.cc,
+        &cfg.lang,
+    );
     // Second pass with store details for completion price.
     let report = playlist::match_playlist(pf, games, &missing_details)?;
     Ok(report)
@@ -1542,7 +1553,7 @@ fn cmd_playlist_import(
     }
 
     let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
-    let report = match_playlist_with_missing(&pf, &scan_result.games)?;
+    let report = match_playlist_with_missing(&pf, &scan_result.games, cli.offline)?;
 
     println!();
     println!("Match summary:");
@@ -1624,7 +1635,7 @@ fn cmd_playlist_match(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pf = playlist::import_playlist(&path)?;
     let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
-    let report = match_playlist_with_missing(&pf, &scan_result.games)?;
+    let report = match_playlist_with_missing(&pf, &scan_result.games, cli.offline)?;
 
     match format {
         OutputFormat::Table => {

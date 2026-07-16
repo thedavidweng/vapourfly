@@ -655,6 +655,66 @@ pub fn missing_store_details(
     map
 }
 
+/// Resolve Steam Store details for missing Playlist entries.
+///
+/// This is the shared API used by both CLI and GUI for completion-price
+/// calculation. In **online mode** it fetches uncached AppIDs via
+/// [`SteamStoreClient`](crate::steam_store::SteamStoreClient), writes each
+/// result to `cache`, then returns the full map. In **offline mode** it
+/// performs cache-only lookups (same as [`missing_store_details`]) and does
+/// not issue any network requests.
+///
+/// `cc` and `lang` control pricing locale (e.g. `"us"`, `"english"`).
+///
+/// Returns a map of AppID → SteamStoreDetails for every AppID that has either
+/// a cache entry or a successful network fetch. AppIDs that fail to fetch
+/// (404, network error) are simply absent from the map.
+pub fn resolve_missing_store_details(
+    app_ids: &[u32],
+    cache: &DiskCache,
+    offline: bool,
+    cc: &str,
+    lang: &str,
+) -> std::collections::HashMap<u32, SteamStoreDetails> {
+    // Start with cache-only lookups for all AppIDs.
+    let mut map = missing_store_details(app_ids, cache);
+
+    if offline || app_ids.is_empty() {
+        return map;
+    }
+
+    // Fetch any AppIDs not yet in cache via SteamStoreClient.
+    let client = crate::steam_store::SteamStoreClient::new();
+    for &app_id in app_ids {
+        if map.contains_key(&app_id) {
+            continue;
+        }
+        let key = format!("app/{app_id}");
+        match client.fetch_appdetails(app_id, cc, lang) {
+            Ok(data) => {
+                let record = CacheRecord {
+                    source: SOURCE_STEAM_STORE.to_string(),
+                    key: key.clone(),
+                    fetched_at: chrono::Utc::now(),
+                    ttl: STEAM_STORE_TTL,
+                    data: data.clone(),
+                    stale: false,
+                    etag: None,
+                };
+                if let Err(e) = cache.put(&record) {
+                    tracing::warn!(error = %e, "failed to cache {}/{} record", record.source, record.key);
+                }
+                map.insert(app_id, data);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, app_id, "failed to fetch Steam Store details for missing AppID");
+            }
+        }
+    }
+
+    map
+}
+
 // ---------------------------------------------------------------------------
 // Cache status (for `sources status` CLI command)
 // ---------------------------------------------------------------------------
@@ -998,5 +1058,110 @@ mod tests {
         let protondb = statuses.iter().find(|s| s.name == "protondb").unwrap();
         assert_eq!(protondb.cache_entries, 2);
         assert!(protondb.last_success.is_some());
+    }
+
+    #[test]
+    fn resolve_missing_store_details_offline_uses_cache_only() {
+        let tmp = TempDir::new().unwrap();
+        let cache = DiskCache::new(tmp.path());
+
+        // Pre-populate cache for one AppID, leave another uncached.
+        let details = SteamStoreDetails {
+            app_id: 292030,
+            name: "The Witcher 3".into(),
+            steam_store_type: "game".into(),
+            is_free: false,
+            short_description: None,
+            header_image: None,
+            developers: vec![],
+            publishers: vec![],
+            genres: vec![],
+            categories: vec![],
+            release_date: None,
+            metacritic_score: None,
+            platforms: vapourfly_core::models::SteamStorePlatforms {
+                windows: true,
+                mac: false,
+                linux: false,
+            },
+            coming_soon: false,
+            price_overview: None,
+        };
+        let record = CacheRecord {
+            source: SOURCE_STEAM_STORE.to_string(),
+            key: "app/292030".to_string(),
+            fetched_at: chrono::Utc::now(),
+            ttl: STEAM_STORE_TTL,
+            data: details,
+            stale: false,
+            etag: None,
+        };
+        cache.put(&record).unwrap();
+
+        // Offline mode: must not issue network requests.
+        let result =
+            resolve_missing_store_details(&[292030, 999999], &cache, true, "us", "english");
+
+        // Cached AppID is present.
+        assert!(result.contains_key(&292030));
+        // Uncached AppID is absent (no network fetch in offline mode).
+        assert!(!result.contains_key(&999999));
+    }
+
+    #[test]
+    fn resolve_missing_store_details_online_does_not_crash_on_fetch_failure() {
+        // We can't easily mock the SteamStoreClient (it creates its own
+        // HttpClient internally), so we verify the online path returns at
+        // least the cached entries and doesn't panic on network failures.
+        let tmp = TempDir::new().unwrap();
+        let cache = DiskCache::new(tmp.path());
+
+        // Pre-populate cache for one AppID.
+        let details = SteamStoreDetails {
+            app_id: 292030,
+            name: "The Witcher 3".into(),
+            steam_store_type: "game".into(),
+            is_free: false,
+            short_description: None,
+            header_image: None,
+            developers: vec![],
+            publishers: vec![],
+            genres: vec![],
+            categories: vec![],
+            release_date: None,
+            metacritic_score: None,
+            platforms: vapourfly_core::models::SteamStorePlatforms {
+                windows: true,
+                mac: false,
+                linux: false,
+            },
+            coming_soon: false,
+            price_overview: None,
+        };
+        let record = CacheRecord {
+            source: SOURCE_STEAM_STORE.to_string(),
+            key: "app/292030".to_string(),
+            fetched_at: chrono::Utc::now(),
+            ttl: STEAM_STORE_TTL,
+            data: details,
+            stale: false,
+            etag: None,
+        };
+        cache.put(&record).unwrap();
+
+        // Online mode with AppID 0 — the fetch will fail but must not panic.
+        let result = resolve_missing_store_details(&[292030, 0], &cache, false, "us", "english");
+
+        // Cached AppID is always present.
+        assert!(result.contains_key(&292030));
+    }
+
+    #[test]
+    fn resolve_missing_store_details_empty_input_returns_empty() {
+        let tmp = TempDir::new().unwrap();
+        let cache = DiskCache::new(tmp.path());
+
+        let result = resolve_missing_store_details(&[], &cache, false, "us", "english");
+        assert!(result.is_empty());
     }
 }
