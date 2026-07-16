@@ -220,6 +220,9 @@ pub const CORNER_MD: f32 = 10.0;
 pub const CORNER_LG: f32 = 14.0;
 pub const CORNER_PILL: f32 = 20.0;
 
+pub const RECOMMEND_CARD_IMG_W: f32 = 220.0;
+pub const RECOMMEND_CARD_IMG_H: f32 = 124.0;
+
 pub const POSTER_W: f32 = 206.0;
 pub const POSTER_H: f32 = 98.0;
 pub const GAME_CARD_W: f32 = 232.0;

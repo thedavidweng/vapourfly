@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
@@ -4163,6 +4164,78 @@ impl VapourflyApp {
 // View renderers
 // ---------------------------------------------------------------------------
 
+/// Lightweight metadata extracted from a Game for rendering recommendation
+/// cards without keeping a borrow on the scan result.
+#[derive(Clone, Default)]
+struct GameSummary {
+    playtime_minutes: u32,
+    hltb_minutes: Option<u32>,
+    rating_0_5: Option<f32>,
+    proton_tier: Option<ProtonTier>,
+}
+
+impl From<&Game> for GameSummary {
+    fn from(g: &Game) -> Self {
+        Self {
+            playtime_minutes: g.playtime_minutes.unwrap_or(0),
+            hltb_minutes: g
+                .hltb
+                .as_ref()
+                .and_then(|h| h.main_story_seconds)
+                .map(|s| s / 60),
+            rating_0_5: g.rawg.as_ref().and_then(|r| r.rating_0_5),
+            proton_tier: g.protondb.as_ref().map(|p| p.tier),
+        }
+    }
+}
+
+/// Display label for the playlist content type.
+fn playlist_content_type_label(content: &PlaylistContent) -> &'static str {
+    match content {
+        PlaylistContent::Manual { .. } => "Manual",
+        PlaylistContent::Rules { .. } => "Rules",
+    }
+}
+
+/// Deterministic number of games in a playlist (manual count, or rule count
+/// from the match report when available).
+fn playlist_game_count(content: &PlaylistContent, report: Option<&PlaylistMatchReport>) -> usize {
+    match content {
+        PlaylistContent::Manual { app_ids } => app_ids.len(),
+        PlaylistContent::Rules { .. } => report.map(|r| r.owned.len()).unwrap_or(0),
+    }
+}
+
+/// Deterministic cover AppID for a playlist: first explicit AppID for manual
+/// playlists, or a hash-derived id for rule-based playlists so the cover is
+/// stable across sessions.
+fn playlist_cover_app_id(content: &PlaylistContent) -> u32 {
+    match content {
+        PlaylistContent::Manual { app_ids } => app_ids.first().copied().unwrap_or(0),
+        PlaylistContent::Rules { .. } => 0,
+    }
+}
+
+/// Average HLTB main-story time (in minutes) across the AppIDs in a playlist.
+fn playlist_avg_hltb(content: &PlaylistContent, report: Option<&PlaylistMatchReport>, games: &[Game]) -> Option<u32> {
+    let ids: Vec<u32> = match content {
+        PlaylistContent::Manual { app_ids } => app_ids.clone(),
+        PlaylistContent::Rules { .. } => report.map(|r| r.owned.clone()).unwrap_or_default(),
+    };
+    if ids.is_empty() {
+        return None;
+    }
+    let lookup: HashMap<u32, &Game> = games.iter().map(|g| (g.app_id, g)).collect();
+    let hltbs: Vec<u32> = ids
+        .iter()
+        .filter_map(|id| lookup.get(id).and_then(|g| g.hltb.as_ref()).and_then(|h| h.main_story_seconds).map(|s| s / 60))
+        .collect();
+    if hltbs.is_empty() {
+        return None;
+    }
+    Some(hltbs.iter().sum::<u32>() / hltbs.len() as u32)
+}
+
 impl VapourflyApp {
     // -- Library view -------------------------------------------------------
 
@@ -4735,6 +4808,18 @@ impl VapourflyApp {
             .filter(|d| self.junk_selected.contains(&d.app_id) && d.is_junk)
             .count();
 
+        // Build a Game lookup for enriched table columns (playtime, HLTB,
+        // rating, Proton/Deck, hidden, library share).
+        let game_lookup: HashMap<u32, &Game> = self
+            .scan_result
+            .as_ref()
+            .map(|s| s.games.iter().map(|g| (g.app_id, g)).collect())
+            .unwrap_or_default();
+        let total_library_playtime: u32 = game_lookup
+            .values()
+            .map(|g| g.playtime_minutes.unwrap_or(0))
+            .sum();
+
         // Two-column layout: table (left) + summary rail (right).
         // At compact widths the rail moves below the table.
         let layout = if self.rails_below {
@@ -4780,64 +4865,57 @@ impl VapourflyApp {
 
                 section_card(ui, "Preview", |ui| {
                     let text_height = TS_BODY;
+                    let demo_or_offline = self.ui_demo || self.offline_mode;
                     egui_extras::TableBuilder::new(ui)
                         .striped(true)
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        // Checkbox
                         .column(egui_extras::Column::auto().at_least(28.0))
+                        // Cover thumbnail
+                        .column(egui_extras::Column::auto().at_least(46.0))
+                        // Name
+                        .column(egui_extras::Column::remainder().at_least(140.0))
+                        // Playtime
                         .column(egui_extras::Column::auto().at_least(60.0))
-                        .column(egui_extras::Column::remainder().at_least(150.0))
+                        // HLTB
                         .column(egui_extras::Column::auto().at_least(60.0))
+                        // Rating
+                        .column(egui_extras::Column::auto().at_least(50.0))
+                        // Proton/Deck
+                        .column(egui_extras::Column::auto().at_least(60.0))
+                        // Junk?
+                        .column(egui_extras::Column::auto().at_least(50.0))
+                        // Confidence
+                        .column(egui_extras::Column::auto().at_least(70.0))
+                        // Signals
+                        .column(egui_extras::Column::remainder().at_least(120.0))
+                        // Missing
                         .column(egui_extras::Column::auto().at_least(80.0))
-                        .column(egui_extras::Column::remainder().at_least(200.0))
+                        // Hidden
+                        .column(egui_extras::Column::auto().at_least(50.0))
+                        // Lib share
+                        .column(egui_extras::Column::auto().at_least(60.0))
                         .header(text_height * 1.4, |mut header| {
-                            header.col(|ui| {
-                                let _ = ui.checkbox(&mut false, "");
-                            });
-                            header.col(|ui| {
-                                ui.label(
-                                    RichText::new("ID")
-                                        .size(TS_SM)
-                                        .strong()
-                                        .color(t().text_secondary),
-                                );
-                            });
-                            header.col(|ui| {
-                                ui.label(
-                                    RichText::new("Name")
-                                        .size(TS_SM)
-                                        .strong()
-                                        .color(t().text_secondary),
-                                );
-                            });
-                            header.col(|ui| {
-                                ui.label(
-                                    RichText::new("Junk?")
-                                        .size(TS_SM)
-                                        .strong()
-                                        .color(t().text_secondary),
-                                );
-                            });
-                            header.col(|ui| {
-                                ui.label(
-                                    RichText::new("Confidence")
-                                        .size(TS_SM)
-                                        .strong()
-                                        .color(t().text_secondary),
-                                );
-                            });
-                            header.col(|ui| {
-                                ui.label(
-                                    RichText::new("Signals")
-                                        .size(TS_SM)
-                                        .strong()
-                                        .color(t().text_secondary),
-                                );
-                            });
+                            header.col(|ui| { let _ = ui.checkbox(&mut false, ""); });
+                            header.col(|ui| { ui.label(RichText::new("").size(TS_SM)); });
+                            header.col(|ui| { ui.label(RichText::new("Name").size(TS_SM).strong().color(t().text_secondary)); });
+                            header.col(|ui| { ui.label(RichText::new("Playtime").size(TS_SM).strong().color(t().text_secondary)); });
+                            header.col(|ui| { ui.label(RichText::new("HLTB").size(TS_SM).strong().color(t().text_secondary)); });
+                            header.col(|ui| { ui.label(RichText::new("Rating").size(TS_SM).strong().color(t().text_secondary)); });
+                            header.col(|ui| { ui.label(RichText::new("Proton").size(TS_SM).strong().color(t().text_secondary)); });
+                            header.col(|ui| { ui.label(RichText::new("Junk?").size(TS_SM).strong().color(t().text_secondary)); });
+                            header.col(|ui| { ui.label(RichText::new("Conf.").size(TS_SM).strong().color(t().text_secondary)); });
+                            header.col(|ui| { ui.label(RichText::new("Signals").size(TS_SM).strong().color(t().text_secondary)); });
+                            header.col(|ui| { ui.label(RichText::new("Missing").size(TS_SM).strong().color(t().text_secondary)); });
+                            header.col(|ui| { ui.label(RichText::new("Hidden").size(TS_SM).strong().color(t().text_secondary)); });
+                            header.col(|ui| { ui.label(RichText::new("Lib %").size(TS_SM).strong().color(t().text_secondary)); });
                         })
                         .body(|mut body| {
                             for decision in visible_decisions {
-                                body.row(text_height * 1.2, |mut row| {
+                                let game = game_lookup.get(&decision.app_id).copied();
+                                let row_height = text_height * 1.2;
+                                body.row(row_height, |mut row| {
                                     let app_id = decision.app_id;
                                     let mut checked = self.junk_selected.contains(&app_id);
                                     row.col(|ui| {
@@ -4849,48 +4927,55 @@ impl VapourflyApp {
                                             }
                                         }
                                     });
+                                    // Cover thumbnail (40x20 landscape capsule).
                                     row.col(|ui| {
-                                        ui.label(
-                                            RichText::new(decision.app_id.to_string())
-                                                .size(TS_BODY)
-                                                .color(t().text_primary),
-                                        );
+                                        game_artwork(ui, app_id, &decision.name, 40.0, 20.0, demo_or_offline, &steam_capsule_uri(app_id));
                                     });
+                                    // Name + AppID tag below.
                                     row.col(|ui| {
-                                        ui.label(
-                                            RichText::new(&decision.name)
-                                                .size(TS_BODY)
-                                                .color(t().text_primary),
-                                        );
+                                        ui.vertical(|ui| {
+                                            ui.label(RichText::new(&decision.name).size(TS_BODY).color(t().text_primary));
+                                            ui.label(RichText::new(app_id.to_string()).size(TS_XS).color(t().text_muted).monospace());
+                                        });
                                     });
+                                    // Playtime.
+                                    row.col(|ui| {
+                                        let pt = game.and_then(|g| g.playtime_minutes).unwrap_or(0);
+                                        ui.label(RichText::new(format_playtime(pt)).size(TS_BODY).color(t().text_primary));
+                                    });
+                                    // HLTB (main story).
+                                    row.col(|ui| {
+                                        let hltb = game.and_then(|g| g.hltb.as_ref()).and_then(|h| h.main_story_seconds);
+                                        let label = hltb.map(|s| format_playtime(s / 60)).unwrap_or_else(|| empty_value_label().to_string());
+                                        ui.label(RichText::new(label).size(TS_BODY).color(t().text_primary));
+                                    });
+                                    // Rating (RAWG 0-5).
+                                    row.col(|ui| {
+                                        let rating = game.and_then(|g| g.rawg.as_ref()).and_then(|r| r.rating_0_5);
+                                        let label = rating.map(|r| format!("{r:.1}")).unwrap_or_else(|| empty_value_label().to_string());
+                                        ui.label(RichText::new(label).size(TS_BODY).color(t().text_primary));
+                                    });
+                                    // Proton/Deck tier.
+                                    row.col(|ui| {
+                                        let tier = game.and_then(|g| g.protondb.as_ref()).map(|p| proton_tier_label(p.tier));
+                                        let label = tier.unwrap_or(empty_value_label());
+                                        ui.label(RichText::new(label).size(TS_BODY).color(t().text_primary));
+                                    });
+                                    // Junk?
                                     row.col(|ui| {
                                         if decision.is_junk {
                                             status_badge(ui, "Yes", t().error_soft, t().error);
                                         } else {
-                                            status_badge(
-                                                ui,
-                                                "No",
-                                                t().surface_sunken,
-                                                t().text_muted,
-                                            );
+                                            status_badge(ui, "No", t().surface_sunken, t().text_muted);
                                         }
                                     });
+                                    // Confidence.
                                     row.col(|ui| {
-                                        ui.label(
-                                            RichText::new(format!(
-                                                "{:.0}%",
-                                                decision.confidence * 100.0
-                                            ))
-                                            .size(TS_BODY)
-                                            .color(t().text_primary),
-                                        );
+                                        ui.label(RichText::new(format!("{:.0}%", decision.confidence * 100.0)).size(TS_BODY).color(t().text_primary));
                                     });
+                                    // Matched signals.
                                     row.col(|ui| {
-                                        let signals: Vec<String> = decision
-                                            .matched
-                                            .iter()
-                                            .map(format_junk_signal)
-                                            .collect();
+                                        let signals: Vec<String> = decision.matched.iter().map(format_junk_signal).collect();
                                         ui.label(
                                             RichText::new(if signals.is_empty() {
                                                 empty_value_label().to_string()
@@ -4900,6 +4985,38 @@ impl VapourflyApp {
                                             .size(TS_BODY)
                                             .color(t().text_secondary),
                                         );
+                                    });
+                                    // Missing signals.
+                                    row.col(|ui| {
+                                        let missing: Vec<String> = decision.missing.iter().map(|m| format!("{m:?}")).collect();
+                                        ui.label(
+                                            RichText::new(if missing.is_empty() {
+                                                empty_value_label().to_string()
+                                            } else {
+                                                missing.join(", ")
+                                            })
+                                            .size(TS_BODY)
+                                            .color(t().text_muted),
+                                        );
+                                    });
+                                    // Hidden.
+                                    row.col(|ui| {
+                                        let hidden = game.map(|g| g.is_hidden).unwrap_or(false);
+                                        if hidden {
+                                            status_badge(ui, "Yes", t().surface_sunken, t().text_muted);
+                                        } else {
+                                            ui.label(RichText::new("No").size(TS_BODY).color(t().text_muted));
+                                        }
+                                    });
+                                    // Library share (% of total library playtime).
+                                    row.col(|ui| {
+                                        let pt = game.and_then(|g| g.playtime_minutes).unwrap_or(0) as f32;
+                                        let pct = if total_library_playtime > 0 {
+                                            pt / total_library_playtime as f32 * 100.0
+                                        } else {
+                                            0.0
+                                        };
+                                        ui.label(RichText::new(format!("{pct:.1}%")).size(TS_BODY).color(t().text_muted));
                                     });
                                 });
                             }
@@ -4933,6 +5050,31 @@ impl VapourflyApp {
                             insight_metric(ui, "Candidates", junk_count.to_string());
                             insight_metric(ui, "Selected", selected_count.to_string());
                             insight_metric(ui, "Sel. junk", selected_junk_count.to_string());
+                            ui.separator();
+                            insight_metric(ui, "Threshold", format!("{:?}", self.junk_mode));
+                            let hltb_covered = self
+                                .junk_results
+                                .iter()
+                                .filter(|d| {
+                                    game_lookup
+                                        .get(&d.app_id)
+                                        .and_then(|g| g.hltb.as_ref())
+                                        .is_some()
+                                })
+                                .count();
+                            insight_metric(
+                                ui,
+                                "HLTB coverage",
+                                format!("{}/{} games", hltb_covered, self.junk_results.len()),
+                            );
+                            let playtime_reclaim: u32 = self
+                                .junk_results
+                                .iter()
+                                .filter(|d| d.is_junk && self.junk_selected.contains(&d.app_id))
+                                .filter_map(|d| game_lookup.get(&d.app_id))
+                                .map(|g| g.playtime_minutes.unwrap_or(0))
+                                .sum();
+                            insight_metric(ui, "Focus reclaimed", format_playtime(playtime_reclaim));
                         });
                 },
             );
@@ -5035,6 +5177,16 @@ impl VapourflyApp {
             "Recommendations",
             "Shape a play session, preview scored picks, then write them to vapourfly-picks after confirmation.",
         );
+
+        // Collect lightweight metadata for recommendation cards up-front so
+        // the render closures can mutate self without borrowing from it.
+        let mut rec_metadata: HashMap<u32, GameSummary> = HashMap::new();
+        let demo_or_offline = self.ui_demo || self.offline_mode;
+        if let Some(scan) = self.scan_result.as_ref() {
+            for g in &scan.games {
+                rec_metadata.insert(g.app_id, GameSummary::from(g));
+            }
+        }
 
         // Session planner card.
         section_card(ui, "Session Planner", |ui| {
@@ -5201,6 +5353,7 @@ impl VapourflyApp {
                         _ => "\u{1F949}", // 🥉
                     };
                     let is_selected = self.recommend_selected == Some(rec.app_id);
+                    let meta = rec_metadata.get(&rec.app_id).cloned().unwrap_or_default();
                     egui::Frame::group(ui.style())
                         .fill(if is_selected {
                             t().accent_soft
@@ -5218,8 +5371,19 @@ impl VapourflyApp {
                         .corner_radius(CORNER_MD)
                         .inner_margin(egui::Margin::same(m(SP_3)))
                         .show(ui, |ui| {
-                            ui.set_min_width(200.0);
+                            ui.set_width(RECOMMEND_CARD_IMG_W + f32::from(m(SP_3)) * 2.0);
                             ui.vertical(|ui| {
+                                // 220x124 hero image for the recommendation.
+                                game_artwork(
+                                    ui,
+                                    rec.app_id,
+                                    &rec.name,
+                                    RECOMMEND_CARD_IMG_W,
+                                    RECOMMEND_CARD_IMG_H,
+                                    demo_or_offline,
+                                    &steam_capsule_uri(rec.app_id),
+                                );
+                                ui.add_space(SP_2);
                                 ui.horizontal(|ui| {
                                     ui.label(RichText::new(medal).size(TS_LG));
                                     ui.label(
@@ -5240,10 +5404,26 @@ impl VapourflyApp {
                                     );
                                 });
                                 ui.add_space(SP_1);
+                                // Compact metadata row.
+                                let pt = meta.playtime_minutes;
+                                let hltb = meta
+                                    .hltb_minutes
+                                    .map(|m| format!("HLTB {}", format_playtime(m)));
+                                let rating = meta.rating_0_5.map(|r| format!("★{r:.1}"));
+                                let proton = meta.proton_tier.map(|t| proton_tier_label(t).to_string());
+                                let meta_line = [hltb, rating, proton]
+                                    .into_iter()
+                                    .flatten()
+                                    .collect::<Vec<_>>()
+                                    .join(" · ");
                                 ui.label(
-                                    RichText::new(format!("Score: {:.2}", rec.score))
-                                        .size(TS_SM)
-                                        .color(t().text_secondary),
+                                    RichText::new(if meta_line.is_empty() {
+                                        format!("Played {} · Score {:.2}", format_playtime(pt), rec.score)
+                                    } else {
+                                        format!("{meta_line} · Played {} · Score {:.2}", format_playtime(pt), rec.score)
+                                    })
+                                    .size(TS_SM)
+                                    .color(t().text_secondary),
                                 );
                                 if ui
                                     .button(RichText::new("Why this pick?").size(TS_XS))
@@ -5767,155 +5947,313 @@ impl VapourflyApp {
 
     /// Render the right workspace of the Playlists master-detail.
     fn render_playlist_workspace(&mut self, ui: &mut egui::Ui) {
-        // Hero: ID, Name, Description fields + Save.
+        // Build the current PlaylistFile for display (last-saved wins over
+        // in-progress edit fields so stats reflect the persisted list).
+        let current_pf = self
+            .playlist_last_import
+            .clone()
+            .or_else(|| self.build_playlist_from_edit_fields().ok());
+        let avg_hltb = {
+            let games_ref = self
+                .scan_result
+                .as_ref()
+                .map(|s| s.games.as_slice())
+                .unwrap_or(&[]);
+            current_pf
+                .as_ref()
+                .and_then(|pf| playlist_avg_hltb(&pf.playlist.content, self.playlist_match_report.as_ref(), games_ref))
+        };
+        let demo_or_offline = self.ui_demo || self.offline_mode;
+
+        // Hero: cover + editable name/description + content type + creator + stats.
         section_card(ui, "Playlist", |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_2);
-                form_field(ui, "ID", |ui| {
-                    ui.add_sized(
-                        [160.0, 28.0],
-                        egui::TextEdit::singleline(&mut self.playlist_edit_id).hint_text("my-list"),
-                    );
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_3);
+                // Cover image (220x124 landscape capsule or deterministic placeholder).
+                let cover_app_id = current_pf.as_ref().map_or(0, |pf| {
+                    playlist_cover_app_id(&pf.playlist.content)
                 });
-                form_field(ui, "Name", |ui| {
-                    ui.add_sized(
-                        [180.0, 28.0],
-                        egui::TextEdit::singleline(&mut self.playlist_edit_name)
-                            .hint_text("Display name"),
-                    );
-                });
-            });
-            ui.add_space(SP_2);
-            form_field(ui, "Description", |ui| {
-                ui.add_sized(
-                    [360.0, 28.0],
-                    egui::TextEdit::singleline(&mut self.playlist_edit_description)
-                        .hint_text("Optional"),
+                let cover_name = current_pf
+                    .as_ref()
+                    .map(|pf| pf.playlist.name.clone())
+                    .unwrap_or_default();
+                game_artwork(
+                    ui,
+                    cover_app_id,
+                    &cover_name,
+                    220.0,
+                    124.0,
+                    demo_or_offline,
+                    &steam_capsule_uri(cover_app_id),
                 );
+                // Text column.
+                ui.vertical(|ui| {
+                    ui.set_min_width(300.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                        form_field(ui, "ID", |ui| {
+                            ui.add_sized(
+                                [160.0, 28.0],
+                                egui::TextEdit::singleline(&mut self.playlist_edit_id)
+                                    .hint_text("my-list"),
+                            );
+                        });
+                        if let Some(pf) = &current_pf {
+                            status_badge(
+                                ui,
+                                playlist_content_type_label(&pf.playlist.content),
+                                t().accent_soft,
+                                t().accent_text,
+                            );
+                        }
+                    });
+                    ui.add_space(SP_2);
+                    form_field(ui, "Name", |ui| {
+                        ui.add_sized(
+                            [280.0, 28.0],
+                            egui::TextEdit::singleline(&mut self.playlist_edit_name)
+                                .hint_text("Display name"),
+                        );
+                    });
+                    ui.add_space(SP_2);
+                    form_field(ui, "Description", |ui| {
+                        ui.add_sized(
+                            [360.0, 28.0],
+                            egui::TextEdit::singleline(&mut self.playlist_edit_description)
+                                .hint_text("Optional"),
+                        );
+                    });
+                    if let Some(pf) = &current_pf {
+                        ui.add_space(SP_2);
+                        ui.label(
+                            RichText::new(format!(
+                                "Creator: {} · Local store · {}",
+                                pf.created_by,
+                                match &pf.playlist.content {
+                                    PlaylistContent::Manual { app_ids } => {
+                                        format!("{} games", app_ids.len())
+                                    }
+                                    PlaylistContent::Rules { rules } => {
+                                        format!("{} rules", rules.len())
+                                    }
+                                }
+                            ))
+                            .size(TS_SM)
+                            .color(t().text_secondary),
+                        );
+                    }
+                });
             });
             ui.add_space(SP_3);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
-                if primary_button(ui, "Save Playlist").clicked() {
-                    match self.build_playlist_from_edit_fields() {
-                        Ok(pf) => {
-                            // Check for duplicate ID.
-                            if self.playlist_store_ids.contains(&pf.playlist.id)
-                                && self.playlist_load_selected != pf.playlist.id
-                            {
-                                self.playlist_dup_id_confirm = Some((pf.playlist.id.clone(), pf));
-                            } else {
-                                match self.store_playlist(&pf) {
-                                    Ok(()) => {
-                                        self.playlist_last_import = Some(pf.clone());
-                                        self.match_playlist_against_library_background(
-                                            ui.ctx(),
-                                            &pf,
-                                        );
-                                        self.refresh_playlist_store_ids();
-                                        self.playlist_load_selected = pf.playlist.id.clone();
-                                        self.success_msg =
-                                            Some(format!("Saved playlist '{}'", pf.playlist.name));
-                                    }
-                                    Err(e) => self.error = Some(e),
-                                }
-                            }
-                        }
-                        Err(e) => self.error = Some(e),
+                if current_pf.is_some() {
+                    let report = self.playlist_match_report.as_ref();
+                    let owned = report.map(|r| r.owned.len()).unwrap_or(0);
+                    let unplayed = report.map(|r| r.unplayed.len()).unwrap_or(0);
+                    status_badge(ui, &format!("Owned {owned}"), t().surface_sunken, t().text_primary);
+                    status_badge(ui, &format!("Unplayed {unplayed}"), t().surface_sunken, t().text_primary);
+                    if let Some(h) = avg_hltb {
+                        status_badge(ui, &format!("Avg HLTB {}", format_playtime(h)), t().surface_sunken, t().text_primary);
                     }
                 }
-                // Share code / JSON tabs.
-                ui.separator();
-                let share_tab = &mut self.playlist_share_tab;
-                ui.selectable_value(share_tab, PlaylistShareTab::ShareCode, "Share Code");
-                ui.selectable_value(share_tab, PlaylistShareTab::Json, "JSON");
-                if let Some(pf) = &self.playlist_last_import {
-                    match self.playlist_share_tab {
-                        PlaylistShareTab::ShareCode => {
-                            if secondary_button(ui, "Copy Share Code").clicked() {
-                                match share_code::encode_share_code(pf) {
-                                    Ok(code) => {
-                                        self.playlist_share_code_output = Some(code.clone());
-                                        ui.ctx().copy_text(code);
-                                        self.success_msg =
-                                            Some("Share code copied to clipboard (VF1).".into());
-                                    }
-                                    Err(e) => self.error = Some(format!("Share code failed: {e}")),
-                                }
-                            }
-                            if let Some(code) = &self.playlist_share_code_output {
-                                ui.label(
-                                    RichText::new(format!("VF1: {code}"))
-                                        .size(TS_SM)
-                                        .color(t().text_muted)
-                                        .monospace(),
-                                );
-                            }
-                        }
-                        PlaylistShareTab::Json => {
-                            if secondary_button(ui, "Export…").clicked() {
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .set_file_name(format!("{}.json", pf.playlist.id))
-                                    .add_filter("JSON", &["json"])
-                                    .save_file()
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if primary_button(ui, "Save Playlist").clicked() {
+                        match self.build_playlist_from_edit_fields() {
+                            Ok(pf) => {
+                                if self.playlist_store_ids.contains(&pf.playlist.id)
+                                    && self.playlist_load_selected != pf.playlist.id
                                 {
-                                    self.playlist_export_path = path.display().to_string();
-                                    match self.export_loaded_playlist() {
+                                    self.playlist_dup_id_confirm = Some((pf.playlist.id.clone(), pf));
+                                } else {
+                                    match self.store_playlist(&pf) {
                                         Ok(()) => {
+                                            self.playlist_last_import = Some(pf.clone());
+                                            self.match_playlist_against_library_background(
+                                                ui.ctx(),
+                                                &pf,
+                                            );
+                                            self.refresh_playlist_store_ids();
+                                            self.playlist_load_selected = pf.playlist.id.clone();
                                             self.success_msg = Some(format!(
-                                                "Exported playlist '{}' to {}",
-                                                pf.playlist.name,
-                                                self.playlist_export_path.trim()
+                                                "Saved playlist '{}'",
+                                                pf.playlist.name
                                             ));
                                         }
-                                        Err(e) => self.error = Some(format!("Export failed: {e}")),
+                                        Err(e) => self.error = Some(e),
                                     }
                                 }
                             }
+                            Err(e) => self.error = Some(e),
                         }
                     }
-                    // Sync button.
-                    let busy = self.write_loading || self.dry_run_loading;
-                    if ui
-                        .add_enabled(
-                            !busy,
-                            egui::Button::new(
-                                RichText::new("Sync to Steam Collection")
-                                    .size(TS_SM)
-                                    .color(t().text_inverse),
-                            )
-                            .fill(t().accent)
-                            .stroke(egui::Stroke::NONE)
-                            .corner_radius(CORNER_SM),
-                        )
-                        .clicked()
-                    {
-                        self.start_dry_run(PendingAction::PlaylistSync(pf.clone()));
-                    }
-                    if self.dry_run_loading {
-                        ui.spinner();
-                    }
-                }
+                });
             });
         });
 
-        // Tabs: Games / Rules / Match.
+        // Two-column layout: Games/Rules/Match tabs (left) + metadata rail (right).
+        // At compact widths the rail moves below the tabs.
         ui.add_space(SP_3);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(SP_1, SP_1);
-            let tab = &mut self.playlist_detail_tab;
-            ui.selectable_value(tab, PlaylistDetailTab::Games, "Games");
-            ui.selectable_value(tab, PlaylistDetailTab::Rules, "Rules");
-            ui.selectable_value(tab, PlaylistDetailTab::Match, "Match");
-        });
-        ui.separator();
-        ui.add_space(SP_2);
+        let rails_below = self.rails_below;
+        let layout = if rails_below {
+            egui::Layout::top_down(egui::Align::LEFT)
+        } else {
+            egui::Layout::left_to_right(egui::Align::Min)
+        };
+        ui.with_layout(layout, |ui| {
+            // Left column: tab selector + content.
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(SP_1, SP_1);
+                    let tab = &mut self.playlist_detail_tab;
+                    ui.selectable_value(tab, PlaylistDetailTab::Games, "Games");
+                    ui.selectable_value(tab, PlaylistDetailTab::Rules, "Rules");
+                    ui.selectable_value(tab, PlaylistDetailTab::Match, "Match");
+                });
+                ui.separator();
+                ui.add_space(SP_2);
 
-        match self.playlist_detail_tab {
-            PlaylistDetailTab::Games => self.render_playlist_games_tab(ui),
-            PlaylistDetailTab::Rules => self.render_playlist_rules_tab(ui),
-            PlaylistDetailTab::Match => self.render_playlist_match_tab(ui),
-        }
+                match self.playlist_detail_tab {
+                    PlaylistDetailTab::Games => self.render_playlist_games_tab(ui),
+                    PlaylistDetailTab::Rules => self.render_playlist_rules_tab(ui),
+                    PlaylistDetailTab::Match => self.render_playlist_match_tab(ui),
+                }
+            });
+
+            // Right rail: metadata, share, sync.
+            ui.add_space(SP_4);
+            ui.allocate_ui_with_layout(
+                egui::vec2(200.0, ui.available_height()),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    egui::Frame::group(ui.style())
+                        .fill(t().surface)
+                        .stroke(egui::Stroke::new(1.0, t().border_soft))
+                        .corner_radius(CORNER_MD)
+                        .inner_margin(egui::Margin::same(m(SP_3)))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new("Playlist details")
+                                    .size(TS_MD)
+                                    .strong()
+                                    .color(t().text_primary),
+                            );
+                            ui.add_space(SP_2);
+                            ui.separator();
+                            ui.add_space(SP_2);
+                            ui.spacing_mut().item_spacing.y = SP_3;
+
+                            if let Some(pf) = &current_pf {
+                                insight_metric(
+                                    ui,
+                                    "Description",
+                                    if pf.playlist.description.is_empty() {
+                                        "—".to_string()
+                                    } else {
+                                        pf.playlist.description.clone()
+                                    },
+                                );
+                                insight_metric(
+                                    ui,
+                                    "Content type",
+                                    playlist_content_type_label(&pf.playlist.content).to_string(),
+                                );
+                                insight_metric(
+                                    ui,
+                                    "Game count",
+                                    playlist_game_count(&pf.playlist.content, self.playlist_match_report.as_ref()).to_string(),
+                                );
+                                insight_metric(ui, "Creator", pf.created_by.clone());
+                                insight_metric(ui, "Store", "Local".to_string());
+                                // Generator / content badge.
+                                let badge = match &pf.playlist.content {
+                                    PlaylistContent::Manual { .. } => "Manual curation",
+                                    PlaylistContent::Rules { .. } => "Rule generator",
+                                };
+                                status_badge(ui, badge, t().accent_soft, t().accent_text);
+                                ui.separator();
+
+                                // Share code / JSON tabs.
+                                let share_tab = &mut self.playlist_share_tab;
+                                ui.horizontal(|ui| {
+                                    ui.selectable_value(share_tab, PlaylistShareTab::ShareCode, "Share Code");
+                                    ui.selectable_value(share_tab, PlaylistShareTab::Json, "JSON");
+                                });
+                                match self.playlist_share_tab {
+                                    PlaylistShareTab::ShareCode => {
+                                        if secondary_button(ui, "Copy Share Code").clicked() {
+                                            match share_code::encode_share_code(pf) {
+                                                Ok(code) => {
+                                                    self.playlist_share_code_output = Some(code.clone());
+                                                    ui.ctx().copy_text(code);
+                                                    self.success_msg =
+                                                        Some("Share code copied to clipboard (VF1).".into());
+                                                }
+                                                Err(e) => self.error = Some(format!("Share code failed: {e}")),
+                                            }
+                                        }
+                                        if let Some(code) = &self.playlist_share_code_output {
+                                            ui.label(
+                                                RichText::new(format!("VF1: {code}"))
+                                                    .size(TS_SM)
+                                                    .color(t().text_muted)
+                                                    .monospace(),
+                                            );
+                                        }
+                                    }
+                                    PlaylistShareTab::Json => {
+                                        if secondary_button(ui, "Export…").clicked() {
+                                            if let Some(path) = rfd::FileDialog::new()
+                                                .set_file_name(format!("{}.json", pf.playlist.id))
+                                                .add_filter("JSON", &["json"])
+                                                .save_file()
+                                            {
+                                                self.playlist_export_path = path.display().to_string();
+                                                match self.export_loaded_playlist() {
+                                                    Ok(()) => {
+                                                        self.success_msg = Some(format!(
+                                                            "Exported playlist '{}' to {}",
+                                                            pf.playlist.name,
+                                                            self.playlist_export_path.trim()
+                                                        ));
+                                                    }
+                                                    Err(e) => self.error = Some(format!("Export failed: {e}")),
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                // Sync button.
+                                ui.add_space(SP_2);
+                                let busy = self.write_loading || self.dry_run_loading;
+                                if ui
+                                    .add_enabled(
+                                        !busy,
+                                        egui::Button::new(
+                                            RichText::new("Sync to Steam Collection")
+                                                .size(TS_SM)
+                                                .color(t().text_inverse),
+                                        )
+                                        .fill(t().accent)
+                                        .stroke(egui::Stroke::NONE)
+                                        .corner_radius(CORNER_SM),
+                                    )
+                                    .clicked()
+                                {
+                                    self.start_dry_run(PendingAction::PlaylistSync(pf.clone()));
+                                }
+                                if self.dry_run_loading {
+                                    ui.spinner();
+                                }
+                            } else {
+                                ui.label(
+                                    RichText::new("Save a playlist to see details.").size(TS_SM).color(t().text_muted),
+                                );
+                            }
+                        });
+                },
+            );
+        });
     }
 
     /// Games tab: App IDs CSV editor + game search Add/Remove.
