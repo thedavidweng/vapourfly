@@ -992,35 +992,127 @@ fn empty_state(ui: &mut egui::Ui, icon: &str, title: &str, subtitle: &str) {
     ui.add_space(SP_6);
 }
 
-fn game_image(ui: &mut egui::Ui, app_id: u32, name: &str, offline: bool) {
-    if offline {
-        // Offline fallback: show a named placeholder instead of attempting
-        // a network image load that will hang until timeout.
-        egui::Frame::NONE
-            .fill(t().surface_sunken)
-            .corner_radius(CORNER_SM)
-            .inner_margin(egui::Margin::same(m(SP_4)))
-            .show(ui, |ui| {
-                ui.set_min_size(egui::vec2(POSTER_W, POSTER_H));
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        RichText::new(name)
-                            .size(TS_SM)
-                            .color(t().text_muted)
-                            .strong(),
-                    );
-                });
-            });
-    } else {
-        ui.add(
-            egui::Image::from_uri(steam_capsule_uri(app_id))
-                .fit_to_exact_size(egui::vec2(POSTER_W, POSTER_H))
-                .corner_radius(CORNER_SM)
-                .bg_fill(t().surface_sunken)
-                .show_loading_spinner(true)
-                .alt_text(format!("{name} cover")),
+/// Deterministic placeholder palette for game artwork. Indexed by
+/// `app_id % PALETTE.len()` so the same game always gets the same colors.
+/// Each entry is (top_block, bottom_block) — two distinct shades that make
+/// the placeholder visually identifiable without any network fetch.
+const ARTWORK_PALETTE: [(Color32, Color32); 8] = [
+    (Color32::from_rgb(0x4C, 0x6E, 0xF0), Color32::from_rgb(0x2A, 0x4A, 0xC0)),
+    (Color32::from_rgb(0xE1, 0x70, 0x55), Color32::from_rgb(0xB5, 0x4A, 0x35)),
+    (Color32::from_rgb(0x2E, 0xC4, 0xB6), Color32::from_rgb(0x1A, 0x9A, 0x8E)),
+    (Color32::from_rgb(0xF4, 0xC4, 0x30), Color32::from_rgb(0xC0, 0x98, 0x18)),
+    (Color32::from_rgb(0x9B, 0x59, 0xB6), Color32::from_rgb(0x72, 0x3C, 0x8A)),
+    (Color32::from_rgb(0x34, 0x98, 0xDB), Color32::from_rgb(0x21, 0x70, 0xA8)),
+    (Color32::from_rgb(0xE6, 0x7E, 0x22), Color32::from_rgb(0xB0, 0x5C, 0x12)),
+    (Color32::from_rgb(0x1A, 0xBC, 0x9C), Color32::from_rgb(0x12, 0x8E, 0x76)),
+];
+
+/// Render the deterministic placeholder for a game: two color blocks (top 60%,
+/// bottom 40%), the title initial centered, and the AppID in the bottom-right
+/// corner. Used when CDN art is unavailable (demo mode, offline mode, or
+/// network failure).
+fn render_artwork_placeholder(
+    ui: &mut egui::Ui,
+    app_id: u32,
+    name: &str,
+    width: f32,
+    height: f32,
+) {
+    let (top, bottom) = ARTWORK_PALETTE[(app_id as usize) % ARTWORK_PALETTE.len()];
+    let initial = name
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_default();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let split = rect.top() + rect.height() * 0.6;
+        let top_rect = egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), split));
+        let bot_rect = egui::Rect::from_min_max(egui::pos2(rect.left(), split), rect.max);
+        ui.painter().rect_filled(top_rect, CORNER_SM, top);
+        ui.painter().rect_filled(bot_rect, CORNER_SM, bottom);
+        // Title initial, centered in the top block.
+        let initial_galley = ui.painter().layout(
+            initial,
+            egui::FontId::proportional(height * 0.35),
+            Color32::WHITE,
+            width,
+        );
+        ui.painter().galley(
+            top_rect.center() - egui::vec2(initial_galley.size().x * 0.5, initial_galley.size().y * 0.5),
+            initial_galley,
+            Color32::WHITE,
+        );
+        // AppID in the bottom-right corner.
+        let id_galley = ui.painter().layout(
+            app_id.to_string(),
+            egui::FontId::monospace(height * 0.12),
+            Color32::from_white_alpha(180),
+            width,
+        );
+        ui.painter().galley(
+            egui::pos2(
+                bot_rect.right() - id_galley.size().x - f32::from(m(SP_1)),
+                bot_rect.bottom() - id_galley.size().y - f32::from(m(SP_1)),
+            ),
+            id_galley,
+            Color32::from_white_alpha(180),
         );
     }
+}
+
+/// Shared game artwork component. Renders CDN art when available, falling back
+/// to a deterministic placeholder when:
+/// - `demo_or_offline` is true (ui_demo or offline_mode — CDN is banned), or
+/// - the CDN image fails to load (network error, 404, etc.).
+///
+/// This is the single source of truth for game art across all views (Library
+/// cards, collection collages, recommendation cards, playlist heroes).
+fn game_artwork(
+    ui: &mut egui::Ui,
+    app_id: u32,
+    name: &str,
+    width: f32,
+    height: f32,
+    demo_or_offline: bool,
+    uri: &str,
+) {
+    if demo_or_offline {
+        render_artwork_placeholder(ui, app_id, name, width, height);
+        return;
+    }
+    // Try to load the CDN image. If it fails (network error, 404), fall back
+    // to the placeholder instead of egui's default "⚠" error glyph.
+    let image = egui::Image::from_uri(uri)
+        .fit_to_exact_size(egui::vec2(width, height))
+        .corner_radius(CORNER_SM)
+        .bg_fill(t().surface_sunken)
+        .show_loading_spinner(true)
+        .alt_text(format!("{name} cover"));
+    let load_result = image.load_for_size(ui.ctx(), egui::vec2(width, height));
+    match load_result {
+        Ok(egui::load::TexturePoll::Ready { .. }) | Ok(egui::load::TexturePoll::Pending { .. }) => {
+            ui.add(image);
+        }
+        Err(_) => {
+            // Network failure → deterministic placeholder.
+            render_artwork_placeholder(ui, app_id, name, width, height);
+        }
+    }
+}
+
+/// Library card artwork (landscape capsule). Uses the shared `game_artwork`
+/// component with the Steam header capsule URL.
+fn game_image(ui: &mut egui::Ui, app_id: u32, name: &str, demo_or_offline: bool) {
+    game_artwork(
+        ui,
+        app_id,
+        name,
+        POSTER_W,
+        POSTER_H,
+        demo_or_offline,
+        &steam_capsule_uri(app_id),
+    );
 }
 
 fn app_id_tag(ui: &mut egui::Ui, app_id: u32) {
@@ -4447,7 +4539,7 @@ impl VapourflyApp {
 
                             ui.add_space(SP_2);
                             ui.vertical_centered(|ui| {
-                                game_image(ui, game.app_id, &game.name, self.offline_mode);
+                                game_image(ui, game.app_id, &game.name, self.ui_demo || self.offline_mode);
                             });
 
                             ui.add_space(SP_2);
@@ -6562,7 +6654,7 @@ impl VapourflyApp {
             |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_3);
                 for coll in &self.collections {
-                    render_collection_card(ui, coll);
+                    render_collection_card(ui, coll, self.ui_demo || self.offline_mode);
                 }
             },
         );
@@ -7484,7 +7576,7 @@ const COLLAGE_POSTER_H: f32 = 66.0;
 const COLLAGE_MAX: usize = 4;
 
 /// Read-only collection overview card: name, count, poster collage.
-fn render_collection_card(ui: &mut egui::Ui, coll: &SteamCollection) {
+fn render_collection_card(ui: &mut egui::Ui, coll: &SteamCollection, demo_or_offline: bool) {
     ui.allocate_ui_with_layout(
         egui::vec2(COLLECTION_CARD_W, COLLECTION_CARD_H),
         egui::Layout::top_down(egui::Align::LEFT),
@@ -7542,16 +7634,14 @@ fn render_collection_card(ui: &mut egui::Ui, coll: &SteamCollection) {
                                 });
                         } else {
                             for app_id in shown {
-                                ui.add(
-                                    egui::Image::from_uri(steam_poster_uri(app_id))
-                                        .fit_to_exact_size(egui::vec2(
-                                            COLLAGE_POSTER_W,
-                                            COLLAGE_POSTER_H,
-                                        ))
-                                        .corner_radius(CORNER_SM)
-                                        .bg_fill(t().surface_sunken)
-                                        .show_loading_spinner(true)
-                                        .alt_text(format!("App {app_id} cover")),
+                                game_artwork(
+                                    ui,
+                                    app_id,
+                                    "",
+                                    COLLAGE_POSTER_W,
+                                    COLLAGE_POSTER_H,
+                                    demo_or_offline,
+                                    &steam_poster_uri(app_id),
                                 );
                             }
                             if coll.app_ids.len() > COLLAGE_MAX {
@@ -8188,6 +8278,19 @@ mod tests {
             steam_poster_uri(730),
             "https://cdn.cloudflare.steamstatic.com/steam/apps/730/library_600x900.jpg"
         );
+    }
+
+    #[test]
+    fn artwork_palette_is_deterministic_by_app_id() {
+        // Same app_id → same palette entry.
+        assert_eq!(
+            ARTWORK_PALETTE[(730u32 as usize) % ARTWORK_PALETTE.len()],
+            ARTWORK_PALETTE[(730u32 as usize) % ARTWORK_PALETTE.len()]
+        );
+        // Different app_ids → different palette entries (for small ids).
+        let a = ARTWORK_PALETTE[(1000u32 as usize) % ARTWORK_PALETTE.len()];
+        let b = ARTWORK_PALETTE[(1001u32 as usize) % ARTWORK_PALETTE.len()];
+        assert_ne!(a, b, "adjacent app_ids should get different palette entries");
     }
 
     #[test]
