@@ -5112,10 +5112,12 @@ impl VapourflyApp {
                     {
                         ui.label(
                             RichText::new(format!(
-                                "Price coverage: {}/{} missing entries priced ({:.0}%)",
-                                coverage.priced,
-                                coverage.non_free,
-                                ratio * 100.0
+                                "Price coverage: {}/{} confirmed non-free priced ({:.0}%), {} free, {} unknown",
+                                coverage.confirmed_non_free_priced,
+                                coverage.confirmed_non_free(),
+                                ratio * 100.0,
+                                coverage.confirmed_free,
+                                coverage.unknown
                             ))
                             .size(TS_SM)
                             .color(t().text_muted),

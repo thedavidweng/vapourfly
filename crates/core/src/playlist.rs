@@ -489,44 +489,51 @@ pub fn match_playlist(
         if !is_manual || missing.is_empty() {
             (None, None)
         } else {
-            // Classify each missing entry: free, non-free with price, non-free
-            // without price.
-            let mut non_free_count: usize = 0;
-            let mut priced_count: usize = 0;
-            // Per-currency totals.
+            // Classify each missing entry into:
+            //   confirmed_free, confirmed_non_free_priced,
+            //   confirmed_non_free_unpriced, unknown.
+            let mut confirmed_free: usize = 0;
+            let mut confirmed_non_free_priced: usize = 0;
+            let mut confirmed_non_free_unpriced: usize = 0;
+            let mut unknown: usize = 0;
+            // Per-currency totals (only for confirmed non-free priced).
             let mut totals: HashMap<String, u64> = HashMap::new();
 
             for &id in &missing {
                 let Some(store) = missing_store_details.get(&id) else {
-                    // No store details: if we can determine it's non-free,
-                    // count it. Without details we assume non-free (the
-                    // common case for paid games).
-                    non_free_count += 1;
+                    // No store details: unknown — excluded from denominator.
+                    unknown += 1;
                     continue;
                 };
 
                 if store.is_free {
-                    // Free games are not counted in non_free or priced.
+                    confirmed_free += 1;
                     continue;
                 }
 
-                non_free_count += 1;
-
+                // Confirmed non-free.
                 if let Some(price) = &store.price_overview {
-                    priced_count += 1;
+                    confirmed_non_free_priced += 1;
                     *totals.entry(price.currency.clone()).or_default() +=
                         u64::from(price.final_price_cents);
+                } else {
+                    confirmed_non_free_unpriced += 1;
                 }
             }
 
-            let price_coverage = if non_free_count > 0 {
-                Some(PriceCoverage {
-                    priced: priced_count,
-                    non_free: non_free_count,
-                })
-            } else {
-                None
-            };
+            let total_confirmed_non_free = confirmed_non_free_priced + confirmed_non_free_unpriced;
+
+            let price_coverage =
+                if total_confirmed_non_free > 0 || confirmed_free > 0 || unknown > 0 {
+                    Some(PriceCoverage {
+                        confirmed_free,
+                        confirmed_non_free_priced,
+                        confirmed_non_free_unpriced,
+                        unknown,
+                    })
+                } else {
+                    None
+                };
 
             let completion_price = if totals.is_empty() {
                 None
@@ -1500,10 +1507,11 @@ mod tests {
         let missing = HashMap::new(); // no store details for 100
         let report = match_playlist(&pf, &games, &missing).unwrap();
         assert!(report.completion_price.is_none());
-        // But coverage should reflect the non-free missing entry.
+        // No store details → unknown (excluded from denominator).
         let coverage = report.price_coverage.expect("should have coverage");
-        assert_eq!(coverage.priced, 0);
-        assert_eq!(coverage.non_free, 1);
+        assert_eq!(coverage.confirmed_non_free_priced, 0);
+        assert_eq!(coverage.confirmed_non_free_unpriced, 0);
+        assert_eq!(coverage.unknown, 1);
     }
 
     #[test]
@@ -1514,7 +1522,10 @@ mod tests {
         missing.insert(100, make_store_details(100, "Free Missing", true, None));
         let report = match_playlist(&pf, &games, &missing).unwrap();
         assert!(report.completion_price.is_none());
-        assert!(report.price_coverage.is_none()); // no non-free missing
+        // Coverage exists but shows only confirmed_free, no non-free.
+        let coverage = report.price_coverage.expect("should have coverage");
+        assert_eq!(coverage.confirmed_free, 1);
+        assert_eq!(coverage.confirmed_non_free(), 0);
     }
 
     #[test]
@@ -1532,8 +1543,11 @@ mod tests {
         let report = match_playlist(&pf, &games, &missing).unwrap();
 
         let coverage = report.price_coverage.expect("should have coverage");
-        assert_eq!(coverage.priced, 1);
-        assert_eq!(coverage.non_free, 2); // 100 and 101 are non-free
+        assert_eq!(coverage.confirmed_non_free_priced, 1); // 100
+        assert_eq!(coverage.confirmed_non_free_unpriced, 1); // 101
+        assert_eq!(coverage.confirmed_free, 1); // 102
+        assert_eq!(coverage.unknown, 0);
+        assert_eq!(coverage.confirmed_non_free(), 2); // 100 + 101
         let ratio = coverage.ratio().expect("should have ratio");
         assert!((ratio - 0.5).abs() < 1e-9);
     }

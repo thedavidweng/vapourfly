@@ -601,25 +601,42 @@ impl CompletionPrice {
     }
 }
 
-/// How many missing non-free entries have price data vs. how many are missing
-/// and non-free overall.
+/// How many missing entries fall into each price-confirmation category.
+///
+/// Only `confirmed_non_free_priced` + `confirmed_non_free_unpriced` (i.e.
+/// confirmed non-free) count toward the completion-price denominator.
+/// `unknown` entries (no store details) are excluded from the denominator
+/// because we cannot confirm they are non-free.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PriceCoverage {
-    /// Missing entries that are non-free and have price data.
-    pub priced: usize,
-    /// Missing entries that are non-free (regardless of whether price data
-    /// is available).
-    pub non_free: usize,
+    /// Missing entries confirmed free (store details say `is_free == true`).
+    pub confirmed_free: usize,
+    /// Missing entries confirmed non-free with price data.
+    pub confirmed_non_free_priced: usize,
+    /// Missing entries confirmed non-free without price data.
+    pub confirmed_non_free_unpriced: usize,
+    /// Missing entries with no store details at all (cannot confirm free or
+    /// non-free). Excluded from the completion-price denominator.
+    pub unknown: usize,
 }
 
 impl PriceCoverage {
-    /// Ratio of priced to non-free missing entries, or `None` when
-    /// `non_free == 0`.
+    /// Total confirmed non-free (priced + unpriced). This is the denominator
+    /// for completion-price coverage.
+    pub fn confirmed_non_free(&self) -> usize {
+        self.confirmed_non_free_priced + self.confirmed_non_free_unpriced
+    }
+}
+
+impl PriceCoverage {
+    /// Ratio of priced to confirmed non-free missing entries, or `None`
+    /// when there are no confirmed non-free entries.
     pub fn ratio(&self) -> Option<f64> {
-        if self.non_free == 0 {
+        let denom = self.confirmed_non_free();
+        if denom == 0 {
             None
         } else {
-            Some(self.priced as f64 / self.non_free as f64)
+            Some(self.confirmed_non_free_priced as f64 / denom as f64)
         }
     }
 }
