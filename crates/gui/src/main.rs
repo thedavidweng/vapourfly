@@ -238,6 +238,8 @@ struct VapourflyApp {
 
     /// Optional override for the playlist store directory (tests inject a temp dir).
     playlist_store_dir: Option<PathBuf>,
+    /// Cache directory (temp dir in --ui-demo mode, default otherwise).
+    cache_dir: PathBuf,
 
     // Library view
     search_query: String,
@@ -1180,8 +1182,21 @@ impl VapourflyApp {
 
         let has_rawg = config.as_ref().is_some_and(|c| c.has_rawg_credentials);
 
+        // In --ui-demo mode, redirect all I/O to a temp directory so no real
+        // cache, playlist store, or account data is read or written.
+        let (playlist_store_dir, cache_root) = if ui_demo {
+            let temp_root = std::env::temp_dir().join("vapourfly-ui-demo");
+            let _ = std::fs::create_dir_all(&temp_root);
+            let playlists = temp_root.join("playlists");
+            let cache = temp_root.join("cache");
+            let _ = std::fs::create_dir_all(&playlists);
+            let _ = std::fs::create_dir_all(&cache);
+            (Some(playlists), cache)
+        } else {
+            (None, vapourfly_core::config::default_cache_dir())
+        };
+
         // Load source cache statuses
-        let cache_root = vapourfly_core::config::default_cache_dir();
         let source_statuses = vapourfly_api::enrichment::source_status(&cache_root);
 
         Self {
@@ -1195,7 +1210,8 @@ impl VapourflyApp {
             theme_mode: ThemeMode::Light,
 
             config,
-            playlist_store_dir: None,
+            playlist_store_dir,
+            cache_dir: cache_root,
 
             search_query: String::new(),
             filter_installed_only: false,
@@ -1666,8 +1682,7 @@ impl VapourflyApp {
         ];
 
         // -- Source statuses --------------------------------------------------
-        self.source_statuses =
-            vapourfly_api::enrichment::source_status(&vapourfly_core::config::default_cache_dir());
+        self.source_statuses = vapourfly_api::enrichment::source_status(&self.cache_dir);
 
         // -- Detected accounts ------------------------------------------------
         self.detected_accounts = vec![SteamAccount {
@@ -1687,13 +1702,88 @@ impl VapourflyApp {
         }];
 
         // -- Playlist store ids -----------------------------------------------
-        self.playlist_store_ids = vec![
+        // In --ui-demo mode, write real loadable demo Playlist files to the
+        // temp playlist store so "Load existing" and generator slots work.
+        let demo_ids: Vec<String> = vec![
             "my-favorites".into(),
             "story-games".into(),
             "discover".into(),
             "dynamic-deck-session".into(),
             "mood-quick-round".into(),
         ];
+        if self.ui_demo {
+            let store_path = self.playlist_store_path();
+            let _ = std::fs::create_dir_all(&store_path);
+            // Manual playlist: my-favorites (games 1000, 1002, 1005)
+            let pf_favorites = PlaylistFile {
+                vapourfly_schema: "1.0".into(),
+                created_by: "demo".into(),
+                playlist: Playlist {
+                    id: "my-favorites".into(),
+                    name: "My Favorites".into(),
+                    description: "Demo favorites collection".into(),
+                    content: PlaylistContent::Manual {
+                        app_ids: vec![1000, 1002, 1005],
+                    },
+                },
+            };
+            let _ = playlist_store::put(&store_path, &pf_favorites);
+            // Manual playlist: story-games (games 1001, 1003, 1008)
+            let pf_story = PlaylistFile {
+                vapourfly_schema: "1.0".into(),
+                created_by: "demo".into(),
+                playlist: Playlist {
+                    id: "story-games".into(),
+                    name: "Story Games".into(),
+                    description: "Narrative-focused picks".into(),
+                    content: PlaylistContent::Manual {
+                        app_ids: vec![1001, 1003, 1008],
+                    },
+                },
+            };
+            let _ = playlist_store::put(&store_path, &pf_story);
+            // Generator slots: discover, dynamic-deck-session, mood-quick-round
+            let pf_discover = PlaylistFile {
+                vapourfly_schema: "1.0".into(),
+                created_by: "demo".into(),
+                playlist: Playlist {
+                    id: "discover".into(),
+                    name: "Discover Picks".into(),
+                    description: "Auto-generated discover slot".into(),
+                    content: PlaylistContent::Manual {
+                        app_ids: vec![1004, 1006, 1010, 1012],
+                    },
+                },
+            };
+            let _ = playlist_store::put(&store_path, &pf_discover);
+            let pf_dynamic = PlaylistFile {
+                vapourfly_schema: "1.0".into(),
+                created_by: "demo".into(),
+                playlist: Playlist {
+                    id: "dynamic-deck-session".into(),
+                    name: "Deck Session".into(),
+                    description: "Dynamic template: deck-session".into(),
+                    content: PlaylistContent::Manual {
+                        app_ids: vec![1000, 1007, 1011, 1015],
+                    },
+                },
+            };
+            let _ = playlist_store::put(&store_path, &pf_dynamic);
+            let pf_mood = PlaylistFile {
+                vapourfly_schema: "1.0".into(),
+                created_by: "demo".into(),
+                playlist: Playlist {
+                    id: "mood-quick-round".into(),
+                    name: "Quick Round".into(),
+                    description: "Editorial mood: quick-round".into(),
+                    content: PlaylistContent::Manual {
+                        app_ids: vec![1002, 1009, 1013],
+                    },
+                },
+            };
+            let _ = playlist_store::put(&store_path, &pf_mood);
+        }
+        self.playlist_store_ids = demo_ids;
         self.playlist_store_ids_loaded = true;
     }
 
@@ -1957,7 +2047,7 @@ impl VapourflyApp {
         self.enrich_job_id = Some(job_id);
         ENRICH_RESULT.clear();
 
-        let cache_root = vapourfly_core::config::default_cache_dir();
+        let cache_root = self.cache_dir.clone();
         let ctx = ctx.clone();
 
         std::thread::spawn(move || {
@@ -2186,6 +2276,7 @@ impl VapourflyApp {
         PLAYLIST_MATCH_RESULT.clear();
 
         let ctx = ctx.clone();
+        let cache_dir = self.cache_dir.clone();
         std::thread::spawn(move || {
             // First pass: find missing AppIDs with empty store details.
             let empty = std::collections::HashMap::new();
@@ -2201,9 +2292,7 @@ impl VapourflyApp {
             let missing_details = if preliminary.missing.is_empty() {
                 std::collections::HashMap::new()
             } else {
-                let cache = vapourfly_api::cache::DiskCache::new(
-                    vapourfly_core::config::default_cache_dir(),
-                );
+                let cache = vapourfly_api::cache::DiskCache::new(cache_dir);
                 vapourfly_api::enrichment::missing_store_details(&preliminary.missing, &cache)
             };
             let report = match playlist::match_playlist(&pf, &games, &missing_details) {
@@ -2249,8 +2338,7 @@ impl VapourflyApp {
 
     /// Reload source cache statuses from disk.
     fn reload_source_statuses(&mut self) {
-        let cache_root = vapourfly_core::config::default_cache_dir();
-        self.source_statuses = vapourfly_api::enrichment::source_status(&cache_root);
+        self.source_statuses = vapourfly_api::enrichment::source_status(&self.cache_dir);
     }
 
     /// Hydrate cached external metadata and annotate junk flags for workflows.
@@ -2327,8 +2415,8 @@ impl VapourflyApp {
             }
         }
 
-        let cache_dir = vapourfly_core::config::default_cache_dir();
-        lines.push(format!("Cache root: {}", redact_path(&cache_dir)));
+        let cache_dir = &self.cache_dir;
+        lines.push(format!("Cache root: {}", redact_path(cache_dir)));
         lines.push(String::new());
         lines.push("Credentials".into());
         lines.push(format!(
@@ -2396,8 +2484,7 @@ impl VapourflyApp {
         // does not update scan_result) is reflected in views without a re-scan.
         // hydrate_from_cache is idempotent: it only fills in fields that have
         // cached data, never overwriting with None.
-        let cache =
-            vapourfly_api::cache::DiskCache::new(vapourfly_core::config::default_cache_dir());
+        let cache = vapourfly_api::cache::DiskCache::new(self.cache_dir.clone());
         vapourfly_api::enrichment::hydrate_from_cache(&mut games, &cache);
         // Same overrides as workflow::prepare so re-classification does not wipe
         // force-include / force-exclude / manual HLTB / rating.
