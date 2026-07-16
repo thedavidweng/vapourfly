@@ -207,6 +207,12 @@ static SCAN_RESULT: JobSlot<ScanResult> = JobSlot::new();
 static WRITE_RESULT: JobSlot<String> = JobSlot::new();
 static ENRICH_RESULT: JobSlot<vapourfly_api::enrichment::EnrichmentSummary> = JobSlot::new();
 static DRY_RUN_RESULT: JobSlot<vapourfly_core::models::WritePlan> = JobSlot::new();
+static JUNK_PREVIEW_RESULT: JobSlot<Vec<JunkDecision>> = JobSlot::new();
+static RECOMMEND_RESULT: JobSlot<Vec<Recommendation>> = JobSlot::new();
+static DISCOVER_RESULT: JobSlot<(Vec<DiscoverPick>, PlaylistFile)> = JobSlot::new();
+static DYNAMIC_RESULT: JobSlot<PlaylistFile> = JobSlot::new();
+static MOOD_RESULT: JobSlot<PlaylistFile> = JobSlot::new();
+static PLAYLIST_MATCH_RESULT: JobSlot<PlaylistMatchReport> = JobSlot::new();
 
 // ---------------------------------------------------------------------------
 // App state
@@ -359,6 +365,20 @@ struct VapourflyApp {
     write_job_id: Option<JobId>,
     enrich_job_id: Option<JobId>,
     dry_run_job_id: Option<JobId>,
+    junk_preview_job_id: Option<JobId>,
+    recommend_job_id: Option<JobId>,
+    discover_job_id: Option<JobId>,
+    dynamic_job_id: Option<JobId>,
+    mood_job_id: Option<JobId>,
+    playlist_match_job_id: Option<JobId>,
+
+    // Loading flags for off-frame operations
+    junk_preview_loading: bool,
+    recommend_loading: bool,
+    discover_loading: bool,
+    dynamic_loading: bool,
+    mood_loading: bool,
+    playlist_match_loading: bool,
 }
 
 fn mask_steam_id(id: &str) -> String {
@@ -1269,6 +1289,18 @@ impl VapourflyApp {
             write_job_id: None,
             enrich_job_id: None,
             dry_run_job_id: None,
+            junk_preview_job_id: None,
+            recommend_job_id: None,
+            discover_job_id: None,
+            dynamic_job_id: None,
+            mood_job_id: None,
+            playlist_match_job_id: None,
+            junk_preview_loading: false,
+            recommend_loading: false,
+            discover_loading: false,
+            dynamic_loading: false,
+            mood_loading: false,
+            playlist_match_loading: false,
         }
     }
 
@@ -1953,6 +1985,240 @@ impl VapourflyApp {
         });
     }
 
+    /// Start Junk Preview in a background thread.
+    fn start_junk_preview(&mut self, ctx: &egui::Context) {
+        if self.junk_preview_loading {
+            return;
+        }
+        let mode = match self.junk_mode {
+            JunkModeChoice::Default => JunkMode::Default,
+            JunkModeChoice::Strict => JunkMode::Strict,
+            JunkModeChoice::Aggressive => JunkMode::Aggressive,
+        };
+        let games = match self.prepared_games(mode.clone()) {
+            Some(g) => g,
+            None => return,
+        };
+
+        self.junk_preview_loading = true;
+        let fingerprint = format!("junk_preview:{mode:?}");
+        let job_id = self
+            .job_runner
+            .next_id(WorkflowKind::JunkPreview, &fingerprint);
+        self.junk_preview_job_id = Some(job_id);
+        JUNK_PREVIEW_RESULT.clear();
+
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let overrides = load_default_manual_overrides();
+            let results = evaluate_junk(&games, &JunkRules::default(), &mode, &overrides);
+            ctx.request_repaint();
+            JUNK_PREVIEW_RESULT.set(job_id, Ok(results));
+        });
+    }
+
+    /// Start Recommendations Preview in a background thread.
+    fn start_recommend_preview(&mut self, ctx: &egui::Context) {
+        if self.recommend_loading {
+            return;
+        }
+        let request = match self.recommend_request_from_inputs() {
+            Ok(r) => r,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
+        let games = match self.prepared_games(JunkMode::Default) {
+            Some(g) => g,
+            None => return,
+        };
+
+        self.recommend_loading = true;
+        let fingerprint = format!("recommend:{request:?}");
+        let job_id = self
+            .job_runner
+            .next_id(WorkflowKind::RecommendPreview, &fingerprint);
+        self.recommend_job_id = Some(job_id);
+        RECOMMEND_RESULT.clear();
+
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let results = recommend(&games, &request);
+            ctx.request_repaint();
+            RECOMMEND_RESULT.set(job_id, Ok(results));
+        });
+    }
+
+    /// Start Discover generate in a background thread.
+    fn start_discover_generate(&mut self, ctx: &egui::Context) {
+        if self.discover_loading {
+            return;
+        }
+        let options = match self.discover_options_from_inputs() {
+            Ok(o) => o,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
+        let games = match self.prepared_games(JunkMode::Default) {
+            Some(g) => g,
+            None => return,
+        };
+
+        self.discover_loading = true;
+        let fingerprint = format!("discover:{options:?}");
+        let job_id = self
+            .job_runner
+            .next_id(WorkflowKind::Discover, &fingerprint);
+        self.discover_job_id = Some(job_id);
+        DISCOVER_RESULT.clear();
+
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let picks = discover::rank_discover_picks(&games, &options);
+            let pf = discover::playlist_from_discover_picks(&games, &options, &picks);
+            ctx.request_repaint();
+            DISCOVER_RESULT.set(job_id, Ok((picks, pf)));
+        });
+    }
+
+    /// Start Dynamic generate in a background thread.
+    fn start_dynamic_generate(&mut self, ctx: &egui::Context) {
+        if self.dynamic_loading {
+            return;
+        }
+        let template = match DynamicTemplate::parse(&self.dynamic_template) {
+            Some(t) => t,
+            None => {
+                self.error = Some("Unknown template. Use deck-session or finish-it.".into());
+                return;
+            }
+        };
+        let session_minutes = match parse_required_u32("Session minutes", &self.dynamic_minutes) {
+            Ok(v) => v,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
+        let count = match parse_required_usize("Count", &self.dynamic_count) {
+            Ok(v) => v,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
+        let games = match self.prepared_games(JunkMode::Default) {
+            Some(g) => g,
+            None => return,
+        };
+
+        self.dynamic_loading = true;
+        let fingerprint = format!("dynamic:{}:{}:{}", template.id(), session_minutes, count);
+        let job_id = self.job_runner.next_id(WorkflowKind::Dynamic, &fingerprint);
+        self.dynamic_job_id = Some(job_id);
+        DYNAMIC_RESULT.clear();
+
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let pf = dynamic::compile_dynamic_template(
+                template,
+                &games,
+                &DynamicTemplateOptions {
+                    session_minutes,
+                    count,
+                },
+            );
+            ctx.request_repaint();
+            DYNAMIC_RESULT.set(job_id, Ok(pf));
+        });
+    }
+
+    /// Start Mood generate in a background thread.
+    fn start_mood_generate(&mut self, ctx: &egui::Context) {
+        if self.mood_loading {
+            return;
+        }
+        let mood = match EditorialMood::parse(&self.editorial_mood) {
+            Some(m) => m,
+            None => {
+                self.error = Some("Unknown mood. Pick one from the list.".into());
+                return;
+            }
+        };
+        let games = match self.prepared_games(JunkMode::Default) {
+            Some(g) => g,
+            None => return,
+        };
+
+        self.mood_loading = true;
+        let fingerprint = format!("mood:{}", mood.id());
+        let job_id = self.job_runner.next_id(WorkflowKind::Mood, &fingerprint);
+        self.mood_job_id = Some(job_id);
+        MOOD_RESULT.clear();
+
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let pf = mood::compile_editorial_mood(mood, &games, 25);
+            ctx.request_repaint();
+            MOOD_RESULT.set(job_id, Ok(pf));
+        });
+    }
+
+    /// Start Playlist Match in a background thread.
+    fn start_playlist_match(&mut self, ctx: &egui::Context, pf: PlaylistFile) {
+        if self.playlist_match_loading {
+            return;
+        }
+        let games = match self.prepared_games(JunkMode::Default) {
+            Some(g) => g,
+            None => return,
+        };
+
+        self.playlist_match_loading = true;
+        let fingerprint = format!("playlist_match:{}", pf.playlist.id);
+        let job_id = self
+            .job_runner
+            .next_id(WorkflowKind::PlaylistMatch, &fingerprint);
+        self.playlist_match_job_id = Some(job_id);
+        PLAYLIST_MATCH_RESULT.clear();
+
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            // First pass: find missing AppIDs with empty store details.
+            let empty = std::collections::HashMap::new();
+            let preliminary = match playlist::match_playlist(&pf, &games, &empty) {
+                Ok(r) => r,
+                Err(e) => {
+                    ctx.request_repaint();
+                    PLAYLIST_MATCH_RESULT.set(job_id, Err(format!("Match failed: {e}")));
+                    return;
+                }
+            };
+            // Second pass: with cached store details for missing entries.
+            let missing_details = if preliminary.missing.is_empty() {
+                std::collections::HashMap::new()
+            } else {
+                let cache = vapourfly_api::cache::DiskCache::new(
+                    vapourfly_core::config::default_cache_dir(),
+                );
+                vapourfly_api::enrichment::missing_store_details(&preliminary.missing, &cache)
+            };
+            let report = match playlist::match_playlist(&pf, &games, &missing_details) {
+                Ok(r) => r,
+                Err(e) => {
+                    ctx.request_repaint();
+                    PLAYLIST_MATCH_RESULT.set(job_id, Err(format!("Match failed: {e}")));
+                    return;
+                }
+            };
+            ctx.request_repaint();
+            PLAYLIST_MATCH_RESULT.set(job_id, Ok(report));
+        });
+    }
+
     fn filtered_games(&self) -> Vec<Game> {
         let games = match self.prepared_games(JunkMode::Default) {
             Some(games) => games,
@@ -2302,27 +2568,35 @@ impl VapourflyApp {
 
     fn match_playlist_against_library(&mut self, pf: &PlaylistFile) {
         if let Some(games) = self.prepared_games(JunkMode::Default) {
-            // First pass to find missing AppIDs, then fetch cached store
-            // details for those missing entries so completion_price reflects
-            // the corrected semantics (missing non-free entries only).
+            // Fast first pass on-frame (no cache lookup) for immediate feedback.
             let empty = std::collections::HashMap::new();
-            let preliminary = match playlist::match_playlist(pf, &games, &empty) {
-                Ok(r) => r,
-                Err(e) => {
-                    self.error = Some(format!("Match failed: {e}"));
-                    return;
+            match playlist::match_playlist(pf, &games, &empty) {
+                Ok(report) => {
+                    self.playlist_match_report = Some(report);
                 }
-            };
-            let missing_details = if preliminary.missing.is_empty() {
-                std::collections::HashMap::new()
-            } else {
-                let cache = vapourfly_api::cache::DiskCache::new(
-                    vapourfly_core::config::default_cache_dir(),
-                );
-                vapourfly_api::enrichment::missing_store_details(&preliminary.missing, &cache)
-            };
-            match playlist::match_playlist(pf, &games, &missing_details) {
-                Ok(report) => self.playlist_match_report = Some(report),
+                Err(e) => self.error = Some(format!("Match failed: {e}")),
+            }
+        }
+    }
+
+    /// Enhanced match with cache lookup, called from UI handlers that have ctx.
+    fn match_playlist_against_library_background(
+        &mut self,
+        ctx: &egui::Context,
+        pf: &PlaylistFile,
+    ) {
+        if let Some(games) = self.prepared_games(JunkMode::Default) {
+            // Fast first pass on-frame for immediate feedback.
+            let empty = std::collections::HashMap::new();
+            match playlist::match_playlist(pf, &games, &empty) {
+                Ok(report) => {
+                    let has_missing = !report.missing.is_empty();
+                    self.playlist_match_report = Some(report);
+                    // Launch background cache-enhanced match.
+                    if has_missing {
+                        self.start_playlist_match(ctx, pf.clone());
+                    }
+                }
                 Err(e) => self.error = Some(format!("Match failed: {e}")),
             }
         }
@@ -2347,6 +2621,7 @@ impl VapourflyApp {
     }
 
     /// Compile the Dynamic template chosen in the chooser into its stable slot.
+    #[allow(dead_code)]
     fn run_dynamic_generate(&mut self) -> Result<PlaylistFile, String> {
         let template = DynamicTemplate::parse(&self.dynamic_template)
             .ok_or_else(|| "Unknown template. Use deck-session or finish-it.".to_string())?;
@@ -2370,6 +2645,7 @@ impl VapourflyApp {
     }
 
     /// Compile the Editorial Mood chosen in the chooser into its stable slot.
+    #[allow(dead_code)]
     fn run_mood_generate(&mut self) -> Result<PlaylistFile, String> {
         let mood = EditorialMood::parse(&self.editorial_mood)
             .ok_or_else(|| "Unknown mood. Pick one from the list.".to_string())?;
@@ -2384,6 +2660,7 @@ impl VapourflyApp {
     }
 
     /// Generate Discover playlist into the stable slot and populate on-page results.
+    #[allow(dead_code)]
     fn run_discover_generate(&mut self) -> Result<PlaylistFile, String> {
         let options = self.discover_options_from_inputs()?;
         let games = self
@@ -2651,6 +2928,134 @@ impl eframe::App for VapourflyApp {
                 }
             }
         }
+
+        // Poll background junk preview result.
+        if self.junk_preview_loading
+            && let Some(expected) = self.junk_preview_job_id
+            && let Some(result) = JUNK_PREVIEW_RESULT.take_if(expected)
+        {
+            self.junk_preview_loading = false;
+            self.junk_preview_job_id = None;
+            match result {
+                Ok(results) => {
+                    self.junk_results = results;
+                    // Auto-select all junk candidates after Preview.
+                    self.junk_selected = self
+                        .junk_results
+                        .iter()
+                        .filter(|d| d.is_junk)
+                        .map(|d| d.app_id)
+                        .collect();
+                }
+                Err(e) => self.error = Some(e),
+            }
+        }
+
+        // Poll background recommend preview result.
+        if self.recommend_loading
+            && let Some(expected) = self.recommend_job_id
+            && let Some(result) = RECOMMEND_RESULT.take_if(expected)
+        {
+            self.recommend_loading = false;
+            self.recommend_job_id = None;
+            match result {
+                Ok(results) => {
+                    self.recommend_results = results;
+                    self.recommend_selected = self.recommend_results.first().map(|r| r.app_id);
+                }
+                Err(e) => self.error = Some(e),
+            }
+        }
+
+        // Poll background discover result.
+        if self.discover_loading
+            && let Some(expected) = self.discover_job_id
+            && let Some(result) = DISCOVER_RESULT.take_if(expected)
+        {
+            self.discover_loading = false;
+            self.discover_job_id = None;
+            match result {
+                Ok((picks, pf)) => {
+                    let stored =
+                        match self.store_generator_playlist(GeneratorIdentity::Discover, pf) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                self.error = Some(e);
+                                return;
+                            }
+                        };
+                    self.discover_results = picks;
+                    self.discover_last_playlist = Some(stored.clone());
+                    self.adopt_playlist_for_edit(&stored);
+                    self.refresh_playlist_store_ids();
+                }
+                Err(e) => self.error = Some(e),
+            }
+        }
+
+        // Poll background dynamic result.
+        if self.dynamic_loading
+            && let Some(expected) = self.dynamic_job_id
+            && let Some(result) = DYNAMIC_RESULT.take_if(expected)
+        {
+            self.dynamic_loading = false;
+            self.dynamic_job_id = None;
+            match result {
+                Ok(pf) => {
+                    let template = match DynamicTemplate::parse(&self.dynamic_template) {
+                        Some(t) => t,
+                        None => return,
+                    };
+                    match self.store_generator_playlist(GeneratorIdentity::Dynamic(template), pf) {
+                        Ok(stored) => {
+                            self.adopt_playlist_for_edit(&stored);
+                            self.refresh_playlist_store_ids();
+                        }
+                        Err(e) => self.error = Some(e),
+                    }
+                }
+                Err(e) => self.error = Some(e),
+            }
+        }
+
+        // Poll background mood result.
+        if self.mood_loading
+            && let Some(expected) = self.mood_job_id
+            && let Some(result) = MOOD_RESULT.take_if(expected)
+        {
+            self.mood_loading = false;
+            self.mood_job_id = None;
+            match result {
+                Ok(pf) => {
+                    let mood = match EditorialMood::parse(&self.editorial_mood) {
+                        Some(m) => m,
+                        None => return,
+                    };
+                    match self.store_generator_playlist(GeneratorIdentity::Mood(mood), pf) {
+                        Ok(stored) => {
+                            self.adopt_playlist_for_edit(&stored);
+                            self.refresh_playlist_store_ids();
+                        }
+                        Err(e) => self.error = Some(e),
+                    }
+                }
+                Err(e) => self.error = Some(e),
+            }
+        }
+
+        // Poll background playlist match result.
+        if self.playlist_match_loading
+            && let Some(expected) = self.playlist_match_job_id
+            && let Some(result) = PLAYLIST_MATCH_RESULT.take_if(expected)
+        {
+            self.playlist_match_loading = false;
+            self.playlist_match_job_id = None;
+            match result {
+                Ok(report) => self.playlist_match_report = Some(report),
+                Err(e) => self.error = Some(e),
+            }
+        }
+
         self.render_confirm_dialog(&ctx);
 
         let shell_games = self.scan_result.as_ref().map_or(0, |scan| scan.games.len());
@@ -3572,24 +3977,11 @@ impl VapourflyApp {
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.junk_preview_loading {
+                        ui.spinner();
+                    }
                     if primary_button(ui, "Preview").clicked() {
-                        let mode = match self.junk_mode {
-                            JunkModeChoice::Default => JunkMode::Default,
-                            JunkModeChoice::Strict => JunkMode::Strict,
-                            JunkModeChoice::Aggressive => JunkMode::Aggressive,
-                        };
-                        if let Some(games) = self.prepared_games(mode.clone()) {
-                            let overrides = load_default_manual_overrides();
-                            self.junk_results =
-                                evaluate_junk(&games, &JunkRules::default(), &mode, &overrides);
-                            // Auto-select all junk candidates after Preview.
-                            self.junk_selected = self
-                                .junk_results
-                                .iter()
-                                .filter(|d| d.is_junk)
-                                .map(|d| d.app_id)
-                                .collect();
-                        }
+                        self.start_junk_preview(ui.ctx());
                     }
                 });
             });
@@ -4015,17 +4407,11 @@ impl VapourflyApp {
                 ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
                 filter_toggle(ui, &mut self.recommend_installed_only, "Installed only");
                 filter_toggle(ui, &mut self.recommend_deck, "Deck mode");
+                if self.recommend_loading {
+                    ui.spinner();
+                }
                 if primary_button(ui, "Preview").clicked() {
-                    match self.recommend_request_from_inputs() {
-                        Ok(request) => {
-                            if let Some(games) = self.prepared_games(JunkMode::Default) {
-                                self.recommend_results = recommend(&games, &request);
-                                self.recommend_selected =
-                                    self.recommend_results.first().map(|r| r.app_id);
-                            }
-                        }
-                        Err(e) => self.error = Some(e),
-                    }
+                    self.start_recommend_preview(ui.ctx());
                 }
             });
         });
@@ -4537,7 +4923,7 @@ impl VapourflyApp {
                     Ok(pf) => match self.store_playlist(&pf) {
                         Ok(()) => {
                             self.playlist_last_import = Some(pf.clone());
-                            self.match_playlist_against_library(&pf);
+                            self.match_playlist_against_library_background(ui.ctx(), &pf);
                             self.refresh_playlist_store_ids();
                             self.playlist_load_selected = pf.playlist.id.clone();
                             self.success_msg =
@@ -4820,16 +5206,11 @@ impl VapourflyApp {
                         egui::TextEdit::singleline(&mut self.discover_count).hint_text("20"),
                     );
                 });
+                if self.discover_loading {
+                    ui.spinner();
+                }
                 if primary_button(ui, "Generate").clicked() {
-                    match self.run_discover_generate() {
-                        Ok(pf) => {
-                            self.success_msg = Some(format!(
-                                "Generated Discover playlist '{}' (slot {})",
-                                pf.playlist.name, pf.playlist.id
-                            ));
-                        }
-                        Err(e) => self.error = Some(e),
-                    }
+                    self.start_discover_generate(ui.ctx());
                 }
             });
             ui.add_space(SP_2);
@@ -5035,17 +5416,12 @@ impl VapourflyApp {
 
                 ui.add_space(SP_4);
                 ui.horizontal(|ui| {
+                    if self.dynamic_loading {
+                        ui.spinner();
+                    }
                     if primary_button(ui, "Generate").clicked() {
-                        match self.run_dynamic_generate() {
-                            Ok(pf) => {
-                                self.success_msg = Some(format!(
-                                    "Compiled dynamic template '{}' (slot {})",
-                                    pf.playlist.name, pf.playlist.id
-                                ));
-                                self.playlist_chooser = PlaylistChooser::None;
-                            }
-                            Err(e) => self.error = Some(e),
-                        }
+                        self.start_dynamic_generate(ui.ctx());
+                        self.playlist_chooser = PlaylistChooser::None;
                     }
                     if ghost_button(ui, "Cancel").clicked() {
                         self.playlist_chooser = PlaylistChooser::None;
@@ -5138,17 +5514,12 @@ impl VapourflyApp {
 
                 ui.add_space(SP_3);
                 ui.horizontal(|ui| {
+                    if self.mood_loading {
+                        ui.spinner();
+                    }
                     if primary_button(ui, "Generate").clicked() {
-                        match self.run_mood_generate() {
-                            Ok(pf) => {
-                                self.success_msg = Some(format!(
-                                    "Compiled editorial mood '{}' (slot {})",
-                                    pf.playlist.name, pf.playlist.id
-                                ));
-                                self.playlist_chooser = PlaylistChooser::None;
-                            }
-                            Err(e) => self.error = Some(e),
-                        }
+                        self.start_mood_generate(ui.ctx());
+                        self.playlist_chooser = PlaylistChooser::None;
                     }
                     if ghost_button(ui, "Cancel").clicked() {
                         self.playlist_chooser = PlaylistChooser::None;
