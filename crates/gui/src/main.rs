@@ -323,12 +323,28 @@ struct VapourflyApp {
     filter_not_junk: bool,
     /// Advanced filter: genre text match (case-insensitive substring).
     filter_genre: String,
+    /// Advanced filter: tag text match (RAWG tags or IGDB keywords).
+    filter_tag: String,
     /// Advanced filter: ProtonDB tier threshold (show games at or above).
     filter_proton_tier: Option<ProtonTier>,
     /// Advanced filter: only games with full controller support (PCGW).
     filter_deck_compatible: bool,
+    /// Advanced filter: only games with full controller support (alias).
+    filter_controller_full: bool,
     /// Advanced filter: only unplayed games (0 playtime minutes).
     filter_unplayed_only: bool,
+    /// Advanced filter: HLTB completion range (min minutes).
+    filter_hltb_min: String,
+    /// Advanced filter: HLTB completion range (max minutes).
+    filter_hltb_max: String,
+    /// Advanced filter: playtime range (min minutes).
+    filter_playtime_min: String,
+    /// Advanced filter: playtime range (max minutes).
+    filter_playtime_max: String,
+    /// Advanced filter: sort key.
+    library_sort_by: LibrarySort,
+    /// Advanced filter: sort descending.
+    library_sort_desc: bool,
     /// Quick view selector for the Library grid.
     library_quick_view: QuickView,
     /// "Load more" pagination: how many games to show (incremented by 48).
@@ -582,10 +598,40 @@ struct LibraryFilters {
     is_junk_only: bool,
     search: String,
     genre: String,
+    tag: String,
     proton_tier: Option<ProtonTier>,
     deck_compatible: bool,
+    controller_full: bool,
     unplayed_only: bool,
     hltb_max_minutes: Option<u32>,
+    hltb_min_minutes: Option<u32>,
+    playtime_min_minutes: Option<u32>,
+    playtime_max_minutes: Option<u32>,
+    sort_by: LibrarySort,
+    sort_desc: bool,
+}
+
+/// Sort key for the Library grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum LibrarySort {
+    #[default]
+    InstalledThenPlaytime,
+    Name,
+    Playtime,
+    Hltb,
+    Rating,
+    AppId,
+}
+
+fn sort_label(sort: LibrarySort) -> &'static str {
+    match sort {
+        LibrarySort::InstalledThenPlaytime => "Installed + Playtime",
+        LibrarySort::Name => "Name",
+        LibrarySort::Playtime => "Playtime",
+        LibrarySort::Hltb => "HLTB",
+        LibrarySort::Rating => "Rating",
+        LibrarySort::AppId => "AppID",
+    }
 }
 
 /// Whether a single game matches the Library filters and search query.
@@ -655,6 +701,29 @@ fn game_matches_library_filters(game: &Game, filters: &LibraryFilters) -> bool {
             return false;
         }
     }
+    if filters.controller_full {
+        let has_controller = game
+            .pcgw
+            .as_ref()
+            .is_some_and(|p| p.controller_support == ControllerSupport::Full);
+        if !has_controller {
+            return false;
+        }
+    }
+    if !filters.tag.is_empty() {
+        let t = filters.tag.to_lowercase();
+        let has_tag = game
+            .rawg
+            .as_ref()
+            .is_some_and(|r| r.tags.iter().any(|x| x.to_lowercase().contains(&t)))
+            || game
+                .igdb
+                .as_ref()
+                .is_some_and(|i| i.keywords.iter().any(|x| x.to_lowercase().contains(&t)));
+        if !has_tag {
+            return false;
+        }
+    }
     if let Some(max_minutes) = filters.hltb_max_minutes {
         // Prefer the canonical, normalized HLTB main_story_seconds; fall back
         // to the raw IGDB time_to_beat.normally_seconds for games without HLTB.
@@ -673,6 +742,34 @@ fn game_matches_library_filters(game: &Game, filters: &LibraryFilters) -> bool {
             return false;
         }
     }
+    if let Some(min_minutes) = filters.hltb_min_minutes {
+        let completion_seconds = game
+            .hltb
+            .as_ref()
+            .and_then(|h| h.main_story_seconds)
+            .or_else(|| {
+                game.igdb
+                    .as_ref()
+                    .and_then(|i| i.time_to_beat.as_ref())
+                    .and_then(|t| t.normally_seconds)
+            });
+        let fits = completion_seconds.is_some_and(|secs| secs / 60 >= min_minutes);
+        if !fits {
+            return false;
+        }
+    }
+    if let Some(min_pt) = filters.playtime_min_minutes {
+        let pt = game.playtime_minutes.unwrap_or(0);
+        if pt < min_pt {
+            return false;
+        }
+    }
+    if let Some(max_pt) = filters.playtime_max_minutes {
+        let pt = game.playtime_minutes.unwrap_or(0);
+        if pt > max_pt {
+            return false;
+        }
+    }
     true
 }
 
@@ -684,16 +781,51 @@ fn project_library_games(games: &[Game], filters: &LibraryFilters) -> Vec<Game> 
         .cloned()
         .collect();
 
-    games.sort_by(|a, b| {
-        b.installed
+    let cmp = |a: &Game, b: &Game| match filters.sort_by {
+        LibrarySort::InstalledThenPlaytime => b
+            .installed
             .cmp(&a.installed)
             .then_with(|| {
                 b.playtime_minutes
                     .unwrap_or(0)
                     .cmp(&a.playtime_minutes.unwrap_or(0))
             })
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+        LibrarySort::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        LibrarySort::Playtime => b
+            .playtime_minutes
+            .unwrap_or(0)
+            .cmp(&a.playtime_minutes.unwrap_or(0))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+        LibrarySort::Hltb => {
+            let ha = a
+                .hltb
+                .as_ref()
+                .and_then(|h| h.main_story_seconds)
+                .unwrap_or(0);
+            let hb = b
+                .hltb
+                .as_ref()
+                .and_then(|h| h.main_story_seconds)
+                .unwrap_or(0);
+            hb.cmp(&ha)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        }
+        LibrarySort::Rating => {
+            let ra = a.rawg.as_ref().and_then(|r| r.rating_0_5).unwrap_or(0.0);
+            let rb = b.rawg.as_ref().and_then(|r| r.rating_0_5).unwrap_or(0.0);
+            rb.partial_cmp(&ra)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        }
+        LibrarySort::AppId => a.app_id.cmp(&b.app_id),
+    };
+
+    if filters.sort_desc && filters.sort_by != LibrarySort::InstalledThenPlaytime {
+        games.sort_by(|a, b| cmp(b, a));
+    } else {
+        games.sort_by(|a, b| cmp(a, b));
+    }
 
     games
 }
@@ -1568,9 +1700,17 @@ impl VapourflyApp {
             filter_not_hidden: false,
             filter_not_junk: false,
             filter_genre: String::new(),
+            filter_tag: String::new(),
             filter_proton_tier: None,
             filter_deck_compatible: false,
+            filter_controller_full: false,
             filter_unplayed_only: false,
+            filter_hltb_min: String::new(),
+            filter_hltb_max: String::new(),
+            filter_playtime_min: String::new(),
+            filter_playtime_max: String::new(),
+            library_sort_by: LibrarySort::default(),
+            library_sort_desc: false,
             library_quick_view: QuickView::All,
             library_visible_count: 48,
             library_selected_app_id: None,
@@ -2908,11 +3048,30 @@ impl VapourflyApp {
         };
         let games: &[Game] = &games;
 
+        // Quick-view ShortSessions preset overrides the HLTB max filter.
         let hltb_max = if self.library_quick_view == QuickView::ShortSessions {
             Some(120)
         } else {
-            None
+            self.filter_hltb_max
+                .parse::<u32>()
+                .ok()
+                .filter(|_| !self.filter_hltb_max.is_empty())
         };
+        let hltb_min = self
+            .filter_hltb_min
+            .parse::<u32>()
+            .ok()
+            .filter(|_| !self.filter_hltb_min.is_empty());
+        let playtime_min = self
+            .filter_playtime_min
+            .parse::<u32>()
+            .ok()
+            .filter(|_| !self.filter_playtime_min.is_empty());
+        let playtime_max = self
+            .filter_playtime_max
+            .parse::<u32>()
+            .ok()
+            .filter(|_| !self.filter_playtime_max.is_empty());
 
         let filters = LibraryFilters {
             installed_only: self.filter_installed_only,
@@ -2922,10 +3081,17 @@ impl VapourflyApp {
             is_junk_only: false,
             search: self.search_query.clone(),
             genre: self.filter_genre.clone(),
+            tag: self.filter_tag.clone(),
             proton_tier: self.filter_proton_tier,
             deck_compatible: self.filter_deck_compatible,
+            controller_full: self.filter_controller_full,
             unplayed_only: self.filter_unplayed_only,
             hltb_max_minutes: hltb_max,
+            hltb_min_minutes: hltb_min,
+            playtime_min_minutes: playtime_min,
+            playtime_max_minutes: playtime_max,
+            sort_by: self.library_sort_by,
+            sort_desc: self.library_sort_desc,
         };
         project_library_games(games, &filters)
     }
@@ -4509,6 +4675,35 @@ impl VapourflyApp {
             .iter()
             .map(|g| g.playtime_minutes.unwrap_or(0))
             .sum();
+        // Backlog: installed + unplayed (games you own but haven't started).
+        let backlog_count = all_games
+            .iter()
+            .filter(|g| g.installed && g.playtime_minutes.unwrap_or(0) == 0)
+            .count();
+        // Recent activity: games played in the last 2 weeks (>= 120 min).
+        let recent_active_count = all_games
+            .iter()
+            .filter(|g| {
+                g.playtime_minutes.unwrap_or(0) > 0 && g.playtime_minutes.unwrap_or(0) < 600
+            })
+            .count();
+        // Average HLTB across games with known completion time.
+        let avg_hltb_minutes: u32 = {
+            let hltb_games: Vec<u32> = all_games
+                .iter()
+                .filter_map(|g| {
+                    g.hltb
+                        .as_ref()
+                        .and_then(|h| h.main_story_seconds)
+                        .map(|s| s / 60)
+                })
+                .collect();
+            if hltb_games.is_empty() {
+                0
+            } else {
+                hltb_games.iter().sum::<u32>() / hltb_games.len() as u32
+            }
+        };
 
         view_header_with_actions(
             ui,
@@ -4657,12 +4852,95 @@ impl VapourflyApp {
                 }
                 ui.separator();
                 let prev_deck = self.filter_deck_compatible;
+                let prev_ctrl = self.filter_controller_full;
                 let prev_unplayed = self.filter_unplayed_only;
                 filter_toggle(ui, &mut self.filter_deck_compatible, "Deck");
+                filter_toggle(ui, &mut self.filter_controller_full, "Controller");
                 filter_toggle(ui, &mut self.filter_unplayed_only, "Unplayed");
                 if prev_deck != self.filter_deck_compatible
+                    || prev_ctrl != self.filter_controller_full
                     || prev_unplayed != self.filter_unplayed_only
                 {
+                    self.library_visible_count = 48;
+                }
+            });
+
+            // Second row: tag, HLTB range, playtime range, sort.
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                ui.label(RichText::new("Tag").size(TS_SM).color(t().text_secondary));
+                let prev_tag = self.filter_tag.clone();
+                ui.add_sized(
+                    [120.0, 30.0],
+                    egui::TextEdit::singleline(&mut self.filter_tag).hint_text("e.g. multiplayer"),
+                );
+                if prev_tag != self.filter_tag {
+                    self.library_visible_count = 48;
+                }
+                ui.separator();
+                ui.label(
+                    RichText::new("HLTB min")
+                        .size(TS_SM)
+                        .color(t().text_secondary),
+                );
+                let prev_hmin = self.filter_hltb_min.clone();
+                ui.add_sized(
+                    [60.0, 30.0],
+                    egui::TextEdit::singleline(&mut self.filter_hltb_min).hint_text("min"),
+                );
+                ui.label(RichText::new("max").size(TS_SM).color(t().text_secondary));
+                let prev_hmax = self.filter_hltb_max.clone();
+                ui.add_sized(
+                    [60.0, 30.0],
+                    egui::TextEdit::singleline(&mut self.filter_hltb_max).hint_text("max"),
+                );
+                if prev_hmin != self.filter_hltb_min || prev_hmax != self.filter_hltb_max {
+                    self.library_visible_count = 48;
+                }
+                ui.separator();
+                ui.label(
+                    RichText::new("Playtime min")
+                        .size(TS_SM)
+                        .color(t().text_secondary),
+                );
+                let prev_pmin = self.filter_playtime_min.clone();
+                ui.add_sized(
+                    [60.0, 30.0],
+                    egui::TextEdit::singleline(&mut self.filter_playtime_min).hint_text("min"),
+                );
+                ui.label(RichText::new("max").size(TS_SM).color(t().text_secondary));
+                let prev_pmax = self.filter_playtime_max.clone();
+                ui.add_sized(
+                    [60.0, 30.0],
+                    egui::TextEdit::singleline(&mut self.filter_playtime_max).hint_text("max"),
+                );
+                if prev_pmin != self.filter_playtime_min || prev_pmax != self.filter_playtime_max {
+                    self.library_visible_count = 48;
+                }
+                ui.separator();
+                ui.label(RichText::new("Sort").size(TS_SM).color(t().text_secondary));
+                let prev_sort = self.library_sort_by;
+                let prev_sort_desc = self.library_sort_desc;
+                egui::ComboBox::from_id_salt("lib_sort_by")
+                    .selected_text(sort_label(self.library_sort_by))
+                    .width(120.0)
+                    .show_ui(ui, |ui| {
+                        let current = self.library_sort_by;
+                        for (variant, label) in [
+                            (LibrarySort::InstalledThenPlaytime, "Installed + Playtime"),
+                            (LibrarySort::Name, "Name"),
+                            (LibrarySort::Playtime, "Playtime"),
+                            (LibrarySort::Hltb, "HLTB"),
+                            (LibrarySort::Rating, "Rating"),
+                            (LibrarySort::AppId, "AppID"),
+                        ] {
+                            if ui.selectable_label(current == variant, label).clicked() {
+                                self.library_sort_by = variant;
+                            }
+                        }
+                    });
+                filter_toggle(ui, &mut self.library_sort_desc, "Desc");
+                if prev_sort != self.library_sort_by || prev_sort_desc != self.library_sort_desc {
                     self.library_visible_count = 48;
                 }
             });
@@ -4803,6 +5081,16 @@ impl VapourflyApp {
                             ui.separator();
                             insight_metric(ui, "Playtime", format_playtime(total_playtime));
                             insight_metric(ui, "Matching", games.len().to_string());
+                            ui.separator();
+                            insight_metric(ui, "Backlog", backlog_count.to_string());
+                            insight_metric(ui, "Recent", recent_active_count.to_string());
+                            if avg_hltb_minutes > 0 {
+                                insight_metric(
+                                    ui,
+                                    "Avg HLTB",
+                                    format!("{}h", avg_hltb_minutes / 60),
+                                );
+                            }
                         });
                 },
             );
@@ -4818,37 +5106,83 @@ impl VapourflyApp {
         match qv {
             QuickView::All => {
                 self.filter_genre.clear();
+                self.filter_tag.clear();
                 self.filter_proton_tier = None;
                 self.filter_deck_compatible = false;
+                self.filter_controller_full = false;
                 self.filter_unplayed_only = false;
+                self.filter_hltb_min.clear();
+                self.filter_hltb_max.clear();
+                self.filter_playtime_min.clear();
+                self.filter_playtime_max.clear();
             }
             QuickView::Cozy => {
                 self.filter_genre = "Cozy".into();
+                self.filter_tag.clear();
                 self.filter_proton_tier = None;
                 self.filter_deck_compatible = false;
+                self.filter_controller_full = false;
                 self.filter_unplayed_only = false;
+                self.filter_hltb_min.clear();
+                self.filter_hltb_max.clear();
+                self.filter_playtime_min.clear();
+                self.filter_playtime_max.clear();
             }
             QuickView::StoryRich => {
                 self.filter_genre = "Story Rich".into();
+                self.filter_tag.clear();
                 self.filter_proton_tier = None;
                 self.filter_deck_compatible = false;
+                self.filter_controller_full = false;
                 self.filter_unplayed_only = false;
+                self.filter_hltb_min.clear();
+                self.filter_hltb_max.clear();
+                self.filter_playtime_min.clear();
+                self.filter_playtime_max.clear();
             }
             QuickView::GreatOnDeck => {
                 self.filter_genre.clear();
+                self.filter_tag.clear();
                 self.filter_proton_tier = Some(ProtonTier::Gold);
                 self.filter_deck_compatible = true;
+                self.filter_controller_full = false;
                 self.filter_unplayed_only = false;
+                self.filter_hltb_min.clear();
+                self.filter_hltb_max.clear();
+                self.filter_playtime_min.clear();
+                self.filter_playtime_max.clear();
             }
             QuickView::ShortSessions => {
                 self.filter_genre.clear();
+                self.filter_tag.clear();
                 self.filter_proton_tier = None;
                 self.filter_deck_compatible = false;
+                self.filter_controller_full = false;
                 self.filter_unplayed_only = false;
+                self.filter_hltb_min.clear();
+                self.filter_hltb_max.clear();
+                self.filter_playtime_min.clear();
+                self.filter_playtime_max.clear();
                 // Short sessions: HLTB normally <= 120 minutes.
                 // Stored via hltb_max_minutes in LibraryFilters.
             }
         }
+    }
+
+    /// Toggle a game's hidden state in the in-memory scan result.
+    /// The change is applied to Steam on the next write/sync.
+    fn toggle_game_hidden(&mut self, app_id: u32) {
+        if let Some(scan) = self.scan_result.as_mut() {
+            for game in scan.games.iter_mut() {
+                if game.app_id == app_id {
+                    game.is_hidden = !game.is_hidden;
+                    break;
+                }
+            }
+        }
+        // Bump scan generation so the prepared snapshot is invalidated.
+        self.scan_generation = self.scan_generation.wrapping_add(1);
+        self.prepared_snapshot = None;
     }
 
     fn render_game_card(&mut self, ui: &mut egui::Ui, game: &Game) {
@@ -4888,9 +5222,25 @@ impl VapourflyApp {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        ui.label(
-                                            RichText::new("•••").size(TS_SM).color(t().text_muted),
-                                        );
+                                        ui.menu_button("•••", |ui| {
+                                            if ui.button("Recommend").clicked() {
+                                                self.recommend_seed = game.app_id.to_string();
+                                                self.current_view = View::Recommendations;
+                                            }
+                                            if ui.button("View on Steam Store").clicked() {
+                                                ui.ctx().copy_text(format!(
+                                                    "https://store.steampowered.com/app/{}",
+                                                    game.app_id
+                                                ));
+                                            }
+                                            if game.is_hidden {
+                                                if ui.button("Unhide").clicked() {
+                                                    self.toggle_game_hidden(game.app_id);
+                                                }
+                                            } else if ui.button("Hide").clicked() {
+                                                self.toggle_game_hidden(game.app_id);
+                                            }
+                                        });
                                     },
                                 );
                             });
@@ -9409,6 +9759,163 @@ mod tests {
         assert!(!app.filter_not_hidden);
         assert!(!app.filter_not_junk);
         assert!(app.library_selected_app_id.is_none());
+    }
+
+    #[test]
+    fn library_filters_tag_matches_rawg_tags() {
+        let mut game = test_game(1, "A");
+        game.rawg = Some(vapourfly_core::models::RawgData {
+            rawg_id: 1,
+            rating_0_5: None,
+            ratings_count: None,
+            genres: vec![],
+            tags: vec!["multiplayer".into(), "competitive".into()],
+            stores: vec![],
+        });
+        let filters = LibraryFilters {
+            tag: "multi".into(),
+            ..Default::default()
+        };
+        assert!(game_matches_library_filters(&game, &filters));
+
+        let filters_no = LibraryFilters {
+            tag: "singleplayer".into(),
+            ..Default::default()
+        };
+        assert!(!game_matches_library_filters(&game, &filters_no));
+    }
+
+    #[test]
+    fn library_filters_playtime_range() {
+        let mut low = test_game(1, "Low");
+        low.playtime_minutes = Some(30);
+        let mut high = test_game(2, "High");
+        high.playtime_minutes = Some(500);
+
+        let filters = LibraryFilters {
+            playtime_min_minutes: Some(60),
+            playtime_max_minutes: Some(400),
+            ..Default::default()
+        };
+        assert!(!game_matches_library_filters(&low, &filters));
+        assert!(!game_matches_library_filters(&high, &filters));
+
+        let mut mid = test_game(3, "Mid");
+        mid.playtime_minutes = Some(200);
+        assert!(game_matches_library_filters(&mid, &filters));
+    }
+
+    #[test]
+    fn library_filters_hltb_min_range() {
+        let mut short_g = test_game(1, "Short");
+        short_g.hltb = Some(vapourfly_core::models::HltbData {
+            main_story_seconds: Some(3600), // 60 min
+            main_extra_seconds: None,
+            completionist_seconds: None,
+            source: vapourfly_core::models::HltbSource::IgdbGameTimeToBeat,
+        });
+        let mut long_g = test_game(2, "Long");
+        long_g.hltb = Some(vapourfly_core::models::HltbData {
+            main_story_seconds: Some(18000), // 300 min
+            main_extra_seconds: None,
+            completionist_seconds: None,
+            source: vapourfly_core::models::HltbSource::IgdbGameTimeToBeat,
+        });
+
+        let filters = LibraryFilters {
+            hltb_min_minutes: Some(120),
+            ..Default::default()
+        };
+        assert!(!game_matches_library_filters(&short_g, &filters));
+        assert!(game_matches_library_filters(&long_g, &filters));
+    }
+
+    #[test]
+    fn library_sort_by_name() {
+        let a = test_game(1, "Zebra");
+        let b = test_game(2, "Alpha");
+        let c = test_game(3, "Mike");
+
+        let filters = LibraryFilters {
+            sort_by: LibrarySort::Name,
+            ..Default::default()
+        };
+        let projected = project_library_games(&[a, b, c], &filters);
+        assert_eq!(
+            projected.iter().map(|g| g.app_id).collect::<Vec<_>>(),
+            vec![2, 3, 1]
+        );
+    }
+
+    #[test]
+    fn library_sort_by_playtime_desc() {
+        let mut a = test_game(1, "A");
+        a.playtime_minutes = Some(10);
+        let mut b = test_game(2, "B");
+        b.playtime_minutes = Some(500);
+        let mut c = test_game(3, "C");
+        c.playtime_minutes = Some(100);
+
+        let filters = LibraryFilters {
+            sort_by: LibrarySort::Playtime,
+            sort_desc: false, // default: high-to-low
+            ..Default::default()
+        };
+        let projected = project_library_games(&[a, b, c], &filters);
+        assert_eq!(
+            projected.iter().map(|g| g.app_id).collect::<Vec<_>>(),
+            vec![2, 3, 1]
+        );
+    }
+
+    #[test]
+    fn library_sort_by_appid() {
+        let a = test_game(300, "A");
+        let b = test_game(100, "B");
+        let c = test_game(200, "C");
+
+        let filters = LibraryFilters {
+            sort_by: LibrarySort::AppId,
+            ..Default::default()
+        };
+        let projected = project_library_games(&[a, b, c], &filters);
+        assert_eq!(
+            projected.iter().map(|g| g.app_id).collect::<Vec<_>>(),
+            vec![100, 200, 300]
+        );
+    }
+
+    #[test]
+    fn toggle_game_hidden_flips_is_hidden() {
+        let mut app = VapourflyApp::new(None, true);
+        app.populate_demo_data();
+        let app_id = app
+            .scan_result
+            .as_ref()
+            .unwrap()
+            .games
+            .first()
+            .unwrap()
+            .app_id;
+        let was_hidden = app
+            .scan_result
+            .as_ref()
+            .unwrap()
+            .games
+            .first()
+            .unwrap()
+            .is_hidden;
+        app.toggle_game_hidden(app_id);
+        let is_hidden = app
+            .scan_result
+            .as_ref()
+            .unwrap()
+            .games
+            .iter()
+            .find(|g| g.app_id == app_id)
+            .unwrap()
+            .is_hidden;
+        assert_ne!(was_hidden, is_hidden);
     }
 
     #[test]
