@@ -183,6 +183,38 @@ pub const SP_6: f32 = 24.0;
 
 pub const TOPBAR_HEIGHT: f32 = 58.0;
 pub const SIDEBAR_WIDTH: f32 = 132.0;
+/// Compact (icon-only) sidebar width, used at 1024–1179px window width.
+pub const SIDEBAR_WIDTH_COMPACT: f32 = 76.0;
+
+// ---------------------------------------------------------------------------
+// Responsive breakpoints (window width in px)
+// ---------------------------------------------------------------------------
+
+/// Below this width the sidebar shrinks to icon-only (76px).
+pub const BP_COMPACT_SIDEBAR: f32 = 1180.0;
+/// Below this width the central panel padding shrinks from 24px to 16px and
+/// insight rails move below the main content.
+pub const BP_COMPACT_PADDING: f32 = 1280.0;
+/// At or above this width the full two-column layout is used.
+pub const BP_DESKTOP: f32 = 1280.0;
+
+/// True when the sidebar should be compact (icon-only, 76px).
+/// Active at 1024–1179px.
+pub fn is_compact_sidebar(width: f32) -> bool {
+    (1024.0..BP_COMPACT_SIDEBAR).contains(&width)
+}
+
+/// True when the central panel should use compact (16px) padding.
+/// Active below 1280px.
+pub fn is_compact_padding(width: f32) -> bool {
+    width < BP_COMPACT_PADDING
+}
+
+/// True when insight rails should move below the main content (single-column).
+/// Active at 1024–1279px.
+pub fn rails_below(width: f32) -> bool {
+    (1024.0..BP_DESKTOP).contains(&width)
+}
 pub const CORNER_SM: f32 = 6.0;
 pub const CORNER_MD: f32 = 10.0;
 pub const CORNER_LG: f32 = 14.0;
@@ -265,4 +297,48 @@ pub fn configure_ui(ctx: &egui::Context, mode: ThemeMode) {
 
     ctx.set_style_of(egui_theme, style);
     ctx.set_theme(egui_theme);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_sidebar_breakpoint() {
+        // Below 1024: not compact (mobile/narrow — handled differently).
+        assert!(!is_compact_sidebar(800.0));
+        assert!(!is_compact_sidebar(1023.0));
+        // 1024–1179: compact (icon-only sidebar).
+        assert!(is_compact_sidebar(1024.0));
+        assert!(is_compact_sidebar(1100.0));
+        assert!(is_compact_sidebar(1179.0));
+        // 1180+: full sidebar.
+        assert!(!is_compact_sidebar(1180.0));
+        assert!(!is_compact_sidebar(1920.0));
+    }
+
+    #[test]
+    fn compact_padding_breakpoint() {
+        // Below 1280: compact padding (16px).
+        assert!(is_compact_padding(800.0));
+        assert!(is_compact_padding(1024.0));
+        assert!(is_compact_padding(1279.0));
+        // 1280+: full padding (24px).
+        assert!(!is_compact_padding(1280.0));
+        assert!(!is_compact_padding(1920.0));
+    }
+
+    #[test]
+    fn rails_below_breakpoint() {
+        // Below 1024: not rails-below (too narrow for two-column at all).
+        assert!(!rails_below(800.0));
+        assert!(!rails_below(1023.0));
+        // 1024–1279: rails move below main.
+        assert!(rails_below(1024.0));
+        assert!(rails_below(1200.0));
+        assert!(rails_below(1279.0));
+        // 1280+: two-column side-by-side.
+        assert!(!rails_below(1280.0));
+        assert!(!rails_below(1920.0));
+    }
 }

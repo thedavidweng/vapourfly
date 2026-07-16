@@ -450,6 +450,9 @@ struct VapourflyApp {
     /// adoption) can spawn background work and request repaints. Set at the
     /// top of `ui()`; `None` only before the first frame.
     ctx: Option<egui::Context>,
+    /// Whether insight rails should render below the main content (responsive
+    /// layout: true at 1024–1279px window width). Updated each frame.
+    rails_below: bool,
     scan_job_id: Option<JobTicket>,
     write_job_id: Option<JobTicket>,
     enrich_job_id: Option<JobTicket>,
@@ -1332,10 +1335,14 @@ fn paint_nav_icon(painter: &egui::Painter, rect: egui::Rect, view: View, color: 
 
 /// Sidebar nav tile: a centered line icon and compact label. The visual shape
 /// mirrors the reference rail while preserving normal egui hit targets.
-fn nav_item(ui: &mut egui::Ui, view: View, selected: bool) -> egui::Response {
+fn nav_item(ui: &mut egui::Ui, view: View, selected: bool, compact: bool) -> egui::Response {
     let label = view.label();
-    let row_width = SIDEBAR_WIDTH - f32::from(m(SP_3)) * 2.0;
-    let desired = egui::vec2(row_width, 66.0);
+    let row_width = if compact {
+        SIDEBAR_WIDTH_COMPACT - f32::from(m(SP_2)) * 2.0
+    } else {
+        SIDEBAR_WIDTH - f32::from(m(SP_3)) * 2.0
+    };
+    let desired = egui::vec2(row_width, if compact { 52.0 } else { 66.0 });
     let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click());
 
     if ui.is_rect_visible(rect) {
@@ -1365,19 +1372,22 @@ fn nav_item(ui: &mut egui::Ui, view: View, selected: bool) -> egui::Response {
         let painter = ui.painter();
         painter.rect_filled(rect, CORNER_MD, fill);
 
+        let icon_y = if compact { rect.center().y } else { rect.top() + 24.0 };
         let icon_rect = egui::Rect::from_center_size(
-            egui::pos2(rect.center().x, rect.top() + 24.0),
+            egui::pos2(rect.center().x, icon_y),
             egui::vec2(NAV_ICON_SIZE, NAV_ICON_SIZE),
         );
         paint_nav_icon(painter, icon_rect, view, icon_color);
 
-        painter.text(
-            egui::pos2(rect.center().x, rect.bottom() - 13.0),
-            egui::Align2::CENTER_CENTER,
-            label,
-            egui::FontId::proportional(TS_SM),
-            text_color,
-        );
+        if !compact {
+            painter.text(
+                egui::pos2(rect.center().x, rect.bottom() - 13.0),
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::proportional(TS_SM),
+                text_color,
+            );
+        }
     }
 
     response
@@ -1619,6 +1629,7 @@ impl VapourflyApp {
 
             job_runner: JobRunner::new(),
             ctx: None,
+            rails_below: false,
             scan_job_id: None,
             write_job_id: None,
             enrich_job_id: None,
@@ -3740,6 +3751,18 @@ impl eframe::App for VapourflyApp {
         let shell_playtime = format_playtime(shell_playtime);
         let shell_playlists = self.playlist_store_ids.len();
 
+        // Responsive layout: compute breakpoints from the current window width.
+        let window_width = ctx.input(|i| i.viewport_rect().width());
+        let compact_sidebar = is_compact_sidebar(window_width);
+        let compact_padding = is_compact_padding(window_width);
+        let rails_below = rails_below(window_width);
+        self.rails_below = rails_below;
+        let sidebar_w = if compact_sidebar {
+            SIDEBAR_WIDTH_COMPACT
+        } else {
+            SIDEBAR_WIDTH
+        };
+
         // -- Top chrome ------------------------------------------------------
         egui::Panel::top("top_chrome")
             .exact_size(TOPBAR_HEIGHT)
@@ -3794,7 +3817,7 @@ impl eframe::App for VapourflyApp {
         // -- Left panel: navigation -----------------------------------------
         egui::Panel::left("nav_panel")
             .resizable(false)
-            .exact_size(SIDEBAR_WIDTH)
+            .exact_size(sidebar_w)
             .frame(
                 egui::Frame::NONE
                     .fill(t().surface)
@@ -3809,23 +3832,25 @@ impl eframe::App for VapourflyApp {
                 // reference application rail.
                 for &view in &View::ALL[..5] {
                     let selected = self.current_view == view;
-                    if nav_item(ui, view, selected).clicked() {
+                    if nav_item(ui, view, selected, compact_sidebar).clicked() {
                         self.current_view = view;
                     }
                     ui.add_space(3.0);
                 }
 
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                    ui.add_space(SP_1);
-                    ui.label(
-                        RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-                            .size(TS_XS)
-                            .color(t().text_muted),
-                    );
-                    ui.add_space(SP_2);
+                    if !compact_sidebar {
+                        ui.add_space(SP_1);
+                        ui.label(
+                            RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                                .size(TS_XS)
+                                .color(t().text_muted),
+                        );
+                        ui.add_space(SP_2);
+                    }
                     for &view in View::ALL[5..].iter().rev() {
                         let selected = self.current_view == view;
-                        if nav_item(ui, view, selected).clicked() {
+                        if nav_item(ui, view, selected, compact_sidebar).clicked() {
                             self.current_view = view;
                         }
                         ui.add_space(3.0);
@@ -3838,7 +3863,11 @@ impl eframe::App for VapourflyApp {
             .frame(
                 egui::Frame::NONE
                     .fill(t().canvas)
-                    .inner_margin(egui::Margin::same(m(SP_6))),
+                    .inner_margin(egui::Margin::same(if compact_padding {
+                        m(SP_4)
+                    } else {
+                        m(SP_6)
+                    })),
             )
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
@@ -4359,7 +4388,14 @@ impl VapourflyApp {
         }
 
         // Two-column layout: game grid (left) + insights rail (right).
-        ui.horizontal(|ui| {
+        // At compact widths (1024–1279px) the rail moves below the main grid.
+        let rails_below = self.rails_below;
+        let layout = if rails_below {
+            egui::Layout::top_down(egui::Align::LEFT)
+        } else {
+            egui::Layout::left_to_right(egui::Align::Min)
+        };
+        ui.with_layout(layout, |ui| {
             // Main grid column.
             ui.vertical(|ui| {
                 if games.is_empty() {
@@ -4700,7 +4736,13 @@ impl VapourflyApp {
             .count();
 
         // Two-column layout: table (left) + summary rail (right).
-        ui.horizontal(|ui| {
+        // At compact widths the rail moves below the table.
+        let layout = if self.rails_below {
+            egui::Layout::top_down(egui::Align::LEFT)
+        } else {
+            egui::Layout::left_to_right(egui::Align::Min)
+        };
+        ui.with_layout(layout, |ui| {
             ui.vertical(|ui| {
                 // Bulk selection bar + show-all toggle.
                 ui.horizontal(|ui| {
@@ -5218,7 +5260,13 @@ impl VapourflyApp {
         ui.add_space(SP_3);
 
         // Two-column: compact results list (left) + explanation rail (right).
-        ui.horizontal(|ui| {
+        // At compact widths the rail moves below the results list.
+        let layout = if self.rails_below {
+            egui::Layout::top_down(egui::Align::LEFT)
+        } else {
+            egui::Layout::left_to_right(egui::Align::Min)
+        };
+        ui.with_layout(layout, |ui| {
             ui.vertical(|ui| {
                 // Write action bar.
                 let busy = self.write_loading || self.dry_run_loading;
@@ -7125,7 +7173,13 @@ impl VapourflyApp {
         );
 
         // Two-column layout: settings cards (left) + summary rail (right).
-        ui.horizontal(|ui| {
+        // At compact widths the rail moves below the settings cards.
+        let layout = if self.rails_below {
+            egui::Layout::top_down(egui::Align::LEFT)
+        } else {
+            egui::Layout::left_to_right(egui::Align::Min)
+        };
+        ui.with_layout(layout, |ui| {
             ui.vertical(|ui| {
                 // Appearance: theme toggle.
                 section_card(ui, "Appearance", |ui| {
