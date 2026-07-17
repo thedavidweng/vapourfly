@@ -1100,9 +1100,9 @@ fn scan_library_hydrated(
 /// API: in online mode it fetches uncached missing AppIDs via SteamStoreClient
 /// and writes them to cache; in offline mode it uses cache-only lookups.
 fn match_playlist_with_missing(
+    cli: &Cli,
     pf: &PlaylistFile,
     games: &[vapourfly_core::models::Game],
-    offline: bool,
 ) -> Result<vapourfly_core::models::PlaylistMatchReport, Box<dyn std::error::Error>> {
     use std::collections::HashMap;
     // First pass: find missing AppIDs with no store details.
@@ -1110,11 +1110,40 @@ fn match_playlist_with_missing(
     let preliminary = playlist::match_playlist(pf, games, &empty)?;
     // Resolve store details for missing entries (online fetch + cache).
     let cache = vapourfly_api::cache::DiskCache::new(vapourfly_core::config::default_cache_dir());
-    let cfg = vapourfly_core::config::VapourflyConfig::from_cli_and_env(Default::default())?;
+    // Build config from the same CLI context that produced the scan — do NOT
+    // use Default::default() which would re-run Steam detection and fail in
+    // fixture-only or custom --steam-dir environments.
+    let cfg = match cli.resolve_steam_dir() {
+        Ok(steam_dir) => {
+            let overrides = vapourfly_core::config::CliOverrides {
+                steam_dir: Some(steam_dir),
+                account: cli.account.clone(),
+            };
+            vapourfly_core::config::VapourflyConfig::from_cli_and_env(overrides)?
+        }
+        Err(_) => {
+            // If Steam dir resolution fails (e.g. fixture-only without real
+            // Steam), fall back to default locale so the match report still
+            // succeeds — completion price is best-effort, not critical.
+            vapourfly_core::config::VapourflyConfig {
+                steam_dir: PathBuf::new(),
+                account: None,
+                cache_root: vapourfly_core::config::default_cache_dir(),
+                app_data_root: std::env::var("HOME")
+                    .map(|h| PathBuf::from(h).join(".local").join("share"))
+                    .unwrap_or_else(|_| PathBuf::from(".")),
+                has_igdb_credentials: false,
+                has_rawg_credentials: false,
+                cc: "US".into(),
+                lang: "english".into(),
+                backup_retention_count: 5,
+            }
+        }
+    };
     let missing_details = vapourfly_api::enrichment::resolve_missing_store_details(
         &preliminary.missing,
         &cache,
-        offline,
+        cli.offline,
         &cfg.cc,
         &cfg.lang,
     );
@@ -1553,7 +1582,7 @@ fn cmd_playlist_import(
     }
 
     let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
-    let report = match_playlist_with_missing(&pf, &scan_result.games, cli.offline)?;
+    let report = match_playlist_with_missing(cli, &pf, &scan_result.games)?;
 
     println!();
     println!("Match summary:");
@@ -1635,7 +1664,7 @@ fn cmd_playlist_match(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pf = playlist::import_playlist(&path)?;
     let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
-    let report = match_playlist_with_missing(&pf, &scan_result.games, cli.offline)?;
+    let report = match_playlist_with_missing(cli, &pf, &scan_result.games)?;
 
     match format {
         OutputFormat::Table => {
@@ -2165,6 +2194,7 @@ fn validate_write_flags(dry_run: bool, confirm: bool) -> Result<(), Box<dyn std:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vapourfly_core::models::Playlist;
 
     #[test]
     fn cache_refresh_accepts_every_enrichment_source() {
@@ -2320,5 +2350,78 @@ mod tests {
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("could not read"), "got: {msg}");
+    }
+
+    /// Regression: Playlist Match must succeed in fixture-only environments
+    /// where no real Steam installation exists. Previously,
+    /// `match_playlist_with_missing` called `VapourflyConfig::from_cli_and_env
+    /// (Default::default())` which re-ran Steam detection and failed.
+    #[test]
+    fn playlist_match_succeeds_with_fixtures_only() {
+        let fixtures = std::path::Path::new("data/fixtures/steam_minimal");
+        if !fixtures.exists() {
+            eprintln!("skipping: fixtures not found at {}", fixtures.display());
+            return;
+        }
+        let cli = Cli {
+            fixtures: Some(fixtures.to_path_buf()),
+            steam_dir: None,
+            account: None,
+            verbose: false,
+            offline: true,
+            allow_steam_running: false,
+            command: Commands::Doctor,
+        };
+        let pf = PlaylistFile {
+            vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
+            created_by: "test".into(),
+            playlist: Playlist {
+                id: "test-match".into(),
+                name: "Test Match".into(),
+                description: String::new(),
+                content: PlaylistContent::Manual {
+                    app_ids: vec![730, 440],
+                },
+            },
+        };
+        let scan_result = scan_library_hydrated(&cli, JunkMode::Default).unwrap();
+        let result = match_playlist_with_missing(&cli, &pf, &scan_result.games);
+        assert!(result.is_ok(), "match must succeed with fixtures only");
+    }
+
+    /// Regression: Playlist Match must succeed with a custom --steam-dir
+    /// that is not the platform default.
+    #[test]
+    fn playlist_match_succeeds_with_custom_steam_dir() {
+        let fixtures = std::path::Path::new("data/fixtures/steam_minimal");
+        if !fixtures.exists() {
+            eprintln!("skipping: fixtures not found at {}", fixtures.display());
+            return;
+        }
+        // Use fixtures as a custom steam_dir (same structure).
+        let cli = Cli {
+            fixtures: None,
+            steam_dir: Some(fixtures.to_path_buf()),
+            account: None,
+            verbose: false,
+            offline: true,
+            allow_steam_running: false,
+            command: Commands::Doctor,
+        };
+        let pf = PlaylistFile {
+            vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
+            created_by: "test".into(),
+            playlist: Playlist {
+                id: "test-match".into(),
+                name: "Test Match".into(),
+                description: String::new(),
+                content: PlaylistContent::Manual {
+                    app_ids: vec![730, 440],
+                },
+            },
+        };
+        let scan_result = scan_library_hydrated(&cli, JunkMode::Default).unwrap();
+        let result = match_playlist_with_missing(&cli, &pf, &scan_result.games);
+        assert!(result.is_ok(), "match must succeed with custom --steam-dir");
     }
 }

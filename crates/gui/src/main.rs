@@ -3724,26 +3724,36 @@ impl VapourflyApp {
         }
 
         let content = if self.playlist_edit_rules.trim().is_empty() {
-            // Strict per-token AppID parsing — no silent drops.
+            // Strict per-token AppID parsing — no silent drops, no empty tokens.
+            let raw = self.playlist_edit_app_ids.trim();
             let mut app_ids = Vec::new();
-            for (i, part) in self.playlist_edit_app_ids.split(',').enumerate() {
-                let trimmed = part.trim();
-                if trimmed.is_empty() {
-                    continue;
+            if !raw.is_empty() {
+                let parts: Vec<&str> = raw.split(',').collect();
+                for (i, part) in parts.iter().enumerate() {
+                    let trimmed = part.trim();
+                    if trimmed.is_empty() {
+                        return Err(format!(
+                            "Empty AppID at position {} — remove trailing commas or extra commas",
+                            i + 1
+                        ));
+                    }
+                    let parsed: u32 = trimmed.parse().map_err(|_| {
+                        format!(
+                            "Invalid AppID at position {}: '{trimmed}' is not a number",
+                            i + 1
+                        )
+                    })?;
+                    if parsed == 0 {
+                        return Err(format!(
+                            "Invalid AppID at position {}: 0 is not a valid Steam AppID",
+                            i + 1
+                        ));
+                    }
+                    app_ids.push(parsed);
                 }
-                let parsed: u32 = trimmed.parse().map_err(|_| {
-                    format!(
-                        "Invalid AppID at position {}: '{trimmed}' is not a number",
-                        i + 1
-                    )
-                })?;
-                if parsed == 0 {
-                    return Err(format!(
-                        "Invalid AppID at position {}: 0 is not a valid Steam AppID",
-                        i + 1
-                    ));
-                }
-                app_ids.push(parsed);
+                // Sort + deduplicate for set semantics.
+                app_ids.sort_unstable();
+                app_ids.dedup();
             }
             PlaylistContent::Manual { app_ids }
         } else {
@@ -8008,13 +8018,12 @@ impl VapourflyApp {
                 );
             } else {
                 ui.add_space(SP_2);
-                ui.label(
-                    RichText::new(
-                        "Completion price unavailable — run cache refresh --source steam-store when online.",
-                    )
-                    .size(TS_SM)
-                    .color(t().text_muted),
-                );
+                let price_msg = if self.offline_mode {
+                    "Price unavailable — missing entries are not cached."
+                } else {
+                    "Price unavailable — entries may be free, unpriced, unavailable, or failed to fetch."
+                };
+                ui.label(RichText::new(price_msg).size(TS_SM).color(t().text_muted));
             }
         });
 
@@ -11417,6 +11426,67 @@ mod tests {
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
         assert!(msg.contains("0 is not a valid Steam AppID"), "got: {msg}");
+    }
+
+    #[test]
+    fn build_playlist_rejects_empty_token_mid_field() {
+        let mut app = VapourflyApp::new(None, false);
+        app.playlist_edit_id = "test-list".into();
+        app.playlist_edit_name = "Test".into();
+        app.playlist_edit_app_ids = "730,,440".into();
+        let err = app.build_playlist_from_edit_fields();
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("Empty AppID"), "got: {msg}");
+    }
+
+    #[test]
+    fn build_playlist_rejects_trailing_comma() {
+        let mut app = VapourflyApp::new(None, false);
+        app.playlist_edit_id = "test-list".into();
+        app.playlist_edit_name = "Test".into();
+        app.playlist_edit_app_ids = "730, 440,".into();
+        let err = app.build_playlist_from_edit_fields();
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("Empty AppID"), "got: {msg}");
+    }
+
+    #[test]
+    fn build_playlist_allows_empty_app_ids_for_empty_playlist() {
+        let mut app = VapourflyApp::new(None, false);
+        app.playlist_edit_id = "test-list".into();
+        app.playlist_edit_name = "Test".into();
+        app.playlist_edit_app_ids = String::new();
+        let result = app.build_playlist_from_edit_fields();
+        assert!(
+            result.is_ok(),
+            "empty field should create empty manual playlist"
+        );
+        let pf = result.unwrap();
+        match pf.playlist.content {
+            PlaylistContent::Manual { app_ids } => {
+                assert!(app_ids.is_empty(), "should have zero app_ids");
+            }
+            PlaylistContent::Rules { .. } => panic!("expected manual"),
+        }
+    }
+
+    #[test]
+    fn build_playlist_deduplicates_app_ids() {
+        let mut app = VapourflyApp::new(None, false);
+        app.playlist_edit_id = "test-list".into();
+        app.playlist_edit_name = "Test".into();
+        app.playlist_edit_app_ids = "730, 440, 730, 440".into();
+        let result = app.build_playlist_from_edit_fields();
+        assert!(result.is_ok());
+        let pf = result.unwrap();
+        match pf.playlist.content {
+            PlaylistContent::Manual { app_ids } => {
+                assert_eq!(app_ids, vec![440, 730], "should be sorted + deduped");
+            }
+            PlaylistContent::Rules { .. } => panic!("expected manual"),
+        }
     }
 
     #[test]
