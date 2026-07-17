@@ -71,6 +71,23 @@ pub fn list_ids(store_dir: &Path) -> Result<Vec<String>> {
     Ok(ids)
 }
 
+/// Load all playlists from `store_dir`, returning `(id, Ok(PlaylistFile))`
+/// for each readable file and `(id, Err(message))` for corrupt ones.
+/// Missing directory yields an empty list. Sort order is by id.
+pub fn list_all(
+    store_dir: &Path,
+) -> Result<Vec<(String, std::result::Result<PlaylistFile, String>)>> {
+    let ids = list_ids(store_dir)?;
+    let result = ids
+        .into_iter()
+        .map(|id| {
+            let loaded = get(store_dir, &id).map_err(|e| e.to_string());
+            (id, loaded)
+        })
+        .collect();
+    Ok(result)
+}
+
 /// Put using the platform default playlists directory.
 pub fn put_default(playlist: &PlaylistFile) -> Result<PathBuf> {
     put(&crate::config::default_playlists_dir(), playlist)

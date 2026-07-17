@@ -1566,7 +1566,7 @@ fn cmd_playlist_import(
     match &report.completion_price {
         Some(price) => println!("  Completion price: {}", price.format()),
         None => println!(
-            "  Completion price: (no priced missing entries; run 'vapourfly cache refresh --source steam-store')"
+            "  Completion price: (unavailable — missing entries may be free, unpriced, or not cached)"
         ),
     }
     println!();
@@ -1652,7 +1652,7 @@ fn cmd_playlist_match(
             match &report.completion_price {
                 Some(price) => println!("  Completion price: {}", price.format()),
                 None => println!(
-                    "  Completion price: (no priced missing entries; run 'vapourfly cache refresh --source steam-store')"
+                    "  Completion price: (unavailable — missing entries may be free, unpriced, or not cached)"
                 ),
             }
         }

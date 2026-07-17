@@ -395,6 +395,9 @@ struct VapourflyApp {
     playlist_store_ids: Vec<String>,
     /// Whether [`playlist_store_ids`] has been loaded at least once this session.
     playlist_store_ids_loaded: bool,
+    /// Rail model: loaded metadata for each stored playlist.
+    /// Keyed by id; value is Ok(PlaylistFile) or Err(error message).
+    playlist_rail_entries: Vec<(String, std::result::Result<PlaylistFile, String>)>,
     /// Selected id in the Load existing combo (empty = none).
     playlist_load_selected: String,
     /// Open generator chooser (Dynamic / Mood only).
@@ -413,6 +416,12 @@ struct VapourflyApp {
     playlist_rule_hltb_max: String,
     /// Visual rule editor: ProtonDB tier for parameterized ProtonAtLeast rule.
     playlist_rule_proton_tier: Option<ProtonTier>,
+    /// Visual rule editor: playtime min for PlaytimeBetween rule.
+    playlist_rule_playtime_min: String,
+    /// Visual rule editor: playtime max for PlaytimeBetween rule.
+    playlist_rule_playtime_max: String,
+    /// Visual rule editor: rating minimum for RatingAtLeast rule (0.0–5.0).
+    playlist_rule_rating_min: String,
     /// Master-detail: pending duplicate-ID replacement (for confirm dialog).
     playlist_dup_id_confirm: Option<(String, PlaylistFile)>,
     /// Master-detail: show Import sub-route panel.
@@ -836,6 +845,52 @@ fn project_library_games(games: &[Game], filters: &LibraryFilters) -> Vec<Game> 
     }
 
     games
+}
+
+/// Open a URL in the user's default system browser.
+/// Falls back silently on unsupported platforms.
+fn open_url_in_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let cmd = "open";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let cmd = "xdg-open";
+    #[cfg(target_os = "windows")]
+    let cmd = "cmd";
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new(cmd)
+            .args(["/c", "start", "", url])
+            .spawn();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = std::process::Command::new(cmd).arg(url).spawn();
+    }
+}
+
+/// Format a Unix timestamp as a relative time ago string (e.g. "3 days ago").
+fn relative_time_ago(unix: i64) -> String {
+    if unix == 0 {
+        return "unknown".into();
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let diff_secs = now.saturating_sub(unix);
+    if diff_secs < 60 {
+        "just now".into()
+    } else if diff_secs < 3600 {
+        let mins = diff_secs / 60;
+        format!("{mins} min ago")
+    } else if diff_secs < 86400 {
+        let hours = diff_secs / 3600;
+        format!("{} hour{} ago", hours, if hours == 1 { "" } else { "s" })
+    } else {
+        let days = diff_secs / 86400;
+        format!("{} day{} ago", days, if days == 1 { "" } else { "s" })
+    }
 }
 
 /// Human-readable label for a single playlist rule.
@@ -1812,6 +1867,7 @@ impl VapourflyApp {
             playlist_match_report: None,
             playlist_store_ids: Vec::new(),
             playlist_store_ids_loaded: false,
+            playlist_rail_entries: Vec::new(),
             playlist_load_selected: String::new(),
             playlist_chooser: PlaylistChooser::None,
             playlist_detail_tab: PlaylistDetailTab::Games,
@@ -1821,6 +1877,9 @@ impl VapourflyApp {
             playlist_rule_tag: String::new(),
             playlist_rule_hltb_max: String::new(),
             playlist_rule_proton_tier: None,
+            playlist_rule_playtime_min: String::new(),
+            playlist_rule_playtime_max: String::new(),
+            playlist_rule_rating_min: String::new(),
             playlist_dup_id_confirm: None,
             playlist_show_import: false,
             playlist_share_tab: PlaylistShareTab::ShareCode,
@@ -2357,6 +2416,11 @@ impl VapourflyApp {
                     return;
                 }
             }
+            // Build rail entries from the demo playlists.
+            self.playlist_rail_entries = demo_playlists
+                .iter()
+                .map(|pf| (pf.playlist.id.clone(), Ok(pf.clone())))
+                .collect();
         }
         self.playlist_store_ids = demo_ids;
         self.playlist_store_ids_loaded = true;
@@ -2732,12 +2796,15 @@ impl VapourflyApp {
             JunkModeChoice::Strict => JunkMode::Strict,
             JunkModeChoice::Aggressive => JunkMode::Aggressive,
         };
-        let games = match self.prepared_games(mode.clone()) {
+        // Always use the Default snapshot (pre-classified, Arc clone is
+        // cheap). The non-Default classification happens inside
+        // evaluate_junk which reads signals directly — it does NOT read
+        // game.is_junk — so we don't need apply_junk_flags at all for the
+        // preview. This keeps all heavy work off the UI thread.
+        let games = match self.prepared_games(JunkMode::Default) {
             Some(g) => g,
             None => return,
         };
-        // The snapshot already loaded overrides off-frame; reuse them instead
-        // of re-reading the overrides file on the egui frame.
         let overrides = self
             .prepared_snapshot
             .as_ref()
@@ -2760,6 +2827,8 @@ impl VapourflyApp {
 
         let ctx = ctx.clone();
         std::thread::spawn(move || {
+            // evaluate_junk computes decisions from signals without
+            // mutating the games, so no clone/apply_junk_flags needed.
             let results = evaluate_junk(&games, &JunkRules::default(), &mode, &overrides);
             ctx.request_repaint();
             JUNK_PREVIEW_RESULT.set(job_id, Ok(results));
@@ -2986,7 +3055,9 @@ impl VapourflyApp {
                 }
                 _ => String::new(),
             };
-            if !current_fp.is_empty() && expected.fingerprint != fingerprint_u64(&current_fp) {
+            // Discard result when current fingerprint is empty (invalid
+            // input) OR when it doesn't match the expected fingerprint.
+            if current_fp.is_empty() || expected.fingerprint != fingerprint_u64(&current_fp) {
                 self.dynamic_loading = false;
                 self.dynamic_job_id = None;
             } else if let Some(result) = DYNAMIC_RESULT.take_if(expected) {
@@ -3017,7 +3088,9 @@ impl VapourflyApp {
             let current_fp = EditorialMood::parse(&self.editorial_mood)
                 .map(|m| format!("mood:{}:lib={}", m.id(), self.scan_generation))
                 .unwrap_or_default();
-            if !current_fp.is_empty() && expected.fingerprint != fingerprint_u64(&current_fp) {
+            // Discard result when current fingerprint is empty (invalid
+            // mood) OR when it doesn't match the expected fingerprint.
+            if current_fp.is_empty() || expected.fingerprint != fingerprint_u64(&current_fp) {
                 self.mood_loading = false;
                 self.mood_job_id = None;
             } else if let Some(result) = MOOD_RESULT.take_if(expected) {
@@ -3455,8 +3528,11 @@ impl VapourflyApp {
             // Pre-classified in the background job — zero per-frame work.
             return Some(Arc::clone(&snap.games));
         }
-        // Non-Default mode: clone + reclassify. Only called from
-        // start_junk_preview which runs in a background thread.
+        // Non-Default mode: clone + reclassify. This path is only for
+        // callers that need mutated is_junk flags on the games themselves
+        // (e.g. write plans). Junk preview uses evaluate_junk directly on
+        // the Default snapshot inside the spawned thread, so it never
+        // hits this path.
         let mut games: Vec<Game> = snap.games.to_vec();
         apply_junk_flags(
             &mut games,
@@ -3690,6 +3766,16 @@ impl VapourflyApp {
         match playlist_store::list_ids(&self.playlist_store_path()) {
             Ok(ids) => self.playlist_store_ids = ids,
             Err(e) => self.error = Some(format!("Failed to list playlists: {e}")),
+        }
+        // Load rail entries with per-file error handling.
+        match playlist_store::list_all(&self.playlist_store_path()) {
+            Ok(entries) => self.playlist_rail_entries = entries,
+            Err(e) => {
+                // list_all only fails if the directory itself can't be read;
+                // clear the rail rather than crashing the view.
+                self.playlist_rail_entries = Vec::new();
+                self.error = Some(format!("Failed to load playlist rail: {e}"));
+            }
         }
     }
 
@@ -4746,18 +4832,36 @@ impl VapourflyApp {
             .iter()
             .map(|g| g.playtime_minutes.unwrap_or(0))
             .sum();
-        // Backlog: installed + unplayed (games you own but haven't started).
-        let backlog_count = all_games
+        // Backlog: visible (filtered) games with zero playtime.
+        // "Owned" = present in the library; does NOT require installed.
+        let backlog_count = games
             .iter()
-            .filter(|g| g.installed && g.playtime_minutes.unwrap_or(0) == 0)
+            .filter(|g| g.playtime_minutes.unwrap_or(0) == 0)
             .count();
-        // Recent activity: games played in the last 2 weeks (>= 120 min).
-        let recent_active_count = all_games
-            .iter()
-            .filter(|g| {
-                g.playtime_minutes.unwrap_or(0) > 0 && g.playtime_minutes.unwrap_or(0) < 600
-            })
-            .count();
+        // Recent activity: top 3 games by last_played_unix (descending).
+        // Clone the data to avoid holding a borrow on self.scan_result.
+        let recent_games: Vec<(String, i64, u32)> = {
+            let mut with_time: Vec<&Game> = all_games
+                .iter()
+                .filter(|g| g.last_played_unix.is_some())
+                .collect();
+            with_time.sort_by(|a, b| {
+                b.last_played_unix
+                    .unwrap_or(0)
+                    .cmp(&a.last_played_unix.unwrap_or(0))
+            });
+            with_time
+                .into_iter()
+                .take(3)
+                .map(|g| {
+                    (
+                        g.name.clone(),
+                        g.last_played_unix.unwrap_or(0),
+                        g.playtime_minutes.unwrap_or(0),
+                    )
+                })
+                .collect()
+        };
         // Average HLTB across games with known completion time.
         let avg_hltb_minutes: u32 = {
             let hltb_games: Vec<u32> = all_games
@@ -5154,8 +5258,39 @@ impl VapourflyApp {
                             insight_metric(ui, "Matching", games.len().to_string());
                             ui.separator();
                             insight_metric(ui, "Backlog", backlog_count.to_string());
-                            insight_metric(ui, "Recent", recent_active_count.to_string());
+                            // Recent activity: top 3 by last_played_unix.
+                            ui.label(
+                                RichText::new("Recent activity")
+                                    .size(TS_XS)
+                                    .strong()
+                                    .color(t().text_secondary),
+                            );
+                            if recent_games.is_empty() {
+                                ui.label(
+                                    RichText::new("No recent activity")
+                                        .size(TS_XS)
+                                        .color(t().text_muted),
+                                );
+                            } else {
+                                for (name, unix, playtime) in &recent_games {
+                                    let relative = relative_time_ago(*unix);
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(format!(
+                                                "{} · {} · {}",
+                                                name,
+                                                relative,
+                                                format_playtime(*playtime)
+                                            ))
+                                            .size(TS_XS)
+                                            .color(t().text_muted),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                            }
                             if avg_hltb_minutes > 0 {
+                                ui.separator();
                                 insight_metric(
                                     ui,
                                     "Avg HLTB",
@@ -5240,22 +5375,6 @@ impl VapourflyApp {
         }
     }
 
-    /// Toggle a game's hidden state in the in-memory scan result.
-    /// The change is applied to Steam on the next write/sync.
-    fn toggle_game_hidden(&mut self, app_id: u32) {
-        if let Some(scan) = self.scan_result.as_mut() {
-            for game in scan.games.iter_mut() {
-                if game.app_id == app_id {
-                    game.is_hidden = !game.is_hidden;
-                    break;
-                }
-            }
-        }
-        // Bump scan generation so the prepared snapshot is invalidated.
-        self.scan_generation = self.scan_generation.wrapping_add(1);
-        self.prepared_snapshot = None;
-    }
-
     fn render_game_card(&mut self, ui: &mut egui::Ui, game: &Game) {
         let is_selected = self.library_selected_app_id == Some(game.app_id);
         let hover_id = egui::Id::new(("library_card_hover", game.app_id));
@@ -5298,18 +5417,15 @@ impl VapourflyApp {
                                                 self.recommend_seed = game.app_id.to_string();
                                                 self.current_view = View::Recommendations;
                                             }
-                                            if ui.button("View on Steam Store").clicked() {
-                                                ui.ctx().copy_text(format!(
+                                            if ui.button("Copy AppID").clicked() {
+                                                ui.ctx().copy_text(game.app_id.to_string());
+                                            }
+                                            if ui.button("Open Steam Store").clicked() {
+                                                let url = format!(
                                                     "https://store.steampowered.com/app/{}",
                                                     game.app_id
-                                                ));
-                                            }
-                                            if game.is_hidden {
-                                                if ui.button("Unhide").clicked() {
-                                                    self.toggle_game_hidden(game.app_id);
-                                                }
-                                            } else if ui.button("Hide").clicked() {
-                                                self.toggle_game_hidden(game.app_id);
+                                                );
+                                                open_url_in_browser(&url);
                                             }
                                         });
                                     },
@@ -6755,18 +6871,111 @@ impl VapourflyApp {
                     ui.add_space(SP_1);
 
                     let ids = self.playlist_store_ids.clone();
+                    let rail_entries = self.playlist_rail_entries.clone();
                     for id in &ids {
                         let is_selected = self.playlist_load_selected == *id;
-                        let label = if let Some(pf) = &self.playlist_last_import {
-                            if pf.playlist.id == *id {
-                                format!("{} · {}", id, pf.playlist.name)
-                            } else {
-                                id.clone()
-                            }
+                        // Look up rail metadata for this id.
+                        let rail_entry = rail_entries.iter().find(|(eid, _)| eid == id);
+                        let clicked = if let Some((_, Ok(pf))) = rail_entry {
+                            // Rich card: name, type badge, count, description snippet.
+                            let card = egui::Frame::group(ui.style())
+                                .fill(if is_selected {
+                                    t().accent_soft
+                                } else {
+                                    t().surface
+                                })
+                                .stroke(if is_selected {
+                                    egui::Stroke::new(1.5, t().accent)
+                                } else {
+                                    egui::Stroke::new(1.0, t().border_soft)
+                                })
+                                .corner_radius(CORNER_SM)
+                                .inner_margin(egui::Margin::same(m(SP_2)));
+                            let response = card.show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing = egui::vec2(SP_1, SP_1);
+                                    // Content type badge.
+                                    let type_label =
+                                        playlist_content_type_label(&pf.playlist.content);
+                                    status_badge(
+                                        ui,
+                                        type_label,
+                                        t().surface_muted,
+                                        t().text_secondary,
+                                    );
+                                    // Generator badge for known slot ids.
+                                    let gen_badge = if id == "discover" {
+                                        Some("Discover")
+                                    } else if id.starts_with("dynamic-") {
+                                        Some("Dynamic")
+                                    } else if id.starts_with("mood-") {
+                                        Some("Mood")
+                                    } else {
+                                        None
+                                    };
+                                    if let Some(badge) = gen_badge {
+                                        status_badge(ui, badge, t().accent_soft, t().accent_text);
+                                    }
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "{} games",
+                                                    playlist_game_count(&pf.playlist.content, None,)
+                                                ))
+                                                .size(TS_XS)
+                                                .color(t().text_muted),
+                                            );
+                                        },
+                                    );
+                                });
+                                ui.label(
+                                    RichText::new(&pf.playlist.name)
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(t().text_primary),
+                                );
+                                if !pf.playlist.description.is_empty() {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(&pf.playlist.description)
+                                                .size(TS_XS)
+                                                .color(t().text_muted),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                            });
+                            response.response.clicked()
+                        } else if let Some((_, Err(err))) = rail_entry {
+                            // Error state for corrupt file.
+                            let card = egui::Frame::group(ui.style())
+                                .fill(t().surface)
+                                .stroke(egui::Stroke::new(1.0, t().error))
+                                .corner_radius(CORNER_SM)
+                                .inner_margin(egui::Margin::same(m(SP_2)));
+                            let response = card.show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.label(
+                                    RichText::new(id)
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(t().text_primary),
+                                );
+                                ui.label(
+                                    RichText::new(format!("Error: {err}"))
+                                        .size(TS_XS)
+                                        .color(t().error),
+                                );
+                            });
+                            response.response.clicked()
                         } else {
-                            id.clone()
+                            // Fallback: just show the id (shouldn't happen after refresh).
+                            ui.selectable_label(is_selected, id).clicked()
                         };
-                        if ui.selectable_label(is_selected, &label).clicked() {
+                        if clicked {
                             match self.load_playlist_from_store(id) {
                                 Ok(()) => {
                                     self.playlist_load_selected = id.clone();
@@ -7478,6 +7687,71 @@ impl VapourflyApp {
                             self.playlist_edit_rules =
                                 serde_json::to_string_pretty(&rules).unwrap_or_default();
                             self.playlist_rule_proton_tier = None;
+                        }
+                    }
+                });
+
+                // PlaytimeBetween: min + max inputs.
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                    ui.label(RichText::new("Playtime").size(TS_XS).color(t().text_muted));
+                    ui.add_sized(
+                        [50.0, 24.0],
+                        egui::TextEdit::singleline(&mut self.playlist_rule_playtime_min)
+                            .hint_text("min"),
+                    );
+                    ui.label(RichText::new("–").size(TS_XS).color(t().text_muted));
+                    ui.add_sized(
+                        [50.0, 24.0],
+                        egui::TextEdit::singleline(&mut self.playlist_rule_playtime_max)
+                            .hint_text("max"),
+                    );
+                    let min_ok = self.playlist_rule_playtime_min.trim().parse::<u32>().ok();
+                    let max_ok = self.playlist_rule_playtime_max.trim().parse::<u32>().ok();
+                    let can_add = min_ok.is_some() && max_ok.is_some();
+                    let add_btn = egui::Button::new(RichText::new("Add").size(TS_XS));
+                    if ui.add_enabled(can_add, add_btn).clicked() {
+                        if let (Some(min), Some(max)) = (min_ok, max_ok) {
+                            let mut rules: Vec<PlaylistRule> =
+                                serde_json::from_str(&self.playlist_edit_rules).unwrap_or_default();
+                            rules.push(PlaylistRule::PlaytimeBetween { min, max });
+                            self.playlist_edit_rules =
+                                serde_json::to_string_pretty(&rules).unwrap_or_default();
+                            self.playlist_rule_playtime_min.clear();
+                            self.playlist_rule_playtime_max.clear();
+                        }
+                    }
+                });
+
+                // RatingAtLeast: minimum rating input (0.0–5.0).
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+                    ui.label(
+                        RichText::new("Rating min")
+                            .size(TS_XS)
+                            .color(t().text_muted),
+                    );
+                    ui.add_sized(
+                        [60.0, 24.0],
+                        egui::TextEdit::singleline(&mut self.playlist_rule_rating_min)
+                            .hint_text("0.0–5.0"),
+                    );
+                    let rating_ok = self
+                        .playlist_rule_rating_min
+                        .trim()
+                        .parse::<f32>()
+                        .ok()
+                        .filter(|r| *r >= 0.0 && *r <= 5.0);
+                    let can_add = rating_ok.is_some();
+                    let add_btn = egui::Button::new(RichText::new("Add").size(TS_XS));
+                    if ui.add_enabled(can_add, add_btn).clicked() {
+                        if let Some(rating) = rating_ok {
+                            let mut rules: Vec<PlaylistRule> =
+                                serde_json::from_str(&self.playlist_edit_rules).unwrap_or_default();
+                            rules.push(PlaylistRule::RatingAtLeast { rating_0_5: rating });
+                            self.playlist_edit_rules =
+                                serde_json::to_string_pretty(&rules).unwrap_or_default();
+                            self.playlist_rule_rating_min.clear();
                         }
                     }
                 });
@@ -10062,39 +10336,6 @@ mod tests {
     }
 
     #[test]
-    fn toggle_game_hidden_flips_is_hidden() {
-        let mut app = VapourflyApp::new(None, true);
-        app.populate_demo_data();
-        let app_id = app
-            .scan_result
-            .as_ref()
-            .unwrap()
-            .games
-            .first()
-            .unwrap()
-            .app_id;
-        let was_hidden = app
-            .scan_result
-            .as_ref()
-            .unwrap()
-            .games
-            .first()
-            .unwrap()
-            .is_hidden;
-        app.toggle_game_hidden(app_id);
-        let is_hidden = app
-            .scan_result
-            .as_ref()
-            .unwrap()
-            .games
-            .iter()
-            .find(|g| g.app_id == app_id)
-            .unwrap()
-            .is_hidden;
-        assert_ne!(was_hidden, is_hidden);
-    }
-
-    #[test]
     fn rule_label_formats_all_variants() {
         assert_eq!(rule_label(&PlaylistRule::Installed), "Installed");
         assert_eq!(rule_label(&PlaylistRule::NotJunk), "NotJunk");
@@ -10120,6 +10361,14 @@ mod tests {
             "HasTag(multiplayer)"
         );
         assert_eq!(
+            rule_label(&PlaylistRule::PlaytimeBetween { min: 0, max: 120 }),
+            "PlaytimeBetween(0-120)"
+        );
+        assert_eq!(
+            rule_label(&PlaylistRule::RatingAtLeast { rating_0_5: 3.5 }),
+            "RatingAtLeast(3.5)"
+        );
+        assert_eq!(
             rule_label(&PlaylistRule::And(vec![
                 PlaylistRule::Installed,
                 PlaylistRule::NotJunk
@@ -10130,6 +10379,43 @@ mod tests {
             rule_label(&PlaylistRule::Or(vec![PlaylistRule::Installed])),
             "Or(1 rules)"
         );
+    }
+
+    #[test]
+    fn playlist_rule_playtime_between_json_round_trip() {
+        let rule = PlaylistRule::PlaytimeBetween { min: 30, max: 300 };
+        let json = serde_json::to_string(&rule).unwrap();
+        let parsed: PlaylistRule = serde_json::from_str(&json).unwrap();
+        assert_eq!(rule, parsed);
+    }
+
+    #[test]
+    fn playlist_rule_rating_at_least_json_round_trip() {
+        let rule = PlaylistRule::RatingAtLeast { rating_0_5: 4.0 };
+        let json = serde_json::to_string(&rule).unwrap();
+        let parsed: PlaylistRule = serde_json::from_str(&json).unwrap();
+        assert_eq!(rule, parsed);
+    }
+
+    #[test]
+    fn relative_time_ago_formats_correctly() {
+        assert_eq!(relative_time_ago(0), "unknown");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        // 30 seconds ago
+        assert_eq!(relative_time_ago(now - 30), "just now");
+        // 5 minutes ago
+        assert_eq!(relative_time_ago(now - 300), "5 min ago");
+        // 2 hours ago
+        assert_eq!(relative_time_ago(now - 7200), "2 hours ago");
+        // 1 hour ago
+        assert_eq!(relative_time_ago(now - 3600), "1 hour ago");
+        // 3 days ago
+        assert_eq!(relative_time_ago(now - 259200), "3 days ago");
+        // 1 day ago
+        assert_eq!(relative_time_ago(now - 86400), "1 day ago");
     }
 
     #[test]
@@ -10530,14 +10816,85 @@ mod tests {
         assert!(!app.mood_loading);
     }
 
-    /// A result whose ticket fingerprint does not match the expected one is
-    /// discarded by `JobSlot::take_if`. This scenario is covered at the
-    /// `jobs` module level (see `jobs::tests::take_if_discards_input_drift_result`)
-    /// because with `JobTicket` the thread always uses the ticket captured at
-    /// start time — a drifted fingerprint cannot be produced by normal job
-    /// submission, only by direct slot injection (which the jobs unit test
-    /// does). The integration-level test that previously injected a drifted
-    /// result here has been removed as it tested an impossible production path.
+    /// Regression: when the user makes the Dynamic minutes input invalid
+    /// mid-job, the stale result must NOT be adopted into the edit surface.
+    #[test]
+    #[serial]
+    fn dynamic_invalid_input_mid_job_discards_result() {
+        DYNAMIC_RESULT.clear();
+        let dir = TempDir::new().unwrap();
+        let mut app = VapourflyApp::new(None, true);
+        app.playlist_store_dir = Some(dir.path().to_path_buf());
+        app.populate_demo_data();
+        app.dynamic_template = DynamicTemplate::DeckSession.id().into();
+        app.dynamic_minutes = "90".into();
+        app.dynamic_count = "25".into();
+        let job_id = app
+            .job_runner
+            .next_ticket(WorkflowKind::Dynamic, "dynamic:deck-session:90:25:lib=0");
+        app.dynamic_job_id = Some(job_id);
+        app.dynamic_loading = true;
+        // Clear any prior import so we can detect adoption.
+        app.playlist_last_import = None;
+        let pf = sample_generator_playlist("dynamic-deck-session", vec![1000, 1007]);
+        DYNAMIC_RESULT.set(
+            job_id,
+            Ok(GeneratorJobResult {
+                identity: GeneratorIdentity::Dynamic(DynamicTemplate::DeckSession),
+                playlist: pf,
+            }),
+        );
+        // User makes minutes invalid mid-job.
+        app.dynamic_minutes = "abc".into();
+
+        app.poll_generator_results();
+
+        // Result must NOT be adopted — playlist_last_import stays None.
+        assert!(
+            app.playlist_last_import.is_none(),
+            "stale result must not be adopted when input is invalid"
+        );
+        assert!(!app.dynamic_loading);
+        assert!(app.dynamic_job_id.is_none());
+    }
+
+    /// Regression: when the user makes the Mood chooser invalid mid-job,
+    /// the stale result must NOT be adopted into the edit surface.
+    #[test]
+    #[serial]
+    fn mood_invalid_input_mid_job_discards_result() {
+        MOOD_RESULT.clear();
+        let dir = TempDir::new().unwrap();
+        let mut app = VapourflyApp::new(None, true);
+        app.playlist_store_dir = Some(dir.path().to_path_buf());
+        app.populate_demo_data();
+        app.editorial_mood = EditorialMood::QuickRound.id().into();
+        let job_id = app
+            .job_runner
+            .next_ticket(WorkflowKind::Mood, "mood:quick-round:lib=0");
+        app.mood_job_id = Some(job_id);
+        app.mood_loading = true;
+        app.playlist_last_import = None;
+        let pf = sample_generator_playlist("mood-quick-round", vec![1002, 1009]);
+        MOOD_RESULT.set(
+            job_id,
+            Ok(GeneratorJobResult {
+                identity: GeneratorIdentity::Mood(EditorialMood::QuickRound),
+                playlist: pf,
+            }),
+        );
+        // User makes mood invalid mid-job.
+        app.editorial_mood = "nonexistent-mood".into();
+
+        app.poll_generator_results();
+
+        assert!(
+            app.playlist_last_import.is_none(),
+            "stale result must not be adopted when mood is invalid"
+        );
+        assert!(!app.mood_loading);
+        assert!(app.mood_job_id.is_none());
+    }
 
     #[test]
     #[serial]

@@ -1157,6 +1157,55 @@ mod tests {
     }
 
     #[test]
+    fn resolve_missing_store_details_offline_returns_cache_only() {
+        // Offline mode must return only cached entries without attempting
+        // any network fetch. Uncached AppIDs are simply absent.
+        let tmp = TempDir::new().unwrap();
+        let cache = DiskCache::new(tmp.path());
+
+        // Pre-populate cache for one AppID.
+        let details = SteamStoreDetails {
+            app_id: 292030,
+            name: "The Witcher 3".into(),
+            steam_store_type: "game".into(),
+            is_free: false,
+            short_description: None,
+            header_image: None,
+            developers: vec![],
+            publishers: vec![],
+            genres: vec![],
+            categories: vec![],
+            release_date: None,
+            metacritic_score: None,
+            platforms: vapourfly_core::models::SteamStorePlatforms {
+                windows: true,
+                mac: false,
+                linux: false,
+            },
+            coming_soon: false,
+            price_overview: None,
+        };
+        let record = CacheRecord {
+            source: SOURCE_STEAM_STORE.to_string(),
+            key: "app/292030".to_string(),
+            fetched_at: chrono::Utc::now(),
+            ttl: STEAM_STORE_TTL,
+            data: details,
+            stale: false,
+            etag: None,
+        };
+        cache.put(&record).unwrap();
+
+        // Offline mode: only cached AppID should be present.
+        let result =
+            resolve_missing_store_details(&[292030, 999999], &cache, true, "us", "english");
+
+        assert!(result.contains_key(&292030));
+        // Uncached AppID must NOT appear (no fetch attempted).
+        assert!(!result.contains_key(&999999));
+    }
+
+    #[test]
     fn resolve_missing_store_details_empty_input_returns_empty() {
         let tmp = TempDir::new().unwrap();
         let cache = DiskCache::new(tmp.path());

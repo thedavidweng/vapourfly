@@ -53,3 +53,4 @@ callgrind.out.*
 # macOS archive metadata
 __MACOSX
 .scratch/commit_msg.txt
+.scratch/
