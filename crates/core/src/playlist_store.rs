@@ -11,14 +11,51 @@ use crate::error::{Result, SafePath, VapourflyError};
 use crate::models::PlaylistFile;
 use crate::playlist::{export_playlist, import_playlist};
 
+/// Validate a playlist id for safe filesystem use.
+///
+/// Rejects empty strings, path separators (`/`, `\`), path traversal
+/// (`..`, `.`), control characters, and any character that is not
+/// alphanumeric, hyphen, or underscore. This is the single source of
+/// truth for id validation — `playlist_path`, `get`, and `put` all
+/// call this before constructing a filesystem path.
+pub fn validate_playlist_id(id: &str) -> std::result::Result<(), String> {
+    if id.is_empty() {
+        return Err("playlist id must not be empty".into());
+    }
+    if id == "." || id == ".." {
+        return Err("playlist id must not be '.' or '..'".into());
+    }
+    for ch in id.chars() {
+        if ch.is_control() {
+            return Err(format!(
+                "playlist id must not contain control characters (found U+{:04X})",
+                ch as u32
+            ));
+        }
+        if ch == '/' || ch == '\\' {
+            return Err("playlist id must not contain path separators".into());
+        }
+        if !ch.is_ascii_alphanumeric() && ch != '-' && ch != '_' {
+            return Err(format!(
+                "playlist id must only contain alphanumeric, hyphen, or underscore (found '{ch}')"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Resolve the path for a playlist id under `store_dir`.
-pub fn playlist_path(store_dir: &Path, id: &str) -> PathBuf {
-    store_dir.join(format!("{id}.json"))
+///
+/// Validates the id to prevent path traversal.
+pub fn playlist_path(store_dir: &Path, id: &str) -> Result<PathBuf> {
+    validate_playlist_id(id).map_err(VapourflyError::Internal)?;
+    Ok(store_dir.join(format!("{id}.json")))
 }
 
 /// Persist a playlist under `store_dir` as `{playlist.id}.json`.
 ///
 /// Creates `store_dir` if missing. Returns the written path.
+/// Validates the playlist id to prevent path traversal.
 pub fn put(store_dir: &Path, playlist: &PlaylistFile) -> Result<PathBuf> {
     fs::create_dir_all(store_dir).map_err(|e| {
         VapourflyError::Internal(format!(
@@ -26,14 +63,15 @@ pub fn put(store_dir: &Path, playlist: &PlaylistFile) -> Result<PathBuf> {
             store_dir.display()
         ))
     })?;
-    let path = playlist_path(store_dir, &playlist.playlist.id);
+    let path = playlist_path(store_dir, &playlist.playlist.id)?;
     export_playlist(playlist, &path)?;
     Ok(path)
 }
 
 /// Load a playlist by id from `store_dir`.
+/// Validates the playlist id to prevent path traversal.
 pub fn get(store_dir: &Path, id: &str) -> Result<PlaylistFile> {
-    let path = playlist_path(store_dir, id);
+    let path = playlist_path(store_dir, id)?;
     if !path.is_file() {
         return Err(VapourflyError::FileNotFound {
             path: SafePath::new(&path),
@@ -148,5 +186,50 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = get(dir.path(), "nope").unwrap_err();
         assert!(matches!(err, VapourflyError::FileNotFound { .. }));
+    }
+
+    #[test]
+    fn validate_playlist_id_rejects_path_traversal() {
+        assert!(validate_playlist_id("../outside").is_err());
+        assert!(validate_playlist_id("foo/bar").is_err());
+        assert!(validate_playlist_id("foo\\bar").is_err());
+        assert!(validate_playlist_id(".").is_err());
+        assert!(validate_playlist_id("..").is_err());
+        assert!(validate_playlist_id("").is_err());
+    }
+
+    #[test]
+    fn validate_playlist_id_rejects_special_chars() {
+        assert!(validate_playlist_id("my list").is_err()); // space
+        assert!(validate_playlist_id("my.list").is_err()); // dot
+        assert!(validate_playlist_id("my:list").is_err()); // colon
+        assert!(validate_playlist_id("my+list").is_err()); // plus
+    }
+
+    #[test]
+    fn validate_playlist_id_accepts_valid_ids() {
+        assert!(validate_playlist_id("my-list").is_ok());
+        assert!(validate_playlist_id("my_list").is_ok());
+        assert!(validate_playlist_id("MyList123").is_ok());
+        assert!(validate_playlist_id("a").is_ok());
+        assert!(validate_playlist_id("dynamic-deck-session").is_ok());
+    }
+
+    #[test]
+    fn put_rejects_path_traversal_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let pf = sample("../outside");
+        let err = put(dir.path(), &pf).unwrap_err();
+        // Must not write outside the store dir.
+        assert!(!dir.path().parent().unwrap().join("outside.json").exists());
+        // Error should be an Internal error (from validate_playlist_id).
+        assert!(matches!(err, VapourflyError::Internal(_)));
+    }
+
+    #[test]
+    fn get_rejects_path_traversal_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = get(dir.path(), "../outside").unwrap_err();
+        assert!(matches!(err, VapourflyError::Internal(_)));
     }
 }

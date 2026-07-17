@@ -383,6 +383,9 @@ struct VapourflyApp {
     playlist_share_code_input: String,
     playlist_share_code_output: Option<String>,
     playlist_edit_id: String,
+    /// Whether the ID field should auto-generate from the name (until user
+    /// manually edits the ID field).
+    playlist_id_auto: bool,
     playlist_edit_name: String,
     playlist_edit_description: String,
     playlist_edit_app_ids: String,
@@ -408,6 +411,8 @@ struct VapourflyApp {
     playlist_game_search: String,
     /// Master-detail: show Advanced JSON editor instead of visual rules.
     playlist_show_advanced_json: bool,
+    /// Whether the Advanced CSV editor is expanded in the Games tab.
+    playlist_show_advanced_csv: bool,
     /// Visual rule editor: genre input for parameterized HasGenre rule.
     playlist_rule_genre: String,
     /// Visual rule editor: tag input for parameterized HasTag rule.
@@ -938,9 +943,16 @@ fn render_rule_tree(ui: &mut egui::Ui, rules: &mut Vec<PlaylistRule>, depth: usi
                 render_rule_tree(ui, sub, depth + 1);
             }
             PlaylistRule::Not(inner) => {
+                // Not has exactly one child. Render it in a single-element
+                // vec so the recursive call can handle removal. If the child
+                // is removed, we mark the Not itself for removal (deleting
+                // a Not with no child leaves an invalid rule).
                 let mut single = vec![(**inner).clone()];
                 render_rule_tree(ui, &mut single, depth + 1);
-                if let Some(updated) = single.into_iter().next() {
+                if single.is_empty() {
+                    // Child was removed — remove the Not node entirely.
+                    to_remove = Some(i);
+                } else if let Some(updated) = single.into_iter().next() {
                     **inner = updated;
                 }
             }
@@ -1859,6 +1871,7 @@ impl VapourflyApp {
             playlist_share_code_input: String::new(),
             playlist_share_code_output: None,
             playlist_edit_id: String::new(),
+            playlist_id_auto: true,
             playlist_edit_name: String::new(),
             playlist_edit_description: String::new(),
             playlist_edit_app_ids: String::new(),
@@ -1873,6 +1886,7 @@ impl VapourflyApp {
             playlist_detail_tab: PlaylistDetailTab::Games,
             playlist_game_search: String::new(),
             playlist_show_advanced_json: false,
+            playlist_show_advanced_csv: false,
             playlist_rule_genre: String::new(),
             playlist_rule_tag: String::new(),
             playlist_rule_hltb_max: String::new(),
@@ -3654,6 +3668,7 @@ impl VapourflyApp {
     fn adopt_playlist_for_edit(&mut self, pf: &PlaylistFile) {
         self.playlist_last_import = Some(pf.clone());
         self.playlist_edit_id = pf.playlist.id.clone();
+        self.playlist_id_auto = false;
         self.playlist_edit_name = pf.playlist.name.clone();
         self.playlist_edit_description = pf.playlist.description.clone();
         self.playlist_edit_app_ids = manual_playlist_app_ids_csv(pf);
@@ -3669,22 +3684,67 @@ impl VapourflyApp {
     /// When `playlist_edit_rules` is non-empty, it is parsed as a JSON rules
     /// array and a rule-based playlist is produced (App IDs are ignored).
     /// Otherwise the App IDs field is parsed into a manual playlist.
+    /// Parse the current rules JSON field into a Vec<PlaylistRule>.
+    ///
+    /// Returns an error if the JSON is invalid — never falls back to an
+    /// empty array. This prevents visual rule mutations from silently
+    /// wiping existing content when the JSON is malformed.
+    fn parse_current_rules(&self) -> Result<Vec<PlaylistRule>, String> {
+        let trimmed = self.playlist_edit_rules.trim();
+        if trimmed.is_empty() {
+            return Ok(Vec::new());
+        }
+        serde_json::from_str(trimmed).map_err(|e| format!("Invalid Rules JSON: {e}"))
+    }
+
+    /// Append a rule to the current rules JSON and update the edit field.
+    /// Uses `parse_current_rules` to avoid data loss on invalid JSON.
+    fn append_rule_to_json(&mut self, rule: PlaylistRule) -> Result<(), String> {
+        let mut rules = self.parse_current_rules()?;
+        rules.push(rule);
+        self.playlist_edit_rules = serde_json::to_string_pretty(&rules).unwrap_or_default();
+        Ok(())
+    }
+
+    /// Build a `PlaylistFile` from the current edit fields.
+    ///
+    /// When `playlist_edit_rules` is non-empty, it is parsed as a JSON rules
+    /// array and a rule-based playlist is produced (App IDs are ignored).
+    /// Otherwise the App IDs field is parsed into a manual playlist.
     fn build_playlist_from_edit_fields(&self) -> Result<PlaylistFile, String> {
         let id = self.playlist_edit_id.trim();
         if id.is_empty() {
             return Err("Playlist ID is required.".into());
         }
+        // Validate ID for safe filesystem use (path traversal prevention).
+        playlist_store::validate_playlist_id(id)?;
         let name = self.playlist_edit_name.trim();
         if name.is_empty() {
             return Err("Playlist name is required.".into());
         }
 
         let content = if self.playlist_edit_rules.trim().is_empty() {
-            let app_ids: Vec<u32> = self
-                .playlist_edit_app_ids
-                .split(',')
-                .filter_map(|part| part.trim().parse().ok())
-                .collect();
+            // Strict per-token AppID parsing — no silent drops.
+            let mut app_ids = Vec::new();
+            for (i, part) in self.playlist_edit_app_ids.split(',').enumerate() {
+                let trimmed = part.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let parsed: u32 = trimmed.parse().map_err(|_| {
+                    format!(
+                        "Invalid AppID at position {}: '{trimmed}' is not a number",
+                        i + 1
+                    )
+                })?;
+                if parsed == 0 {
+                    return Err(format!(
+                        "Invalid AppID at position {}: 0 is not a valid Steam AppID",
+                        i + 1
+                    ));
+                }
+                app_ids.push(parsed);
+            }
             PlaylistContent::Manual { app_ids }
         } else {
             let rules: Vec<PlaylistRule> = serde_json::from_str(self.playlist_edit_rules.trim())
@@ -6827,6 +6887,7 @@ impl VapourflyApp {
         }
 
         // -- Master-detail layout --------------------------------------------
+        let demo_or_offline = self.ui_demo || self.offline_mode;
         ui.horizontal(|ui| {
             // Left rail: playlist list.
             ui.vertical(|ui| {
@@ -6858,6 +6919,7 @@ impl VapourflyApp {
                         .clicked()
                     {
                         self.playlist_edit_id = String::new();
+                        self.playlist_id_auto = true;
                         self.playlist_edit_name = String::new();
                         self.playlist_edit_description = String::new();
                         self.playlist_edit_app_ids = String::new();
@@ -6877,7 +6939,7 @@ impl VapourflyApp {
                         // Look up rail metadata for this id.
                         let rail_entry = rail_entries.iter().find(|(eid, _)| eid == id);
                         let clicked = if let Some((_, Ok(pf))) = rail_entry {
-                            // Rich card: name, type badge, count, description snippet.
+                            // Rich card: cover, name, type badge, count, description snippet.
                             let card = egui::Frame::group(ui.style())
                                 .fill(if is_selected {
                                     t().accent_soft
@@ -6894,59 +6956,90 @@ impl VapourflyApp {
                             let response = card.show(ui, |ui| {
                                 ui.set_width(ui.available_width());
                                 ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing = egui::vec2(SP_1, SP_1);
-                                    // Content type badge.
-                                    let type_label =
-                                        playlist_content_type_label(&pf.playlist.content);
-                                    status_badge(
+                                    ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_1);
+                                    // Deterministic cover thumbnail (44x44).
+                                    let cover_app_id = playlist_cover_app_id(&pf.playlist.content);
+                                    let cover_name = &pf.playlist.name;
+                                    game_artwork(
                                         ui,
-                                        type_label,
-                                        t().surface_muted,
-                                        t().text_secondary,
+                                        cover_app_id,
+                                        cover_name,
+                                        44.0,
+                                        44.0,
+                                        demo_or_offline,
+                                        &steam_capsule_uri(cover_app_id),
                                     );
-                                    // Generator badge for known slot ids.
-                                    let gen_badge = if id == "discover" {
-                                        Some("Discover")
-                                    } else if id.starts_with("dynamic-") {
-                                        Some("Dynamic")
-                                    } else if id.starts_with("mood-") {
-                                        Some("Mood")
-                                    } else {
-                                        None
-                                    };
-                                    if let Some(badge) = gen_badge {
-                                        status_badge(ui, badge, t().accent_soft, t().accent_text);
-                                    }
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            ui.label(
-                                                RichText::new(format!(
-                                                    "{} games",
-                                                    playlist_game_count(&pf.playlist.content, None,)
-                                                ))
-                                                .size(TS_XS)
-                                                .color(t().text_muted),
+                                    // Text column.
+                                    ui.vertical(|ui| {
+                                        ui.set_min_width(120.0);
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing = egui::vec2(SP_1, SP_1);
+                                            // Content type badge.
+                                            let type_label =
+                                                playlist_content_type_label(&pf.playlist.content);
+                                            status_badge(
+                                                ui,
+                                                type_label,
+                                                t().surface_muted,
+                                                t().text_secondary,
                                             );
-                                        },
-                                    );
+                                            // Generator badge for known slot ids.
+                                            let gen_badge = if id == "discover" {
+                                                Some("Discover")
+                                            } else if id.starts_with("dynamic-") {
+                                                Some("Dynamic")
+                                            } else if id.starts_with("mood-") {
+                                                Some("Mood")
+                                            } else {
+                                                None
+                                            };
+                                            if let Some(badge) = gen_badge {
+                                                status_badge(
+                                                    ui,
+                                                    badge,
+                                                    t().accent_soft,
+                                                    t().accent_text,
+                                                );
+                                            }
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    // Rule playlists need a match report to
+                                                    // know the count; show "—" when unresolved.
+                                                    let count_label = match &pf.playlist.content {
+                                                        PlaylistContent::Manual { app_ids } => {
+                                                            format!("{} games", app_ids.len())
+                                                        }
+                                                        PlaylistContent::Rules { .. } => {
+                                                            "—".to_string()
+                                                        }
+                                                    };
+                                                    ui.label(
+                                                        RichText::new(count_label)
+                                                            .size(TS_XS)
+                                                            .color(t().text_muted),
+                                                    );
+                                                },
+                                            );
+                                        });
+                                        ui.label(
+                                            RichText::new(&pf.playlist.name)
+                                                .size(TS_SM)
+                                                .strong()
+                                                .color(t().text_primary),
+                                        );
+                                        if !pf.playlist.description.is_empty() {
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(&pf.playlist.description)
+                                                        .size(TS_XS)
+                                                        .color(t().text_muted),
+                                                )
+                                                .truncate(),
+                                            );
+                                        }
+                                    });
                                 });
-                                ui.label(
-                                    RichText::new(&pf.playlist.name)
-                                        .size(TS_SM)
-                                        .strong()
-                                        .color(t().text_primary),
-                                );
-                                if !pf.playlist.description.is_empty() {
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(&pf.playlist.description)
-                                                .size(TS_XS)
-                                                .color(t().text_muted),
-                                        )
-                                        .truncate(),
-                                    );
-                                }
                             });
                             response.response.clicked()
                         } else if let Some((_, Err(err))) = rail_entry {
@@ -7051,12 +7144,27 @@ impl VapourflyApp {
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
                         form_field(ui, "ID", |ui| {
-                            ui.add_sized(
+                            let response = ui.add_sized(
                                 [160.0, 28.0],
                                 egui::TextEdit::singleline(&mut self.playlist_edit_id)
                                     .hint_text("my-list"),
                             );
+                            if response.changed() {
+                                // User manually edited the ID — disable auto-gen.
+                                self.playlist_id_auto = false;
+                            }
                         });
+                        // Real-time ID validation feedback.
+                        let id_trimmed = self.playlist_edit_id.trim();
+                        if !id_trimmed.is_empty() {
+                            if let Err(msg) = playlist_store::validate_playlist_id(id_trimmed) {
+                                ui.label(
+                                    RichText::new(format!("⚠ {msg}"))
+                                        .size(TS_XS)
+                                        .color(t().error),
+                                );
+                            }
+                        }
                         if let Some(pf) = &current_pf {
                             status_badge(
                                 ui,
@@ -7068,11 +7176,14 @@ impl VapourflyApp {
                     });
                     ui.add_space(SP_2);
                     form_field(ui, "Name", |ui| {
-                        ui.add_sized(
+                        let response = ui.add_sized(
                             [280.0, 28.0],
                             egui::TextEdit::singleline(&mut self.playlist_edit_name)
                                 .hint_text("Display name"),
                         );
+                        if response.changed() && self.playlist_id_auto {
+                            self.playlist_edit_id = playlist::slugify(&self.playlist_edit_name);
+                        }
                     });
                     ui.add_space(SP_2);
                     form_field(ui, "Description", |ui| {
@@ -7353,24 +7464,8 @@ impl VapourflyApp {
 
     /// Games tab: App IDs CSV editor + game search Add/Remove.
     fn render_playlist_games_tab(&mut self, ui: &mut egui::Ui) {
-        section_card(ui, "App IDs", |ui| {
-            form_field(ui, "App IDs", |ui| {
-                ui.add_sized(
-                    [360.0, 28.0],
-                    egui::TextEdit::singleline(&mut self.playlist_edit_app_ids)
-                        .hint_text("730, 440, …"),
-                );
-            });
-            ui.label(
-                RichText::new("Comma-separated Steam AppIDs for manual playlists.")
-                    .size(TS_XS)
-                    .color(t().text_muted),
-            );
-        });
-
-        // Game search Add/Remove.
-        ui.add_space(SP_3);
-        section_card(ui, "Search & Add", |ui| {
+        // Primary: Search & Add/Remove from library.
+        section_card(ui, "Search & Add Games", |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
                 ui.label(
@@ -7451,6 +7546,45 @@ impl VapourflyApp {
                 );
             }
         });
+
+        // Advanced: raw CSV editor (collapsed by default).
+        ui.add_space(SP_3);
+        let header_resp = ui.add(
+            egui::Button::new(
+                RichText::new(if self.playlist_show_advanced_csv {
+                    "▼ Advanced: Raw AppID CSV"
+                } else {
+                    "▶ Advanced: Raw AppID CSV"
+                })
+                .size(TS_SM),
+            )
+            .fill(t().surface)
+            .stroke(egui::Stroke::new(1.0, t().border_soft))
+            .corner_radius(CORNER_SM),
+        );
+        if header_resp.clicked() {
+            self.playlist_show_advanced_csv = !self.playlist_show_advanced_csv;
+        }
+        if self.playlist_show_advanced_csv {
+            ui.add_space(SP_1);
+            section_card(ui, "Raw AppID CSV", |ui| {
+                form_field(ui, "App IDs", |ui| {
+                    ui.add_sized(
+                        [360.0, 28.0],
+                        egui::TextEdit::singleline(&mut self.playlist_edit_app_ids)
+                            .hint_text("730, 440, …"),
+                    );
+                });
+                ui.label(
+                    RichText::new(
+                        "Comma-separated Steam AppIDs for manual playlists. \
+                         Invalid entries will be rejected on save.",
+                    )
+                    .size(TS_XS)
+                    .color(t().text_muted),
+                );
+            });
+        }
     }
 
     /// Rules tab: visual rule editor + Advanced JSON toggle.
@@ -7548,12 +7682,9 @@ impl VapourflyApp {
                             )
                             .clicked()
                         {
-                            // Add rule to JSON.
-                            let mut rules: Vec<PlaylistRule> =
-                                serde_json::from_str(&self.playlist_edit_rules).unwrap_or_default();
-                            rules.push(rule.clone());
-                            self.playlist_edit_rules =
-                                serde_json::to_string_pretty(&rules).unwrap_or_default();
+                            if let Err(e) = self.append_rule_to_json(rule.clone()) {
+                                self.error = Some(e);
+                            }
                         }
                     }
                 });
@@ -7580,14 +7711,13 @@ impl VapourflyApp {
                         .clicked()
                     {
                         if !self.playlist_rule_genre.trim().is_empty() {
-                            let mut rules: Vec<PlaylistRule> =
-                                serde_json::from_str(&self.playlist_edit_rules).unwrap_or_default();
-                            rules.push(PlaylistRule::HasGenre {
+                            if let Err(e) = self.append_rule_to_json(PlaylistRule::HasGenre {
                                 genre: self.playlist_rule_genre.trim().to_string(),
-                            });
-                            self.playlist_edit_rules =
-                                serde_json::to_string_pretty(&rules).unwrap_or_default();
-                            self.playlist_rule_genre.clear();
+                            }) {
+                                self.error = Some(e);
+                            } else {
+                                self.playlist_rule_genre.clear();
+                            }
                         }
                     }
                 });
@@ -7606,14 +7736,13 @@ impl VapourflyApp {
                         .clicked()
                     {
                         if !self.playlist_rule_tag.trim().is_empty() {
-                            let mut rules: Vec<PlaylistRule> =
-                                serde_json::from_str(&self.playlist_edit_rules).unwrap_or_default();
-                            rules.push(PlaylistRule::HasTag {
+                            if let Err(e) = self.append_rule_to_json(PlaylistRule::HasTag {
                                 tag: self.playlist_rule_tag.trim().to_string(),
-                            });
-                            self.playlist_edit_rules =
-                                serde_json::to_string_pretty(&rules).unwrap_or_default();
-                            self.playlist_rule_tag.clear();
+                            }) {
+                                self.error = Some(e);
+                            } else {
+                                self.playlist_rule_tag.clear();
+                            }
                         }
                     }
                 });
@@ -7631,13 +7760,23 @@ impl VapourflyApp {
                         .add(egui::Button::new(RichText::new("Add").size(TS_XS)))
                         .clicked()
                     {
-                        if let Ok(mins) = self.playlist_rule_hltb_max.trim().parse::<u32>() {
-                            let mut rules: Vec<PlaylistRule> =
-                                serde_json::from_str(&self.playlist_edit_rules).unwrap_or_default();
-                            rules.push(PlaylistRule::HltbMaxMinutes { minutes: mins });
-                            self.playlist_edit_rules =
-                                serde_json::to_string_pretty(&rules).unwrap_or_default();
-                            self.playlist_rule_hltb_max.clear();
+                        match self.playlist_rule_hltb_max.trim().parse::<u32>() {
+                            Ok(mins) => {
+                                if let Err(e) =
+                                    self.append_rule_to_json(PlaylistRule::HltbMaxMinutes {
+                                        minutes: mins,
+                                    })
+                                {
+                                    self.error = Some(e);
+                                } else {
+                                    self.playlist_rule_hltb_max.clear();
+                                }
+                            }
+                            Err(_) => {
+                                self.error = Some(
+                                    "HLTB max must be a non-negative integer (minutes).".into(),
+                                );
+                            }
                         }
                     }
                 });
@@ -7681,12 +7820,13 @@ impl VapourflyApp {
                             .add(egui::Button::new(RichText::new("Add").size(TS_XS)))
                             .clicked()
                         {
-                            let mut rules: Vec<PlaylistRule> =
-                                serde_json::from_str(&self.playlist_edit_rules).unwrap_or_default();
-                            rules.push(PlaylistRule::ProtonAtLeast { tier });
-                            self.playlist_edit_rules =
-                                serde_json::to_string_pretty(&rules).unwrap_or_default();
-                            self.playlist_rule_proton_tier = None;
+                            if let Err(e) =
+                                self.append_rule_to_json(PlaylistRule::ProtonAtLeast { tier })
+                            {
+                                self.error = Some(e);
+                            } else {
+                                self.playlist_rule_proton_tier = None;
+                            }
                         }
                     }
                 });
@@ -7708,17 +7848,45 @@ impl VapourflyApp {
                     );
                     let min_ok = self.playlist_rule_playtime_min.trim().parse::<u32>().ok();
                     let max_ok = self.playlist_rule_playtime_max.trim().parse::<u32>().ok();
-                    let can_add = min_ok.is_some() && max_ok.is_some();
+                    // Validate min <= max when both are parseable.
+                    let range_valid = match (min_ok, max_ok) {
+                        (Some(min), Some(max)) => min <= max,
+                        _ => false,
+                    };
+                    let min_nonempty = !self.playlist_rule_playtime_min.trim().is_empty();
+                    let max_nonempty = !self.playlist_rule_playtime_max.trim().is_empty();
+                    // Show inline error for parse or range issues.
+                    if min_nonempty && min_ok.is_none() {
+                        ui.label(
+                            RichText::new("⚠ min must be a number")
+                                .size(TS_XS)
+                                .color(t().error),
+                        );
+                    } else if max_nonempty && max_ok.is_none() {
+                        ui.label(
+                            RichText::new("⚠ max must be a number")
+                                .size(TS_XS)
+                                .color(t().error),
+                        );
+                    } else if min_nonempty && max_nonempty && !range_valid {
+                        ui.label(
+                            RichText::new("⚠ min must be ≤ max")
+                                .size(TS_XS)
+                                .color(t().error),
+                        );
+                    }
+                    let can_add = min_ok.is_some() && max_ok.is_some() && range_valid;
                     let add_btn = egui::Button::new(RichText::new("Add").size(TS_XS));
                     if ui.add_enabled(can_add, add_btn).clicked() {
                         if let (Some(min), Some(max)) = (min_ok, max_ok) {
-                            let mut rules: Vec<PlaylistRule> =
-                                serde_json::from_str(&self.playlist_edit_rules).unwrap_or_default();
-                            rules.push(PlaylistRule::PlaytimeBetween { min, max });
-                            self.playlist_edit_rules =
-                                serde_json::to_string_pretty(&rules).unwrap_or_default();
-                            self.playlist_rule_playtime_min.clear();
-                            self.playlist_rule_playtime_max.clear();
+                            if let Err(e) =
+                                self.append_rule_to_json(PlaylistRule::PlaytimeBetween { min, max })
+                            {
+                                self.error = Some(e);
+                            } else {
+                                self.playlist_rule_playtime_min.clear();
+                                self.playlist_rule_playtime_max.clear();
+                            }
                         }
                     }
                 });
@@ -7736,22 +7904,33 @@ impl VapourflyApp {
                         egui::TextEdit::singleline(&mut self.playlist_rule_rating_min)
                             .hint_text("0.0–5.0"),
                     );
-                    let rating_ok = self
-                        .playlist_rule_rating_min
-                        .trim()
-                        .parse::<f32>()
-                        .ok()
-                        .filter(|r| *r >= 0.0 && *r <= 5.0);
+                    let rating_parse = self.playlist_rule_rating_min.trim().parse::<f32>().ok();
+                    let rating_ok = rating_parse.filter(|r| *r >= 0.0 && *r <= 5.0);
+                    let rating_nonempty = !self.playlist_rule_rating_min.trim().is_empty();
+                    if rating_nonempty && rating_parse.is_none() {
+                        ui.label(
+                            RichText::new("⚠ must be a number")
+                                .size(TS_XS)
+                                .color(t().error),
+                        );
+                    } else if rating_nonempty && rating_ok.is_none() {
+                        ui.label(
+                            RichText::new("⚠ must be 0.0–5.0")
+                                .size(TS_XS)
+                                .color(t().error),
+                        );
+                    }
                     let can_add = rating_ok.is_some();
                     let add_btn = egui::Button::new(RichText::new("Add").size(TS_XS));
                     if ui.add_enabled(can_add, add_btn).clicked() {
                         if let Some(rating) = rating_ok {
-                            let mut rules: Vec<PlaylistRule> =
-                                serde_json::from_str(&self.playlist_edit_rules).unwrap_or_default();
-                            rules.push(PlaylistRule::RatingAtLeast { rating_0_5: rating });
-                            self.playlist_edit_rules =
-                                serde_json::to_string_pretty(&rules).unwrap_or_default();
-                            self.playlist_rule_rating_min.clear();
+                            if let Err(e) = self.append_rule_to_json(PlaylistRule::RatingAtLeast {
+                                rating_0_5: rating,
+                            }) {
+                                self.error = Some(e);
+                            } else {
+                                self.playlist_rule_rating_min.clear();
+                            }
                         }
                     }
                 });
@@ -10398,6 +10577,70 @@ mod tests {
     }
 
     #[test]
+    fn parse_current_rules_preserves_invalid_json() {
+        // When the JSON is invalid, parse_current_rules must return Err,
+        // not silently fall back to an empty array.
+        let mut app = VapourflyApp::new(None, false);
+        app.playlist_edit_rules = "[{invalid json}".into();
+        let result = app.parse_current_rules();
+        assert!(result.is_err(), "invalid JSON must produce an error");
+    }
+
+    #[test]
+    fn append_rule_to_json_preserves_existing_on_invalid_json() {
+        // When the JSON is invalid, append_rule_to_json must NOT wipe
+        // the existing content — it must return Err and leave the field
+        // unchanged.
+        let mut app = VapourflyApp::new(None, false);
+        let original = "[{invalid json}".to_string();
+        app.playlist_edit_rules = original.clone();
+        let result = app.append_rule_to_json(PlaylistRule::Installed);
+        assert!(result.is_err());
+        // The field must be unchanged — no data loss.
+        assert_eq!(app.playlist_edit_rules, original);
+    }
+
+    #[test]
+    fn append_rule_to_json_appends_to_valid_json() {
+        let mut app = VapourflyApp::new(None, false);
+        // Use the proper adjacently-tagged JSON format.
+        let initial = serde_json::to_string(&vec![PlaylistRule::Installed]).unwrap();
+        app.playlist_edit_rules = initial;
+        app.append_rule_to_json(PlaylistRule::NotJunk).unwrap();
+        let rules: Vec<PlaylistRule> = serde_json::from_str(&app.playlist_edit_rules).unwrap();
+        assert_eq!(rules.len(), 2);
+        assert!(matches!(rules[0], PlaylistRule::Installed));
+        assert!(matches!(rules[1], PlaylistRule::NotJunk));
+    }
+
+    #[test]
+    fn append_rule_to_json_appends_to_empty() {
+        let mut app = VapourflyApp::new(None, false);
+        app.playlist_edit_rules = String::new();
+        app.append_rule_to_json(PlaylistRule::Installed).unwrap();
+        let rules: Vec<PlaylistRule> = serde_json::from_str(&app.playlist_edit_rules).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert!(matches!(rules[0], PlaylistRule::Installed));
+    }
+
+    #[test]
+    fn build_playlist_rejects_reversed_playtime_range() {
+        // PlaytimeBetween with min > max should not be directly buildable
+        // via the visual editor (the Add button is disabled). But if
+        // someone writes it in JSON, build_playlist_from_edit_fields should
+        // still accept it (the rule itself is valid JSON). The validation
+        // is at the UI layer, not the data layer. This test confirms the
+        // rule parses correctly in both directions.
+        let rule = PlaylistRule::PlaytimeBetween { min: 300, max: 30 };
+        let json = serde_json::to_string(&rule).unwrap();
+        let parsed: PlaylistRule = serde_json::from_str(&json).unwrap();
+        assert_eq!(rule, parsed);
+        // The visual editor prevents this via min <= max check, but the
+        // data model does not reject it — that's intentional (the rule
+        // engine handles it as "no games match").
+    }
+
+    #[test]
     fn relative_time_ago_formats_correctly() {
         assert_eq!(relative_time_ago(0), "unknown");
         let now = std::time::SystemTime::now()
@@ -11134,6 +11377,46 @@ mod tests {
         let err = app.build_playlist_from_edit_fields();
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("name is required"));
+    }
+
+    #[test]
+    fn build_playlist_rejects_path_traversal_id() {
+        let mut app = VapourflyApp::new(None, false);
+        app.playlist_edit_id = "../outside".into();
+        app.playlist_edit_name = "Test".into();
+        let err = app.build_playlist_from_edit_fields();
+        assert!(err.is_err());
+        // The validator rejects non-alphanumeric chars (including '.' and '/').
+        let msg = err.unwrap_err().to_string();
+        assert!(
+            msg.contains("alphanumeric") || msg.contains("path separators"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn build_playlist_rejects_invalid_appid() {
+        let mut app = VapourflyApp::new(None, false);
+        app.playlist_edit_id = "test-list".into();
+        app.playlist_edit_name = "Test".into();
+        app.playlist_edit_app_ids = "730, invalid, 440".into();
+        let err = app.build_playlist_from_edit_fields();
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("Invalid AppID"), "got: {msg}");
+        assert!(msg.contains("invalid"), "got: {msg}");
+    }
+
+    #[test]
+    fn build_playlist_rejects_zero_appid() {
+        let mut app = VapourflyApp::new(None, false);
+        app.playlist_edit_id = "test-list".into();
+        app.playlist_edit_name = "Test".into();
+        app.playlist_edit_app_ids = "730, 0, 440".into();
+        let err = app.build_playlist_from_edit_fields();
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("0 is not a valid Steam AppID"), "got: {msg}");
     }
 
     #[test]

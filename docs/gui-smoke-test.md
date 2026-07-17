@@ -65,7 +65,7 @@ Shell defaults to the light desktop token theme (warm canvas, white cards, orchi
 11. Type a title or AppID in Search and verify the card grid filters immediately.
 12. Confirm the filter bar offers **only** three toggles: **Installed only**, **Not hidden**, and **Not junk** (no Unplayed / include-only Hidden or Junk toggles).
 13. Toggle each filter and verify the Matching / Installed summary pills and grid update.
-14. Hover a game card (or click to select it) and verify a **Recommend** control appears; without hover/selection it should not clutter the card.
+14. Hover a game card (or click to select it) and verify a **Recommend** control appears; without hover/selection it should not clutter the card. Click the overflow menu (•••) and verify it offers **Recommend**, **Copy AppID**, and **Open Steam Store** (opens system browser).
 15. Click **Recommend** and verify the **Recommendations** view opens with that AppID filled as the seed.
 16. If cached external metadata exists, verify cards show Proton tier and Deck badges when available, plus playtime; otherwise cards should show a plain playable/library state without errors.
 
@@ -108,22 +108,42 @@ Shell defaults to the light desktop token theme (warm canvas, white cards, orchi
 ### 5. Playlists
 
 1. Navigate to Playlists via the left sidebar.
-2. Confirm the page header has **Dynamic** and **Mood** actions only among generators — **no** Discover seed/Generate control.
-3. Under **Load existing**, refresh/list shows store ids after saves (may be empty on first run).
-4. Fill **Create / Edit** with an ID, name, description, and comma-separated AppIDs. Leave Rules JSON empty.
-5. Click **Save Playlist** and verify a match report appears (owned/missing/… pills + owned preview when games are known).
-6. Click **Copy Share Code** and verify a `VF1:` code is shown.
-7. Paste the code into **Share code** and click **Import Code**; verify the same playlist is loaded into edit fields.
-8. Click **Export…**, choose a path in the file dialog, and verify a Vapourfly playlist JSON file is written.
-9. Click **Sync to Steam Collection**; verify a dry-run diff modal appears before any write and targets the slugged playlist ID as the Steam collection.
-10. Cancel the sync modal and verify the Steam cloud storage file is unchanged.
-11. Confirm the sync modal and verify a backup is created before the Steam collection is written.
-12. Click **Dynamic** → chooser opens for `deck-session` / `finish-it` with session minutes and count → **Generate**. Verify a playlist is written under `dynamic-deck-session` or `dynamic-finish-it` and loads into the edit surface (regenerate overwrites the same slot).
-13. Click **Mood** → chooser lists the seven Editorial Moods → pick e.g. Quick Round → **Generate**. Verify a playlist is written under `mood-quick-round` (regenerate overwrites that slot).
-14. Use **Load existing** to select a stored id and **Load**; verify edit fields and match report update.
-15. Clear the edit fields, enter a new ID and name, paste a JSON rules array (e.g. `[{"op":"Installed"},{"op":"NotHidden"}]`) into Rules JSON, **Save Playlist**, and verify a rule-based playlist is saved.
-16. Enter invalid JSON in Rules JSON and Save; verify an error is shown and no playlist is saved.
-17. Verify match report completion price when Steam Store cache exists, or the cache-refresh hint when not.
+2. Confirm the page uses a **master-detail layout**: left rail lists stored playlists, right pane shows the editor/match surface.
+3. Verify the left rail shows each stored playlist as a rich card with:
+   - Deterministic cover thumbnail (44×44px)
+   - Playlist name (bold)
+   - Content type badge (Manual or Rules)
+   - Generator badge (Discover / Dynamic / Mood) for known slot ids
+   - Game count for manual playlists, or "—" for rule playlists (unresolved)
+   - Description snippet (truncated)
+   - Red border error card for corrupt/unreadable files
+4. Click **+ New playlist** in the rail and verify the ID field auto-generates from the Name field (slugified). Manually editing the ID disables auto-gen.
+5. Enter an ID with path separators (e.g. `../test`) and verify a real-time validation warning appears.
+6. Fill in Name, Description, and use the **Games tab** search to Add games from the library. Verify search is the primary editing interface.
+7. Expand **Advanced: Raw AppID CSV** (collapsed by default) and verify the comma-separated AppID field is available but secondary.
+8. Enter an invalid AppID (e.g. `730, invalid, 440`) in the CSV field and Save; verify a specific error message identifies the invalid token and no playlist is saved.
+9. Click **Save Playlist** and verify a match report appears (owned/missing/… pills + owned preview when games are known).
+10. Click **Copy Share Code** and verify a `VF1:` code is shown.
+11. Paste the code into **Share code** and click **Import Code**; verify the same playlist is loaded into edit fields.
+12. Click **Export…**, choose a path in the file dialog, and verify a Vapourfly playlist JSON file is written.
+13. Click **Sync to Steam Collection**; verify a dry-run diff modal appears before any write and targets the slugged playlist ID as the Steam collection.
+14. Cancel the sync modal and verify the Steam cloud storage file is unchanged.
+15. Confirm the sync modal and verify a backup is created before the Steam collection is written.
+16. Click **Dynamic** → chooser opens for `deck-session` / `finish-it` with session minutes and count → **Generate**. Verify a playlist is written under `dynamic-deck-session` or `dynamic-finish-it` and loads into the edit surface (regenerate overwrites the same slot).
+17. Click **Mood** → chooser lists the seven Editorial Moods → pick e.g. Quick Round → **Generate**. Verify a playlist is written under `mood-quick-round` (regenerate overwrites that slot).
+18. Click a stored playlist in the rail and verify edit fields and match report update.
+19. Switch to the **Rules tab** and verify the visual rule editor:
+    - Rule tree with indentation for nested And/Or/Not
+    - Per-rule remove (✕) buttons that work (including Not children — removing a Not's child removes the Not node)
+    - Quick-add buttons (Installed, NotHidden, NotJunk, ControllerSupportFull)
+    - Parameterized rule adders: Genre, Tag, HLTB max, ProtonDB tier, Playtime range (min–max), Rating min
+    - Playtime range shows inline error when min > max
+    - Rating shows inline error when out of 0.0–5.0 range
+    - Advanced JSON toggle for raw editing
+20. Add rules via the visual editor, switch to Advanced JSON, and verify the JSON reflects the added rules.
+21. Enter invalid JSON in the Advanced JSON editor, then click a Quick Add button; verify an error is shown and the existing (invalid) JSON is NOT wiped — no data loss.
+22. Save a rule-based playlist and verify it appears in the rail with a Rules badge and "—" game count (until matched).
+23. Verify match report completion price when Steam Store cache exists, or "unavailable" message when no priced missing entries are found.
 
 ### 6. Discover
 
