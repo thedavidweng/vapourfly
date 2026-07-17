@@ -89,6 +89,31 @@ enum QuickView {
     ShortSessions,
 }
 
+/// Primary Library scope shown as the segmented control beside search.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum LibraryScope {
+    #[default]
+    All,
+    Installed,
+    Unplayed,
+    Hidden,
+}
+
+impl LibraryScope {
+    fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Installed => "Installed",
+            Self::Unplayed => "Unplayed",
+            Self::Hidden => "Hidden",
+        }
+    }
+
+    fn all() -> [Self; 4] {
+        [Self::All, Self::Installed, Self::Unplayed, Self::Hidden]
+    }
+}
+
 impl QuickView {
     fn label(self) -> &'static str {
         match self {
@@ -347,6 +372,8 @@ struct VapourflyApp {
     library_sort_desc: bool,
     /// Quick view selector for the Library grid.
     library_quick_view: QuickView,
+    /// Primary scope selector beside Library search.
+    library_scope: LibraryScope,
     /// "Load more" pagination: how many games to show (incremented by 48).
     library_visible_count: usize,
     /// Selected game card AppID (enables Recommend without hover).
@@ -1134,24 +1161,36 @@ fn view_header_with_actions(
     subtitle: &str,
     actions: impl FnOnce(&mut egui::Ui),
 ) {
+    let available = ui.available_width();
+    let action_width = (available * 0.34).clamp(180.0, 420.0);
+    let title_width = (available - action_width - SP_2).max(220.0);
     ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(
-                RichText::new(title)
-                    .size(TS_2XL)
-                    .strong()
-                    .color(t().text_primary),
-            );
-            ui.add_space(SP_1);
-            ui.label(
-                RichText::new(subtitle)
-                    .size(TS_BODY)
-                    .color(t().text_secondary),
-            );
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            actions(ui);
-        });
+        ui.allocate_ui_with_layout(
+            egui::vec2(title_width, 48.0),
+            egui::Layout::top_down(egui::Align::LEFT),
+            |ui| {
+                ui.label(
+                    RichText::new(title)
+                        .size(TS_2XL)
+                        .strong()
+                        .color(t().text_primary),
+                );
+                ui.add_space(SP_1);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(subtitle)
+                            .size(TS_BODY)
+                            .color(t().text_secondary),
+                    )
+                    .truncate(),
+                );
+            },
+        );
+        ui.allocate_ui_with_layout(
+            egui::vec2(action_width, 48.0),
+            egui::Layout::right_to_left(egui::Align::Center),
+            actions,
+        );
     });
     ui.add_space(SP_3);
 }
@@ -1173,6 +1212,25 @@ fn section_card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)
             body(ui);
         });
     ui.add_space(SP_3);
+}
+
+fn library_filter_box(
+    ui: &mut egui::Ui,
+    label: &str,
+    width: f32,
+    body: impl FnOnce(&mut egui::Ui),
+) {
+    egui::Frame::NONE
+        .fill(t().surface)
+        .stroke(egui::Stroke::new(1.0, t().border_soft))
+        .inner_margin(egui::Margin::symmetric(m(SP_3), m(SP_2)))
+        .corner_radius(CORNER_MD)
+        .show(ui, |ui| {
+            ui.set_width(width);
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.label(RichText::new(label).size(TS_XS).color(t().text_muted));
+            body(ui);
+        });
 }
 
 fn error_banner(ui: &mut egui::Ui, msg: &str) {
@@ -1314,45 +1372,172 @@ const ARTWORK_PALETTE: [(Color32, Color32); 8] = [
 /// network failure).
 fn render_artwork_placeholder(ui: &mut egui::Ui, app_id: u32, name: &str, width: f32, height: f32) {
     let (top, bottom) = ARTWORK_PALETTE[(app_id as usize) % ARTWORK_PALETTE.len()];
-    let initial = name
-        .chars()
-        .next()
-        .map(|c| c.to_uppercase().to_string())
-        .unwrap_or_default();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
     if ui.is_rect_visible(rect) {
-        let split = rect.top() + rect.height() * 0.6;
-        let top_rect = egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), split));
-        let bot_rect = egui::Rect::from_min_max(egui::pos2(rect.left(), split), rect.max);
-        ui.painter().rect_filled(top_rect, CORNER_SM, top);
-        ui.painter().rect_filled(bot_rect, CORNER_SM, bottom);
-        // Title initial, centered in the top block.
-        let initial_galley = ui.painter().layout(
-            initial,
-            egui::FontId::proportional(height * 0.35),
-            Color32::WHITE,
-            width,
-        );
-        ui.painter().galley(
-            top_rect.center()
-                - egui::vec2(initial_galley.size().x * 0.5, initial_galley.size().y * 0.5),
-            initial_galley,
-            Color32::WHITE,
-        );
-        // AppID in the bottom-right corner.
-        let id_galley = ui.painter().layout(
-            app_id.to_string(),
-            egui::FontId::monospace(height * 0.12),
-            Color32::from_white_alpha(180),
-            width,
-        );
-        ui.painter().galley(
-            egui::pos2(
-                bot_rect.right() - id_galley.size().x - f32::from(m(SP_1)),
-                bot_rect.bottom() - id_galley.size().y - f32::from(m(SP_1)),
-            ),
-            id_galley,
-            Color32::from_white_alpha(180),
+        let painter = ui.painter().with_clip_rect(rect);
+        painter.rect_filled(rect, CORNER_SM, top);
+
+        // A compact illustrated fallback reads like cover art at card size
+        // while remaining deterministic, local, and safe for offline mode.
+        for step in 0..12 {
+            let amount = step as f32 / 11.0;
+            let mix = |a: u8, b: u8| -> u8 {
+                (f32::from(a) + (f32::from(b) - f32::from(a)) * amount) as u8
+            };
+            let color = Color32::from_rgb(
+                mix(top.r(), bottom.r()),
+                mix(top.g(), bottom.g()),
+                mix(top.b(), bottom.b()),
+            );
+            let y0 = rect.top() + rect.height() * amount;
+            let y1 = rect.top() + rect.height() * ((step + 1) as f32 / 12.0);
+            painter.rect_filled(
+                egui::Rect::from_min_max(
+                    egui::pos2(rect.left(), y0),
+                    egui::pos2(rect.right(), y1 + 1.0),
+                ),
+                0.0,
+                color,
+            );
+        }
+
+        let seed = app_id % 6;
+        let white = Color32::from_white_alpha(215);
+        let haze = Color32::from_white_alpha(80);
+        let shadow = Color32::from_black_alpha(70);
+        let horizon = rect.top() + rect.height() * 0.66;
+
+        // Tiny stars/clouds make the upper field feel authored rather than a
+        // generic two-colour placeholder.
+        for n in 0..6 {
+            let x = rect.left() + 14.0 + ((app_id + n * 37) % 160) as f32;
+            let y = rect.top() + 12.0 + ((app_id + n * 19) % 55) as f32;
+            painter.circle_filled(egui::pos2(x.min(rect.right() - 8.0), y), 1.4, haze);
+        }
+
+        match seed {
+            0 | 4 => {
+                // Layered mountains and a warm horizon.
+                painter.circle_filled(
+                    egui::pos2(rect.right() - 34.0, rect.top() + 31.0),
+                    15.0,
+                    Color32::from_white_alpha(145),
+                );
+                painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        egui::pos2(rect.left() - 8.0, rect.bottom()),
+                        egui::pos2(rect.left() + 58.0, horizon - 30.0),
+                        egui::pos2(rect.left() + 112.0, rect.bottom()),
+                    ],
+                    shadow,
+                    egui::Stroke::NONE,
+                ));
+                painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        egui::pos2(rect.left() + 55.0, rect.bottom()),
+                        egui::pos2(rect.left() + 132.0, horizon - 42.0),
+                        egui::pos2(rect.right() + 8.0, rect.bottom()),
+                    ],
+                    Color32::from_black_alpha(45),
+                    egui::Stroke::NONE,
+                ));
+            }
+            1 => {
+                // Neon skyline.
+                for n in 0..7 {
+                    let w = 16.0 + (n % 2) as f32 * 7.0;
+                    let h = 28.0 + ((app_id + n * 11) % 48) as f32;
+                    let x = rect.left() + 5.0 + n as f32 * 29.0;
+                    let tower = egui::Rect::from_min_size(
+                        egui::pos2(x, rect.bottom() - h),
+                        egui::vec2(w, h),
+                    );
+                    painter.rect_filled(tower, 2.0, Color32::from_black_alpha(95));
+                    painter.line_segment(
+                        [
+                            tower.left_top() + egui::vec2(4.0, 8.0),
+                            tower.right_top() + egui::vec2(-4.0, 8.0),
+                        ],
+                        egui::Stroke::new(1.2, white),
+                    );
+                }
+            }
+            2 => {
+                // Forest canopy with a bright path.
+                for n in 0..8 {
+                    let x = rect.left() + 10.0 + n as f32 * 27.0;
+                    let y = horizon - ((n * 13) % 24) as f32;
+                    painter.circle_filled(
+                        egui::pos2(x, y),
+                        22.0,
+                        Color32::from_black_alpha(55 + (n % 3) as u8 * 18),
+                    );
+                }
+                painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        egui::pos2(rect.center().x - 6.0, horizon),
+                        egui::pos2(rect.center().x + 9.0, horizon),
+                        egui::pos2(rect.center().x + 34.0, rect.bottom()),
+                        egui::pos2(rect.center().x - 42.0, rect.bottom()),
+                    ],
+                    Color32::from_white_alpha(95),
+                    egui::Stroke::NONE,
+                ));
+            }
+            3 => {
+                // Space scene with planet and orbit.
+                let planet = egui::pos2(rect.center().x + 18.0, rect.center().y + 8.0);
+                painter.circle_filled(planet, 31.0, Color32::from_white_alpha(105));
+                painter.circle_stroke(
+                    planet,
+                    47.0,
+                    egui::Stroke::new(2.0, Color32::from_white_alpha(100)),
+                );
+                painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        egui::pos2(rect.left() + 18.0, rect.bottom() - 24.0),
+                        egui::pos2(rect.left() + 62.0, rect.bottom() - 38.0),
+                        egui::pos2(rect.left() + 82.0, rect.bottom() - 18.0),
+                        egui::pos2(rect.left() + 42.0, rect.bottom() - 7.0),
+                    ],
+                    white,
+                    egui::Stroke::new(1.0, Color32::from_black_alpha(60)),
+                ));
+            }
+            _ => {
+                // Sea and sail silhouette.
+                painter.rect_filled(
+                    egui::Rect::from_min_max(egui::pos2(rect.left(), horizon), rect.right_bottom()),
+                    0.0,
+                    Color32::from_black_alpha(45),
+                );
+                let mast_x = rect.center().x;
+                painter.line_segment(
+                    [
+                        egui::pos2(mast_x, horizon - 42.0),
+                        egui::pos2(mast_x, rect.bottom() - 18.0),
+                    ],
+                    egui::Stroke::new(2.0, white),
+                );
+                painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        egui::pos2(mast_x - 2.0, horizon - 38.0),
+                        egui::pos2(mast_x - 2.0, horizon + 2.0),
+                        egui::pos2(mast_x - 42.0, horizon + 2.0),
+                    ],
+                    Color32::from_white_alpha(165),
+                    egui::Stroke::NONE,
+                ));
+            }
+        }
+
+        let title: String = name.chars().take(22).collect();
+        painter.text(
+            rect.left_bottom() + egui::vec2(8.0, -8.0),
+            egui::Align2::LEFT_BOTTOM,
+            title,
+            egui::FontId::proportional(TS_XS),
+            Color32::from_white_alpha(210),
         );
     }
 }
@@ -1690,18 +1875,25 @@ fn nav_item(ui: &mut egui::Ui, view: View, selected: bool, compact: bool) -> egu
     response
 }
 
-/// Compact value-over-label metric for the top chrome.
-fn top_bar_metric(ui: &mut egui::Ui, value: impl Into<String>, label: &str) {
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 0.0;
-        ui.label(
-            RichText::new(value.into())
-                .size(TS_MD)
-                .strong()
-                .color(t().text_primary),
-        );
-        ui.label(RichText::new(label).size(TS_XS).color(t().text_muted));
-    });
+/// Fixed-width icon + value-over-label metric for the top chrome.
+fn top_bar_metric(ui: &mut egui::Ui, icon: &str, value: impl Into<String>, label: &str) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(92.0, 36.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.label(RichText::new(icon).size(TS_LG).color(t().text_secondary));
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.label(
+                    RichText::new(value.into())
+                        .size(TS_SM)
+                        .strong()
+                        .color(t().text_primary),
+                );
+                ui.label(RichText::new(label).size(TS_XS).color(t().text_muted));
+            });
+        },
+    );
 }
 
 /// Compact label-over-value metric for the Library insights rail.
@@ -1718,6 +1910,198 @@ fn insight_metric(ui: &mut egui::Ui, label: &str, value: String) {
             );
         });
     });
+}
+
+fn library_insight_tile(
+    ui: &mut egui::Ui,
+    icon: &str,
+    value: String,
+    label: &str,
+    icon_fill: Color32,
+    icon_color: Color32,
+) {
+    egui::Frame::NONE
+        .fill(t().surface)
+        .stroke(egui::Stroke::new(1.0, t().border_soft))
+        .inner_margin(egui::Margin::same(m(SP_2)))
+        .corner_radius(CORNER_MD)
+        .show(ui, |ui| {
+            ui.set_width(186.0);
+            ui.horizontal(|ui| {
+                egui::Frame::NONE
+                    .fill(icon_fill)
+                    .inner_margin(egui::Margin::same(m(SP_2)))
+                    .corner_radius(CORNER_SM)
+                    .show(ui, |ui| {
+                        ui.label(RichText::new(icon).size(TS_MD).color(icon_color));
+                    });
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.label(
+                        RichText::new(value)
+                            .size(TS_SM)
+                            .strong()
+                            .color(t().text_primary),
+                    );
+                    ui.label(RichText::new(label).size(TS_XS).color(t().text_muted));
+                });
+            });
+        });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn library_insights_rail(
+    ui: &mut egui::Ui,
+    total_games: usize,
+    installed_count: usize,
+    hidden_count: usize,
+    junk_count: usize,
+    total_playtime: u32,
+    matching_count: usize,
+    backlog_count: usize,
+    recent_games: &[(String, i64, u32)],
+    avg_hltb_minutes: u32,
+) {
+    ui.set_width(214.0);
+    egui::Frame::NONE
+        .fill(t().surface_raised)
+        .stroke(egui::Stroke::new(1.0, t().border_soft))
+        .inner_margin(egui::Margin::same(m(SP_3)))
+        .corner_radius(CORNER_LG)
+        .show(ui, |ui| {
+            ui.set_width(190.0);
+            ui.label(
+                RichText::new("Library insights")
+                    .size(TS_SM)
+                    .strong()
+                    .color(t().text_primary),
+            );
+            ui.add_space(SP_2);
+            library_insight_tile(
+                ui,
+                "▦",
+                total_games.to_string(),
+                "Total games",
+                t().accent_soft,
+                t().accent_text,
+            );
+            ui.add_space(SP_1);
+            library_insight_tile(
+                ui,
+                "↓",
+                installed_count.to_string(),
+                "Installed",
+                t().success_soft,
+                t().success,
+            );
+            ui.add_space(SP_1);
+            library_insight_tile(
+                ui,
+                "◷",
+                format_playtime(total_playtime),
+                "Estimated playtime",
+                t().warning_soft,
+                t().warning,
+            );
+            ui.add_space(SP_1);
+            library_insight_tile(
+                ui,
+                "◇",
+                junk_count.to_string(),
+                "Junk excluded",
+                t().surface_sunken,
+                t().text_secondary,
+            );
+            ui.add_space(SP_3);
+            ui.separator();
+            ui.add_space(SP_2);
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("Backlog")
+                        .size(TS_SM)
+                        .strong()
+                        .color(t().text_primary),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(backlog_count.to_string())
+                            .size(TS_SM)
+                            .strong()
+                            .color(t().text_primary),
+                    );
+                });
+            });
+            let backlog_fraction = if matching_count == 0 {
+                0.0
+            } else {
+                backlog_count as f32 / matching_count as f32
+            };
+            ui.add(
+                egui::ProgressBar::new(backlog_fraction)
+                    .desired_width(186.0)
+                    .fill(t().accent)
+                    .show_percentage(),
+            );
+            ui.add_space(SP_3);
+            ui.label(
+                RichText::new("Recent activity")
+                    .size(TS_SM)
+                    .strong()
+                    .color(t().text_primary),
+            );
+            ui.add_space(SP_1);
+            if recent_games.is_empty() {
+                ui.label(
+                    RichText::new("No recent activity")
+                        .size(TS_XS)
+                        .color(t().text_muted),
+                );
+            } else {
+                for (name, unix, playtime) in recent_games {
+                    ui.horizontal(|ui| {
+                        egui::Frame::NONE
+                            .fill(t().accent_soft)
+                            .inner_margin(egui::Margin::same(m(SP_2)))
+                            .corner_radius(CORNER_SM)
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(name.chars().next().unwrap_or('•').to_string())
+                                        .size(TS_SM)
+                                        .strong()
+                                        .color(t().accent_text),
+                                );
+                            });
+                        ui.vertical(|ui| {
+                            ui.set_width(145.0);
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(name)
+                                        .size(TS_XS)
+                                        .strong()
+                                        .color(t().text_primary),
+                                )
+                                .truncate(),
+                            );
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} · {}",
+                                    relative_time_ago(*unix),
+                                    format_playtime(*playtime)
+                                ))
+                                .size(TS_XS)
+                                .color(t().text_muted),
+                            );
+                        });
+                    });
+                    ui.add_space(SP_1);
+                }
+            }
+            ui.add_space(SP_2);
+            insight_metric(ui, "Hidden", hidden_count.to_string());
+            if avg_hltb_minutes > 0 {
+                insight_metric(ui, "Avg HLTB", format!("{}h", avg_hltb_minutes / 60));
+            }
+        });
 }
 
 /// Build a unique per-launch temp root for --ui-demo mode.
@@ -1846,6 +2230,7 @@ impl VapourflyApp {
             library_sort_by: LibrarySort::default(),
             library_sort_desc: false,
             library_quick_view: QuickView::All,
+            library_scope: LibraryScope::All,
             library_visible_count: 48,
             library_selected_app_id: None,
             show_junk_panel: false,
@@ -1983,13 +2368,39 @@ impl VapourflyApp {
         };
 
         // -- 24 games with varied metadata -----------------------------------
+        const DEMO_GAME_NAMES: [&str; 24] = [
+            "Fields of Luma",
+            "Neon Harbor",
+            "Wispwood",
+            "Starward Drift",
+            "Grimstone Keep",
+            "Echoes of the Vale",
+            "Pixel Sprout",
+            "Salt & Wind",
+            "Clockwork Garden",
+            "Moonlit Market",
+            "Ember Circuit",
+            "Cloudline",
+            "Tiny Kingdoms",
+            "Afterlight",
+            "Mossbound",
+            "Skyfarer",
+            "Lantern Lake",
+            "Quiet Orbit",
+            "Paper Trails",
+            "Wild Current",
+            "Copper & Clover",
+            "Night Orchard",
+            "Signal Bloom",
+            "Northstar",
+        ];
         let demo_games: Vec<Game> = (0..24)
             .map(|i| {
                 let app_id = 1000 + i;
-                let name = format!("Demo Game {i:02}");
+                let name = DEMO_GAME_NAMES[i as usize].to_string();
                 Game {
                     app_id,
-                    name,
+                    name: name.clone(),
                     app_type: SteamAppType::Game,
                     installed: i < 18,
                     install_dir: Some(format!("demo_{i}").into()),
@@ -2052,7 +2463,7 @@ impl VapourflyApp {
                     igdb: if i % 2 == 0 {
                         Some(IgdbData {
                             igdb_id: u64::from(app_id),
-                            name: format!("Demo Game {i:02}"),
+                            name: name.clone(),
                             slug: None,
                             rating_0_100: Some(match i {
                                 0 => 85.0,
@@ -2139,7 +2550,7 @@ impl VapourflyApp {
                     steam_store: if i < 12 {
                         Some(SteamStoreDetails {
                             app_id,
-                            name: format!("Demo Game {i:02}"),
+                            name: name.clone(),
                             steam_store_type: "game".into(),
                             is_free: i == 7,
                             short_description: Some(format!("Demo description {i}")),
@@ -3232,10 +3643,11 @@ impl VapourflyApp {
             .filter(|_| !self.filter_playtime_max.is_empty());
 
         let filters = LibraryFilters {
-            installed_only: self.filter_installed_only,
+            installed_only: self.filter_installed_only
+                || self.library_scope == LibraryScope::Installed,
             not_hidden: self.filter_not_hidden,
             not_junk: self.filter_not_junk,
-            is_hidden_only: false,
+            is_hidden_only: self.library_scope == LibraryScope::Hidden,
             is_junk_only: false,
             search: self.search_query.clone(),
             genre: self.filter_genre.clone(),
@@ -3243,7 +3655,8 @@ impl VapourflyApp {
             proton_tier: self.filter_proton_tier,
             deck_compatible: self.filter_deck_compatible,
             controller_full: self.filter_controller_full,
-            unplayed_only: self.filter_unplayed_only,
+            unplayed_only: self.filter_unplayed_only
+                || self.library_scope == LibraryScope::Unplayed,
             hltb_max_minutes: hltb_max,
             hltb_min_minutes: hltb_min,
             playtime_min_minutes: playtime_min,
@@ -4382,8 +4795,6 @@ impl eframe::App for VapourflyApp {
                 .sum::<u32>()
         });
         let shell_playtime = format_playtime(shell_playtime);
-        let shell_playlists = self.playlist_store_ids.len();
-
         // Responsive layout: compute breakpoints from the current window width.
         let window_width = ctx.input(|i| i.viewport_rect().width());
         let compact_sidebar = is_compact_sidebar(window_width);
@@ -4406,44 +4817,53 @@ impl eframe::App for VapourflyApp {
                     .inner_margin(egui::Margin::symmetric(m(SP_3), m(SP_2))),
             )
             .show(ui, |ui| {
+                let available = ui.available_width();
+                let compact_topbar = window_width < BP_COMPACT_SIDEBAR;
+                let metrics_width = if compact_topbar { 290.0 } else { 560.0 };
+                let breadcrumb_width = (available - metrics_width - SP_2).max(220.0);
                 ui.horizontal(|ui| {
-                    // Native OS window controls remain authoritative (ADR-0006).
-                    // No app-drawn traffic-light circles.
-                    ui.add_space(SP_2);
-                    ui.label(
-                        RichText::new("Vapourfly")
-                            .size(TS_MD)
-                            .strong()
-                            .color(t().text_primary),
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(breadcrumb_width, 38.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.add_space(SP_2);
+                            ui.label(
+                                RichText::new("Vapourfly")
+                                    .size(TS_MD)
+                                    .strong()
+                                    .color(t().text_primary),
+                            );
+                            ui.label(RichText::new("›").size(TS_LG).color(t().text_muted));
+                            ui.label(
+                                RichText::new(self.current_view.label())
+                                    .size(TS_MD)
+                                    .strong()
+                                    .color(t().text_primary),
+                            );
+                        },
                     );
-                    ui.label(RichText::new("›").size(TS_LG).color(t().text_muted));
-                    ui.label(
-                        RichText::new(self.current_view.label())
-                            .size(TS_MD)
-                            .color(t().text_primary),
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(metrics_width, 38.0),
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            let theme_label = if self.theme_mode.is_dark() {
+                                "☀ Light"
+                            } else {
+                                "☾ Dark"
+                            };
+                            if secondary_button(ui, theme_label).clicked() {
+                                self.theme_mode = self.theme_mode.toggle();
+                                set_active_theme(self.theme_mode);
+                                configure_ui(&ctx, self.theme_mode);
+                            }
+                            top_bar_metric(ui, "↻", "Ready", "Synced");
+                            if !compact_topbar {
+                                top_bar_metric(ui, "◉", shell_hidden.to_string(), "Hidden");
+                                top_bar_metric(ui, "◷", shell_playtime, "Play time");
+                            }
+                            top_bar_metric(ui, "▦", shell_games.to_string(), "Games");
+                        },
                     );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let theme_label = if self.theme_mode.is_dark() {
-                            "☀ Light"
-                        } else {
-                            "☾ Dark"
-                        };
-                        if secondary_button(ui, theme_label).clicked() {
-                            self.theme_mode = self.theme_mode.toggle();
-                            set_active_theme(self.theme_mode);
-                            configure_ui(&ctx, self.theme_mode);
-                        }
-                        ui.add_space(SP_4);
-                        top_bar_metric(ui, "Ready", "Synced");
-                        ui.add_space(SP_6);
-                        top_bar_metric(ui, shell_playlists.to_string(), "Playlists");
-                        ui.add_space(SP_6);
-                        top_bar_metric(ui, shell_hidden.to_string(), "Hidden");
-                        ui.add_space(SP_6);
-                        top_bar_metric(ui, shell_playtime, "Play time");
-                        ui.add_space(SP_6);
-                        top_bar_metric(ui, shell_games.to_string(), "Games");
-                    });
                 });
             });
 
@@ -4463,7 +4883,13 @@ impl eframe::App for VapourflyApp {
                 // Library-facing destinations form the primary group. The
                 // maintenance destinations stay at the bottom like the
                 // reference application rail.
-                for &view in &View::ALL[..5] {
+                for view in [
+                    View::Discover,
+                    View::Library,
+                    View::Recommendations,
+                    View::Playlists,
+                    View::Collections,
+                ] {
                     let selected = self.current_view == view;
                     if nav_item(ui, view, selected, compact_sidebar).clicked() {
                         self.current_view = view;
@@ -4892,10 +5318,6 @@ impl VapourflyApp {
 
         // Compute extended summary metrics for the insights rail.
         let installed_count = all_games.iter().filter(|g| g.installed).count();
-        let unplayed_count = all_games
-            .iter()
-            .filter(|g| g.playtime_minutes.unwrap_or(0) == 0)
-            .count();
         let hidden_count = all_games.iter().filter(|g| g.is_hidden).count();
         let junk_count = all_games.iter().filter(|g| g.is_junk).count();
         let total_playtime: u32 = all_games
@@ -4950,131 +5372,100 @@ impl VapourflyApp {
             }
         };
 
-        view_header_with_actions(
-            ui,
-            "Library",
-            "Browse your Steam games visually, then turn that library into clean playlists and recommendations.",
-            |ui| {
-                // right_to_left: first widget is rightmost
-                if ui
-                    .add_enabled(
-                        !self.loading,
-                        egui::Button::new(
-                            RichText::new("Refresh").size(TS_SM).color(t().text_inverse),
-                        )
-                        .fill(t().accent)
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(CORNER_SM),
-                    )
-                    .clicked()
-                {
-                    self.start_scan(ctx);
-                }
-                if secondary_button(ui, "Junk\u{2026}").clicked() {
-                    self.show_junk_panel = true;
-                }
-                if self.loading {
-                    ui.spinner();
-                    ui.label(
-                        RichText::new("Scanning")
-                            .size(TS_SM)
-                            .color(t().text_secondary),
-                    );
-                }
-            },
+        ui.label(
+            RichText::new("Library")
+                .size(TS_2XL)
+                .strong()
+                .color(t().text_primary),
         );
+        ui.add_space(SP_3);
 
-        // Quick view pills: All / Installed / Unplayed / Hidden / Junk.
+        // Search + primary scope, matching the compact control hierarchy in
+        // the design reference.
         ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
-            for qv in QuickView::all() {
-                let is_active = self.library_quick_view == qv;
-                let btn =
-                    egui::Button::new(RichText::new(qv.label()).size(TS_SM).color(if is_active {
-                        t().text_inverse
-                    } else {
-                        t().text_secondary
-                    }))
-                    .fill(if is_active { t().accent } else { t().surface })
-                    .stroke(egui::Stroke::new(
-                        1.0,
-                        if is_active { t().accent } else { t().border },
-                    ))
-                    .corner_radius(CORNER_PILL);
-                if ui.add(btn).clicked() {
-                    self.apply_quick_view(qv);
-                }
+            ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_2);
+            egui::Frame::NONE
+                .fill(t().surface)
+                .stroke(egui::Stroke::new(1.0, t().border))
+                .inner_margin(egui::Margin::symmetric(m(SP_3), m(SP_2)))
+                .corner_radius(CORNER_MD)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("⌕").size(TS_LG).color(t().text_secondary));
+                        let before = self.search_query.clone();
+                        ui.add_sized(
+                            [240.0, 24.0],
+                            egui::TextEdit::singleline(&mut self.search_query)
+                                .frame(egui::Frame::NONE)
+                                .hint_text("Search your library"),
+                        );
+                        if before != self.search_query {
+                            self.library_visible_count = 48;
+                        }
+                    });
+                });
+
+            egui::Frame::NONE
+                .fill(t().surface)
+                .stroke(egui::Stroke::new(1.0, t().border))
+                .corner_radius(CORNER_MD)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        for scope in LibraryScope::all() {
+                            let active = self.library_scope == scope;
+                            let button = egui::Button::new(
+                                RichText::new(scope.label()).size(TS_SM).color(if active {
+                                    t().text_inverse
+                                } else {
+                                    t().text_primary
+                                }),
+                            )
+                            .fill(if active { t().accent } else { t().surface })
+                            .stroke(egui::Stroke::NONE)
+                            .corner_radius(CORNER_SM)
+                            .min_size(egui::vec2(72.0, 40.0));
+                            if ui.add(button).clicked() {
+                                self.apply_library_scope(scope);
+                            }
+                        }
+                    });
+                });
+
+            if self.loading {
+                ui.spinner();
             }
-        });
-
-        ui.add_space(SP_3);
-
-        // Core filters (always visible).
-        section_card(ui, "Core Filters", |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_2);
-                let prev_installed = self.filter_installed_only;
-                let prev_hidden = self.filter_not_hidden;
-                let prev_junk = self.filter_not_junk;
-                filter_toggle(ui, &mut self.filter_installed_only, "Installed only");
-                filter_toggle(ui, &mut self.filter_not_hidden, "Not hidden");
-                filter_toggle(ui, &mut self.filter_not_junk, "Not junk");
-                if prev_installed != self.filter_installed_only
-                    || prev_hidden != self.filter_not_hidden
-                    || prev_junk != self.filter_not_junk
-                {
-                    self.library_visible_count = 48;
-                }
-            });
-        });
-
-        ui.add_space(SP_3);
-
-        // Search & advanced filters card.
-        section_card(ui, "Search & Advanced Filters", |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+            ui.label(
+                RichText::new(format!(
+                    "{} games  ·  {}",
+                    games.len(),
+                    format_playtime(total_playtime)
+                ))
+                .size(TS_SM)
+                .color(t().text_secondary),
+            );
+            ui.menu_button("⚙", |ui| {
+                ui.set_min_width(250.0);
                 ui.label(
-                    RichText::new("Search")
+                    RichText::new("Advanced filters")
                         .size(TS_SM)
-                        .color(t().text_secondary),
+                        .strong()
+                        .color(t().text_primary),
                 );
-                let prev_search = self.search_query.clone();
-                ui.add_sized(
-                    [260.0, 30.0],
-                    egui::TextEdit::singleline(&mut self.search_query).hint_text("Title or AppID"),
-                );
-                if prev_search != self.search_query {
-                    self.library_visible_count = 48;
-                }
+                ui.add_space(SP_1);
+                filter_toggle(ui, &mut self.filter_not_hidden, "Exclude hidden");
+                filter_toggle(ui, &mut self.filter_not_junk, "Exclude junk");
+                filter_toggle(ui, &mut self.library_sort_desc, "Descending sort");
                 ui.separator();
-                ui.label(RichText::new("Genre").size(TS_SM).color(t().text_secondary));
-                let prev_genre = self.filter_genre.clone();
-                ui.add_sized(
-                    [140.0, 30.0],
-                    egui::TextEdit::singleline(&mut self.filter_genre).hint_text("e.g. Cozy"),
-                );
-                if prev_genre != self.filter_genre {
-                    self.library_visible_count = 48;
-                }
-                ui.separator();
-                // ProtonDB tier dropdown.
-                ui.label(
-                    RichText::new("ProtonDB")
-                        .size(TS_SM)
-                        .color(t().text_secondary),
-                );
-                let prev_tier = self.filter_proton_tier;
-                let tier_label = match self.filter_proton_tier {
-                    None => "Any".to_string(),
-                    Some(t) => proton_tier_label(t).to_string(),
-                };
+                ui.label(RichText::new("ProtonDB").size(TS_XS).color(t().text_muted));
+                let tier_label = self.filter_proton_tier.map_or("Any", proton_tier_label);
                 egui::ComboBox::from_id_salt("lib_proton_tier")
                     .selected_text(tier_label)
-                    .width(100.0)
                     .show_ui(ui, |ui| {
-                        let current = self.filter_proton_tier;
-                        if ui.selectable_label(current.is_none(), "Any").clicked() {
+                        if ui
+                            .selectable_label(self.filter_proton_tier.is_none(), "Any")
+                            .clicked()
+                        {
                             self.filter_proton_tier = None;
                         }
                         for tier in [
@@ -5085,94 +5476,87 @@ impl VapourflyApp {
                             ProtonTier::Bronze,
                         ] {
                             if ui
-                                .selectable_label(current == Some(tier), proton_tier_label(tier))
+                                .selectable_label(
+                                    self.filter_proton_tier == Some(tier),
+                                    proton_tier_label(tier),
+                                )
                                 .clicked()
                             {
                                 self.filter_proton_tier = Some(tier);
                             }
                         }
                     });
-                if prev_tier != self.filter_proton_tier {
-                    self.library_visible_count = 48;
-                }
-                ui.separator();
-                let prev_deck = self.filter_deck_compatible;
-                let prev_ctrl = self.filter_controller_full;
-                let prev_unplayed = self.filter_unplayed_only;
-                filter_toggle(ui, &mut self.filter_deck_compatible, "Deck");
-                filter_toggle(ui, &mut self.filter_controller_full, "Controller");
-                filter_toggle(ui, &mut self.filter_unplayed_only, "Unplayed");
-                if prev_deck != self.filter_deck_compatible
-                    || prev_ctrl != self.filter_controller_full
-                    || prev_unplayed != self.filter_unplayed_only
-                {
-                    self.library_visible_count = 48;
-                }
+                ui.label(
+                    RichText::new("HLTB minutes")
+                        .size(TS_XS)
+                        .color(t().text_muted),
+                );
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [88.0, 26.0],
+                        egui::TextEdit::singleline(&mut self.filter_hltb_min).hint_text("min"),
+                    );
+                    ui.add_sized(
+                        [88.0, 26.0],
+                        egui::TextEdit::singleline(&mut self.filter_hltb_max).hint_text("max"),
+                    );
+                });
             });
+            if secondary_button(ui, "Junk…").clicked() {
+                self.show_junk_panel = true;
+            }
+            if ui
+                .add_enabled(!self.loading, primary_button_widget("Refresh"))
+                .clicked()
+            {
+                self.start_scan(ctx);
+            }
+        });
 
-            // Second row: tag, HLTB range, playtime range, sort.
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
-                ui.label(RichText::new("Tag").size(TS_SM).color(t().text_secondary));
-                let prev_tag = self.filter_tag.clone();
+        ui.add_space(SP_3);
+
+        // One compact row of labelled filter controls. Wrapping preserves the
+        // hierarchy at the minimum supported window size.
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_2);
+            library_filter_box(ui, "Steam Deck", 150.0, |ui| {
+                filter_toggle(ui, &mut self.filter_deck_compatible, "Verified, Playable");
+            });
+            library_filter_box(ui, "Controller", 130.0, |ui| {
+                filter_toggle(ui, &mut self.filter_controller_full, "Any / Full");
+            });
+            library_filter_box(ui, "Play time", 130.0, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [48.0, 22.0],
+                        egui::TextEdit::singleline(&mut self.filter_playtime_min).hint_text("min"),
+                    );
+                    ui.add_sized(
+                        [48.0, 22.0],
+                        egui::TextEdit::singleline(&mut self.filter_playtime_max).hint_text("max"),
+                    );
+                });
+            });
+            library_filter_box(ui, "Genre", 130.0, |ui| {
                 ui.add_sized(
-                    [120.0, 30.0],
-                    egui::TextEdit::singleline(&mut self.filter_tag).hint_text("e.g. multiplayer"),
+                    [120.0, 22.0],
+                    egui::TextEdit::singleline(&mut self.filter_genre).hint_text("All"),
                 );
-                if prev_tag != self.filter_tag {
-                    self.library_visible_count = 48;
-                }
-                ui.separator();
-                ui.label(
-                    RichText::new("HLTB min")
-                        .size(TS_SM)
-                        .color(t().text_secondary),
-                );
-                let prev_hmin = self.filter_hltb_min.clone();
+            });
+            library_filter_box(ui, "Tags", 130.0, |ui| {
                 ui.add_sized(
-                    [60.0, 30.0],
-                    egui::TextEdit::singleline(&mut self.filter_hltb_min).hint_text("min"),
+                    [120.0, 22.0],
+                    egui::TextEdit::singleline(&mut self.filter_tag).hint_text("All"),
                 );
-                ui.label(RichText::new("max").size(TS_SM).color(t().text_secondary));
-                let prev_hmax = self.filter_hltb_max.clone();
-                ui.add_sized(
-                    [60.0, 30.0],
-                    egui::TextEdit::singleline(&mut self.filter_hltb_max).hint_text("max"),
-                );
-                if prev_hmin != self.filter_hltb_min || prev_hmax != self.filter_hltb_max {
-                    self.library_visible_count = 48;
-                }
-                ui.separator();
-                ui.label(
-                    RichText::new("Playtime min")
-                        .size(TS_SM)
-                        .color(t().text_secondary),
-                );
-                let prev_pmin = self.filter_playtime_min.clone();
-                ui.add_sized(
-                    [60.0, 30.0],
-                    egui::TextEdit::singleline(&mut self.filter_playtime_min).hint_text("min"),
-                );
-                ui.label(RichText::new("max").size(TS_SM).color(t().text_secondary));
-                let prev_pmax = self.filter_playtime_max.clone();
-                ui.add_sized(
-                    [60.0, 30.0],
-                    egui::TextEdit::singleline(&mut self.filter_playtime_max).hint_text("max"),
-                );
-                if prev_pmin != self.filter_playtime_min || prev_pmax != self.filter_playtime_max {
-                    self.library_visible_count = 48;
-                }
-                ui.separator();
-                ui.label(RichText::new("Sort").size(TS_SM).color(t().text_secondary));
-                let prev_sort = self.library_sort_by;
-                let prev_sort_desc = self.library_sort_desc;
+            });
+            library_filter_box(ui, "Sort by", 160.0, |ui| {
                 egui::ComboBox::from_id_salt("lib_sort_by")
                     .selected_text(sort_label(self.library_sort_by))
-                    .width(120.0)
+                    .width(145.0)
                     .show_ui(ui, |ui| {
                         let current = self.library_sort_by;
                         for (variant, label) in [
-                            (LibrarySort::InstalledThenPlaytime, "Installed + Playtime"),
+                            (LibrarySort::InstalledThenPlaytime, "Recently played"),
                             (LibrarySort::Name, "Name"),
                             (LibrarySort::Playtime, "Playtime"),
                             (LibrarySort::Hltb, "HLTB"),
@@ -5184,12 +5568,39 @@ impl VapourflyApp {
                             }
                         }
                     });
-                filter_toggle(ui, &mut self.library_sort_desc, "Desc");
-                if prev_sort != self.library_sort_by || prev_sort_desc != self.library_sort_desc {
-                    self.library_visible_count = 48;
-                }
             });
         });
+
+        ui.add_space(SP_3);
+
+        // Editorial category chips live below the functional filters.
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
+            for qv in QuickView::all()
+                .into_iter()
+                .filter(|qv| *qv != QuickView::All)
+            {
+                let active = self.library_quick_view == qv;
+                let button =
+                    egui::Button::new(RichText::new(qv.label()).size(TS_SM).color(if active {
+                        t().accent_text
+                    } else {
+                        t().text_secondary
+                    }))
+                    .fill(if active { t().accent_soft } else { t().surface })
+                    .stroke(egui::Stroke::new(1.0, t().border_soft))
+                    .corner_radius(CORNER_PILL);
+                if ui.add(button).clicked() {
+                    self.apply_quick_view(if active { QuickView::All } else { qv });
+                }
+            }
+            ui.add_enabled(
+                false,
+                egui::Button::new("＋  Add category").corner_radius(CORNER_PILL),
+            );
+        });
+
+        ui.add_space(SP_3);
 
         if self.scan_result.is_none() {
             if self.loading {
@@ -5232,145 +5643,100 @@ impl VapourflyApp {
             return;
         }
 
-        // Two-column layout: game grid (left) + insights rail (right).
-        // At compact widths (1024–1279px) the rail moves below the main grid.
-        let rails_below = self.rails_below;
-        let layout = if rails_below {
-            egui::Layout::top_down(egui::Align::LEFT)
-        } else {
-            egui::Layout::left_to_right(egui::Align::Min)
-        };
-        ui.with_layout(layout, |ui| {
-            // Main grid column.
-            ui.vertical(|ui| {
-                if games.is_empty() {
-                    empty_state(
-                        ui,
-                        "\u{1F50D}",
-                        "No games match these filters",
-                        "Clear search or turn off a filter to bring games back.",
-                    );
-                    return;
-                }
-
-                // "Load more" pagination: show 48 initially, +48 each click.
-                const LOAD_INCREMENT: usize = 48;
-                let visible = self.library_visible_count.min(games.len());
-                let page_games = &games[..visible];
-
-                ui.with_layout(
-                    egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),
-                    |ui| {
-                        ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_3);
-                        for game in page_games {
-                            self.render_game_card(ui, game);
-                        }
-                    },
+        // Explicit column widths keep the rail on-screen and constrain card
+        // wrapping. The previous unconstrained vertical child consumed the
+        // full row and pushed Insights beyond the viewport.
+        let available = ui.available_width();
+        let rail_width = LIBRARY_RAIL_WIDTH;
+        let main_width = library_main_width(available, self.rails_below);
+        let render_grid = |app: &mut VapourflyApp, ui: &mut egui::Ui| {
+            ui.set_width(main_width);
+            if games.is_empty() {
+                empty_state(
+                    ui,
+                    "\u{1F50D}",
+                    "No games match these filters",
+                    "Clear search or turn off a filter to bring games back.",
                 );
+                return;
+            }
 
-                // Load more button + count.
-                if visible < games.len() {
-                    ui.add_space(SP_2);
-                    ui.horizontal(|ui| {
-                        let remaining = games.len() - visible;
-                        if ui
-                            .button(
-                                RichText::new(format!(
-                                    "Load more (+{} of {} remaining)",
-                                    LOAD_INCREMENT.min(remaining),
-                                    remaining
-                                ))
-                                .size(TS_SM),
-                            )
-                            .clicked()
-                        {
-                            self.library_visible_count += LOAD_INCREMENT;
-                        }
-                    });
-                }
-                ui.add_space(SP_1);
-                ui.label(
-                    RichText::new(format!("Showing {} of {}", visible, games.len()))
-                        .size(TS_XS)
-                        .color(t().text_muted),
-                );
-            });
-
-            // Insights rail.
-            ui.add_space(SP_4);
-            ui.allocate_ui_with_layout(
-                egui::vec2(200.0, ui.available_height()),
-                egui::Layout::top_down(egui::Align::LEFT),
+            const LOAD_INCREMENT: usize = 48;
+            let visible = app.library_visible_count.min(games.len());
+            let page_games = &games[..visible];
+            ui.with_layout(
+                egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),
                 |ui| {
-                    egui::Frame::group(ui.style())
-                        .fill(t().surface)
-                        .stroke(egui::Stroke::new(1.0, t().border_soft))
-                        .corner_radius(CORNER_MD)
-                        .inner_margin(egui::Margin::same(m(SP_3)))
-                        .show(ui, |ui| {
-                            ui.label(
-                                RichText::new("Insights")
-                                    .size(TS_MD)
-                                    .strong()
-                                    .color(t().text_primary),
-                            );
-                            ui.add_space(SP_2);
-                            ui.separator();
-                            ui.add_space(SP_2);
-                            ui.spacing_mut().item_spacing.y = SP_3;
-                            insight_metric(ui, "Total", total_games.to_string());
-                            insight_metric(ui, "Installed", installed_count.to_string());
-                            insight_metric(ui, "Unplayed", unplayed_count.to_string());
-                            insight_metric(ui, "Hidden", hidden_count.to_string());
-                            insight_metric(ui, "Junk", junk_count.to_string());
-                            ui.separator();
-                            insight_metric(ui, "Playtime", format_playtime(total_playtime));
-                            insight_metric(ui, "Matching", games.len().to_string());
-                            ui.separator();
-                            insight_metric(ui, "Backlog", backlog_count.to_string());
-                            // Recent activity: top 3 by last_played_unix.
-                            ui.label(
-                                RichText::new("Recent activity")
-                                    .size(TS_XS)
-                                    .strong()
-                                    .color(t().text_secondary),
-                            );
-                            if recent_games.is_empty() {
-                                ui.label(
-                                    RichText::new("No recent activity")
-                                        .size(TS_XS)
-                                        .color(t().text_muted),
-                                );
-                            } else {
-                                for (name, unix, playtime) in &recent_games {
-                                    let relative = relative_time_ago(*unix);
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(format!(
-                                                "{} · {} · {}",
-                                                name,
-                                                relative,
-                                                format_playtime(*playtime)
-                                            ))
-                                            .size(TS_XS)
-                                            .color(t().text_muted),
-                                        )
-                                        .truncate(),
-                                    );
-                                }
-                            }
-                            if avg_hltb_minutes > 0 {
-                                ui.separator();
-                                insight_metric(
-                                    ui,
-                                    "Avg HLTB",
-                                    format!("{}h", avg_hltb_minutes / 60),
-                                );
-                            }
-                        });
+                    ui.set_width(main_width);
+                    ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_3);
+                    for game in page_games {
+                        app.render_game_card(ui, game);
+                    }
                 },
             );
-        });
+            if visible < games.len() {
+                ui.add_space(SP_2);
+                let remaining = games.len() - visible;
+                if ui
+                    .button(
+                        RichText::new(format!(
+                            "Load more (+{} of {} remaining)",
+                            LOAD_INCREMENT.min(remaining),
+                            remaining
+                        ))
+                        .size(TS_SM),
+                    )
+                    .clicked()
+                {
+                    app.library_visible_count += LOAD_INCREMENT;
+                }
+            }
+            ui.add_space(SP_1);
+            ui.label(
+                RichText::new(format!("Showing {} of {}", visible, games.len()))
+                    .size(TS_XS)
+                    .color(t().text_muted),
+            );
+        };
+        let render_insights = |ui: &mut egui::Ui| {
+            library_insights_rail(
+                ui,
+                total_games,
+                installed_count,
+                hidden_count,
+                junk_count,
+                total_playtime,
+                games.len(),
+                backlog_count,
+                &recent_games,
+                avg_hltb_minutes,
+            );
+        };
+
+        if self.rails_below {
+            render_grid(self, ui);
+            ui.add_space(SP_4);
+            render_insights(ui);
+        } else {
+            ui.horizontal(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(main_width, 0.0),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| render_grid(self, ui),
+                );
+                ui.add_space(SP_4);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(rail_width, 0.0),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    render_insights,
+                );
+            });
+        }
+    }
+
+    fn apply_library_scope(&mut self, scope: LibraryScope) {
+        self.library_scope = scope;
+        self.library_visible_count = 48;
     }
 
     /// Apply a quick-view preset by setting/clearing the filter toggles.
@@ -5447,16 +5813,10 @@ impl VapourflyApp {
 
     fn render_game_card(&mut self, ui: &mut egui::Ui, game: &Game) {
         let is_selected = self.library_selected_app_id == Some(game.app_id);
-        let hover_id = egui::Id::new(("library_card_hover", game.app_id));
-        let was_hovered = ui
-            .ctx()
-            .data(|d| d.get_temp::<bool>(hover_id).unwrap_or(false));
-        // Approved deviation: Recommend is revealed on hover or selection.
-        let show_recommend = was_hovered || is_selected;
         let border = if is_selected {
             egui::Stroke::new(1.5, t().accent)
         } else {
-            egui::Stroke::new(1.0, t().border)
+            egui::Stroke::new(1.0, t().border_soft)
         };
 
         let response = ui
@@ -5470,39 +5830,35 @@ impl VapourflyApp {
                     egui::Frame::NONE
                         .fill(t().surface_raised)
                         .stroke(border)
-                        .inner_margin(egui::Margin::same(m(SP_3)))
+                        .inner_margin(egui::Margin::same(6))
                         .corner_radius(CORNER_MD)
                         .show(ui, |ui| {
-                            ui.set_width(GAME_CARD_W - f32::from(m(SP_3)) * 2.0);
-                            ui.set_height(GAME_CARD_H - f32::from(m(SP_3)) * 2.0);
+                            ui.set_width(GAME_CARD_W - 12.0);
+                            ui.set_height(GAME_CARD_H - 12.0);
+                            ui.spacing_mut().item_spacing.y = 4.0;
 
                             ui.horizontal(|ui| {
                                 let (label, fill, text) = game_primary_badge(game);
                                 status_badge(ui, label, fill, text);
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        ui.menu_button("•••", |ui| {
-                                            if ui.button("Recommend").clicked() {
-                                                self.recommend_seed = game.app_id.to_string();
-                                                self.current_view = View::Recommendations;
-                                            }
-                                            if ui.button("Copy AppID").clicked() {
-                                                ui.ctx().copy_text(game.app_id.to_string());
-                                            }
-                                            if ui.button("Open Steam Store").clicked() {
-                                                let url = format!(
-                                                    "https://store.steampowered.com/app/{}",
-                                                    game.app_id
-                                                );
-                                                open_url_in_browser(&url);
-                                            }
-                                        });
-                                    },
-                                );
+                                ui.add_space((ui.available_width() - 34.0).max(0.0));
+                                ui.menu_button("•••", |ui| {
+                                    if ui.button("Recommend").clicked() {
+                                        self.recommend_seed = game.app_id.to_string();
+                                        self.current_view = View::Recommendations;
+                                    }
+                                    if ui.button("Copy AppID").clicked() {
+                                        ui.ctx().copy_text(game.app_id.to_string());
+                                    }
+                                    if ui.button("Open Steam Store").clicked() {
+                                        let url = format!(
+                                            "https://store.steampowered.com/app/{}",
+                                            game.app_id
+                                        );
+                                        open_url_in_browser(&url);
+                                    }
+                                });
                             });
 
-                            ui.add_space(SP_2);
                             ui.vertical_centered(|ui| {
                                 game_image(
                                     ui,
@@ -5512,71 +5868,103 @@ impl VapourflyApp {
                                 );
                             });
 
-                            ui.add_space(SP_2);
                             ui.add_sized(
-                                [GAME_CARD_W - f32::from(m(SP_3)) * 2.0, 24.0],
+                                [GAME_CARD_W - 12.0, 22.0],
                                 egui::Label::new(
                                     RichText::new(&game.name)
-                                        .size(TS_MD)
+                                        .size(TS_BODY)
                                         .strong()
                                         .color(t().text_primary),
                                 )
-                                .wrap(),
+                                .truncate(),
                             );
 
-                            // Secondary badges: Proton tier / Deck when hydrated.
+                            // Compact genre chips mirror the reference card density.
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing = egui::vec2(SP_1, SP_1);
-                                if let Some(proton) = &game.protondb {
-                                    status_badge(
-                                        ui,
-                                        proton_tier_label(proton.tier),
-                                        t().accent_soft,
-                                        t().accent_text,
-                                    );
+                                if let Some(igdb) = &game.igdb {
+                                    for genre in igdb.genres.iter().take(2) {
+                                        status_badge(ui, genre, t().accent_soft, t().accent_text);
+                                    }
                                 }
-                                if game_shows_deck_badge(game) {
-                                    status_badge(ui, "Deck", t().success_soft, t().success);
-                                }
-                                if game.protondb.is_none() && !game_shows_deck_badge(game) {
-                                    ui.label(
-                                        RichText::new(game_card_detail(game))
-                                            .size(TS_XS)
-                                            .color(t().text_muted),
-                                    );
+                                if game.igdb.as_ref().is_none_or(|data| data.genres.is_empty()) {
+                                    if let Some(proton) = &game.protondb {
+                                        status_badge(
+                                            ui,
+                                            proton_tier_label(proton.tier),
+                                            t().accent_soft,
+                                            t().accent_text,
+                                        );
+                                    } else {
+                                        status_badge(
+                                            ui,
+                                            game_card_detail(game).as_str(),
+                                            t().surface_sunken,
+                                            t().text_secondary,
+                                        );
+                                    }
                                 }
                             });
 
                             ui.horizontal(|ui| {
                                 ui.label(
-                                    RichText::new(format_playtime(
-                                        game.playtime_minutes.unwrap_or(0),
+                                    RichText::new(format!(
+                                        "◷  {}",
+                                        format_playtime(game.playtime_minutes.unwrap_or(0))
                                     ))
-                                    .size(TS_SM)
+                                    .size(TS_XS)
                                     .color(t().text_muted),
                                 );
-                                if show_recommend {
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if ui
-                                                .add(
-                                                    egui::Button::new(
-                                                        RichText::new("▶  Recommend")
-                                                            .size(TS_SM)
-                                                            .color(t().text_inverse),
-                                                    )
-                                                    .fill(t().accent)
-                                                    .stroke(egui::Stroke::NONE)
-                                                    .corner_radius(CORNER_SM),
-                                                )
-                                                .clicked()
-                                            {
-                                                self.recommend_seed = game.app_id.to_string();
-                                                self.current_view = View::Recommendations;
-                                            }
-                                        },
+                                if game_shows_deck_badge(game) {
+                                    status_badge(ui, "●  Verified", t().success_soft, t().success);
+                                } else if game.protondb.is_some() {
+                                    ui.label(
+                                        RichText::new("●  Playable").size(TS_XS).color(t().accent),
                                     );
+                                }
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = SP_1;
+                                if ui
+                                    .add_sized(
+                                        [61.0, 27.0],
+                                        egui::Button::new("♡")
+                                            .fill(t().surface)
+                                            .stroke(egui::Stroke::new(1.0, t().border_soft)),
+                                    )
+                                    .on_hover_text("Recommend games like this")
+                                    .clicked()
+                                {
+                                    self.recommend_seed = game.app_id.to_string();
+                                    self.current_view = View::Recommendations;
+                                }
+                                if ui
+                                    .add_sized(
+                                        [61.0, 27.0],
+                                        egui::Button::new("＋")
+                                            .fill(t().surface)
+                                            .stroke(egui::Stroke::new(1.0, t().border_soft)),
+                                    )
+                                    .on_hover_text("Copy AppID")
+                                    .clicked()
+                                {
+                                    ui.ctx().copy_text(game.app_id.to_string());
+                                }
+                                if ui
+                                    .add_sized(
+                                        [61.0, 27.0],
+                                        egui::Button::new("↗")
+                                            .fill(t().surface)
+                                            .stroke(egui::Stroke::new(1.0, t().border_soft)),
+                                    )
+                                    .on_hover_text("Open Steam Store")
+                                    .clicked()
+                                {
+                                    open_url_in_browser(&format!(
+                                        "https://store.steampowered.com/app/{}",
+                                        game.app_id
+                                    ));
                                 }
                             });
                         });
@@ -5587,8 +5975,6 @@ impl VapourflyApp {
         if response.clicked() {
             self.library_selected_app_id = Some(game.app_id);
         }
-        ui.ctx()
-            .data_mut(|d| d.insert_temp(hover_id, response.hovered()));
     }
 
     // -- Junk panel (opened from Library toolbar) ---------------------------
@@ -10397,6 +10783,33 @@ mod tests {
         assert!(!app.filter_not_hidden);
         assert!(!app.filter_not_junk);
         assert!(app.library_selected_app_id.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn library_scope_segment_filters_expected_subsets() {
+        let mut app = VapourflyApp::new(None, true);
+        app.populate_demo_data();
+        app.inject_prepared_snapshot();
+
+        app.apply_library_scope(LibraryScope::Installed);
+        let installed = app.filtered_games();
+        assert!(!installed.is_empty());
+        assert!(installed.iter().all(|game| game.installed));
+
+        app.apply_library_scope(LibraryScope::Unplayed);
+        let unplayed = app.filtered_games();
+        assert!(!unplayed.is_empty());
+        assert!(
+            unplayed
+                .iter()
+                .all(|game| game.playtime_minutes.unwrap_or(0) == 0)
+        );
+
+        app.apply_library_scope(LibraryScope::Hidden);
+        let hidden = app.filtered_games();
+        assert_eq!(hidden.len(), 2);
+        assert!(hidden.iter().all(|game| game.is_hidden));
     }
 
     #[test]

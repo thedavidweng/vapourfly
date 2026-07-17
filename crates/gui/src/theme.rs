@@ -86,16 +86,16 @@ pub struct Tokens {
 
 impl Tokens {
     pub const LIGHT: Self = Self {
-        canvas: Color32::from_rgb(250, 249, 251),
+        canvas: Color32::from_rgb(250, 250, 251),
         surface: Color32::from_rgb(255, 255, 255),
         surface_raised: Color32::from_rgb(255, 255, 255),
-        surface_muted: Color32::from_rgb(247, 244, 248),
-        surface_sunken: Color32::from_rgb(242, 239, 244),
-        border: Color32::from_rgb(224, 219, 227),
-        border_soft: Color32::from_rgb(234, 230, 237),
-        text_primary: Color32::from_rgb(28, 25, 34),
-        text_secondary: Color32::from_rgb(103, 97, 110),
-        text_muted: Color32::from_rgb(142, 136, 149),
+        surface_muted: Color32::from_rgb(247, 247, 249),
+        surface_sunken: Color32::from_rgb(243, 243, 246),
+        border: Color32::from_rgb(224, 223, 228),
+        border_soft: Color32::from_rgb(235, 234, 238),
+        text_primary: Color32::from_rgb(24, 22, 29),
+        text_secondary: Color32::from_rgb(92, 88, 101),
+        text_muted: Color32::from_rgb(137, 132, 145),
         text_inverse: Color32::from_rgb(255, 255, 255),
         accent: Color32::from_rgb(139, 48, 153),
         accent_soft: Color32::from_rgb(248, 237, 250),
@@ -223,11 +223,25 @@ pub const CORNER_PILL: f32 = 20.0;
 pub const RECOMMEND_CARD_IMG_W: f32 = 220.0;
 pub const RECOMMEND_CARD_IMG_H: f32 = 124.0;
 
-pub const POSTER_W: f32 = 206.0;
-pub const POSTER_H: f32 = 98.0;
-pub const GAME_CARD_W: f32 = 232.0;
-/// Landscape capsule + title + compact metadata/action row.
-pub const GAME_CARD_H: f32 = 286.0;
+pub const POSTER_W: f32 = 194.0;
+pub const POSTER_H: f32 = 142.0;
+pub const GAME_CARD_W: f32 = 206.0;
+/// Artwork + title + compact metadata/action row.
+pub const GAME_CARD_H: f32 = 292.0;
+pub const LIBRARY_RAIL_WIDTH: f32 = 214.0;
+
+pub fn library_main_width(available: f32, rail_below: bool) -> f32 {
+    if rail_below {
+        available
+    } else {
+        (available - LIBRARY_RAIL_WIDTH - SP_4).max(GAME_CARD_W)
+    }
+}
+
+#[cfg(test)]
+pub fn library_grid_columns(main_width: f32) -> usize {
+    ((main_width + SP_3) / (GAME_CARD_W + SP_3)).floor() as usize
+}
 
 /// Cast f32 spacing to i8 for egui::Margin.
 pub const fn m(v: f32) -> i8 {
@@ -343,5 +357,19 @@ mod tests {
         // 1280+: two-column side-by-side.
         assert!(!rails_below(1280.0));
         assert!(!rails_below(1920.0));
+    }
+
+    #[test]
+    fn library_columns_match_reference_widths() {
+        // 1280px window: 132px sidebar + 48px central margins = 1100px.
+        let at_1280 = library_main_width(1100.0, false);
+        assert_eq!(library_grid_columns(at_1280), 4);
+
+        // 1440px window: 132px sidebar + 48px central margins = 1260px.
+        let at_1440 = library_main_width(1260.0, false);
+        assert_eq!(library_grid_columns(at_1440), 4);
+
+        // When the rail stacks below, the grid receives the complete width.
+        assert_eq!(library_main_width(820.0, true), 820.0);
     }
 }

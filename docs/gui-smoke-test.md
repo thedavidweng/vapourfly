@@ -26,11 +26,11 @@ document covers the interactive flows that require a running GUI.
 
 Sidebar lists **only**:
 
-1. Library (default landing view)
-2. Collections
+1. Discover
+2. Library (default landing view)
 3. Recommendations
 4. Playlists
-5. Discover
+5. Collections
 6. Data Sources
 7. Settings
 
@@ -55,19 +55,21 @@ Shell defaults to the light desktop token theme (warm canvas, white cards, orchi
 1. Launch GUI with fixtures: `cargo run -p vapourfly-gui -- --fixtures data/fixtures/steam_minimal`
 2. Verify the **Library** view loads automatically on startup (default landing).
 3. Verify the sidebar lists only the seven destinations above (no Junk or Backups).
-4. Verify the sidebar game count appears after the scan completes.
-5. Verify the Library uses poster cards rather than a table by default.
-6. Verify real Steam poster art loads for real AppIDs such as Counter-Strike 2 (`730`) and Factorio (`427520`).
-7. Confirm each card shows AppID, title, installed/library status, playtime, and cached metadata when available.
-8. Confirm CS2 shows Installed and playtime `6h 58m`.
-9. Confirm Factorio shows Installed and playtime `17h 18m`.
-10. Confirm app 999 remains in the grid with a library/non-installed status and playtime `5m`; if Steam has no poster for it, the card should keep a stable poster-sized image area without layout shift.
-11. Type a title or AppID in Search and verify the card grid filters immediately.
-12. Confirm the filter bar offers **only** three toggles: **Installed only**, **Not hidden**, and **Not junk** (no Unplayed / include-only Hidden or Junk toggles).
-13. Toggle each filter and verify the Matching / Installed summary pills and grid update.
-14. Hover a game card (or click to select it) and verify a **Recommend** control appears; without hover/selection it should not clutter the card. Click the overflow menu (•••) and verify it offers **Recommend**, **Copy AppID**, and **Open Steam Store** (opens system browser).
-15. Click **Recommend** and verify the **Recommendations** view opens with that AppID filled as the seed.
-16. If cached external metadata exists, verify cards show Proton tier and Deck badges when available, plus playtime; otherwise cards should show a plain playable/library state without errors.
+4. Verify the top-chrome game count appears after the scan completes.
+5. Verify the Library header stays on one line and the top chrome metrics remain right-aligned at 1024px, 1280px, and 1440px widths.
+6. Verify Search and the All / Installed / Unplayed / Hidden segmented control share the first toolbar row.
+7. Verify the labelled Deck, Controller, playtime, genre, tag, and sort controls form the second row; advanced ProtonDB, HLTB, exclusion, and descending controls open from the gear menu.
+8. Verify Cozy, Story-rich, Great on Deck, and Short sessions appear as editorial chips below the functional filters.
+9. Verify the default 1280–1440px layout keeps four game cards in the main column and the complete Library insights rail on-screen. At 1024–1279px the rail moves below the grid without horizontal overflow.
+10. Verify real Steam art loads for real AppIDs such as Counter-Strike 2 (`730`) and Factorio (`427520`). In demo/offline mode, verify each game receives a stable illustrated local cover with no network request.
+11. Confirm each card shows title, status, compact genre/compatibility metadata, playtime, and three persistent actions.
+12. Confirm CS2 shows Installed and playtime `6h 58m`.
+13. Confirm Factorio shows Installed and playtime `17h 18m`.
+14. Confirm app 999 remains in the grid with a library/non-installed status and playtime `5m`; missing artwork keeps a stable image area without layout shift.
+15. Type a title or AppID in Search and verify the card grid filters immediately.
+16. Select each primary scope and verify Installed, Unplayed, and Hidden return only their named subsets.
+17. Click the card actions and overflow menu; verify Recommend opens Recommendations with the AppID seed, Copy AppID updates the clipboard, and Open Steam Store launches the system browser.
+18. Verify the insights rail shows total games, installed count, total playtime, junk excluded, backlog progress, recent activity, hidden count, and average HLTB.
 
 ### 2. Junk Preview (from Library)
 
