@@ -531,7 +531,7 @@ pub enum JunkSignalKind {
     Rating,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RatingSource {
     Rawg,
     Igdb,

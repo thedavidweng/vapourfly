@@ -9,12 +9,39 @@
 //!
 //! ADR-0001: Vapourfly only modifies `cloud-storage-namespace-1.json`.
 //! Every write crosses this seam.
+//!
+//! **Confirmation gate:** every Steam write is confirmation-gated. This
+//! module enforces the mechanical half of that invariant in its interface:
+//! [`commit`] only accepts a [`PreviewedPlan`], and the only way to obtain
+//! one is [`preview`]. A commit that skipped preview does not compile.
+//! Showing the previewed diff to the user and obtaining consent remains the
+//! frontend's half.
 
 use std::path::PathBuf;
 
 use crate::error::Result;
 use crate::models::{CloudStorageFile, WriteOp, WritePlan};
 use crate::steam;
+
+/// Proof that a [`WritePlan`] was produced by [`preview`].
+///
+/// The only value [`commit`] / [`commit_with_retention`] accept. Frontends
+/// hold it while rendering the diff for confirmation, then hand back the
+/// same value to commit — so the plan the user confirmed is exactly the
+/// plan that is written. Derefs to [`WritePlan`] for diff rendering; there
+/// is deliberately no public constructor.
+#[derive(Clone, Debug)]
+pub struct PreviewedPlan {
+    plan: WritePlan,
+}
+
+impl std::ops::Deref for PreviewedPlan {
+    type Target = WritePlan;
+
+    fn deref(&self) -> &WritePlan {
+        &self.plan
+    }
+}
 
 /// Default backup retention when config is unavailable.
 ///
@@ -34,28 +61,28 @@ pub fn preview(
     cloud: &CloudStorageFile,
     ops: Vec<WriteOp>,
     cloud_path: PathBuf,
-) -> Result<WritePlan> {
-    steam::generate_write_plan(cloud, ops, cloud_path)
+) -> Result<PreviewedPlan> {
+    steam::generate_write_plan(cloud, ops, cloud_path).map(|plan| PreviewedPlan { plan })
 }
 
-/// Commit a write plan with default backup retention.
+/// Commit a previewed plan with default backup retention.
 ///
 /// Returns the absolute path of the backup file created on disk.
-pub fn commit(plan: &WritePlan, allow_steam_running: bool) -> Result<PathBuf> {
+pub fn commit(plan: &PreviewedPlan, allow_steam_running: bool) -> Result<PathBuf> {
     commit_with_retention(plan, allow_steam_running, DEFAULT_BACKUP_RETENTION)
 }
 
-/// Commit a write plan with an explicit retention count.
+/// Commit a previewed plan with an explicit retention count.
 ///
 /// Returns the absolute path of the backup file created on disk. Retention
 /// is the single source of truth for pruning after a successful write.
 pub fn commit_with_retention(
-    plan: &WritePlan,
+    plan: &PreviewedPlan,
     allow_steam_running: bool,
     retention_count: u32,
 ) -> Result<PathBuf> {
-    steam::check_write_safety(&plan.target_path, allow_steam_running)?;
-    steam::execute_write_plan(plan, retention_count)
+    steam::check_write_safety(&plan.plan.target_path, allow_steam_running)?;
+    steam::execute_write_plan(&plan.plan, retention_count)
 }
 
 #[cfg(test)]

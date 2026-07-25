@@ -128,16 +128,12 @@ fn score_game(
         // fits inside the available window (PRD: "HLTB 主线 ≤ 可用时长").
         // HLTB main story is preferred; IGDB time-to-beat (normally) is the
         // fallback. Games with no known completion time get no time_match.
-        let main_secs = game
-            .hltb
-            .as_ref()
-            .and_then(|h| h.main_story_seconds)
-            .or_else(|| {
-                game.igdb
-                    .as_ref()
-                    .and_then(|i| i.time_to_beat.as_ref())
-                    .and_then(|t| t.normally_seconds)
-            });
+        let main_secs = crate::signal::main_story_seconds(game).or_else(|| {
+            game.igdb
+                .as_ref()
+                .and_then(|i| i.time_to_beat.as_ref())
+                .and_then(|t| t.normally_seconds)
+        });
         if let Some(secs) = main_secs
             && secs / 60 <= request.available_minutes
         {

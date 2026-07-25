@@ -109,7 +109,7 @@ fn finish_it_playlist(games: &[Game], options: &DynamicTemplateOptions) -> Playl
             if playtime == 0 {
                 return None;
             }
-            let main_secs = game.hltb.as_ref().and_then(|h| h.main_story_seconds)?;
+            let main_secs = crate::signal::main_story_seconds(game)?;
             let main_mins = main_secs / 60;
             if main_mins == 0 {
                 return None;

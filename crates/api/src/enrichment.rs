@@ -134,6 +134,31 @@ pub struct SourceStatus {
 // Enrichment service
 // ---------------------------------------------------------------------------
 
+/// Credentials for the sources that need them, resolved once at the seam.
+///
+/// A source with missing credentials is skipped silently (its stats stay
+/// zero) — the same graceful degradation as any other missing data.
+#[derive(Clone, Debug, Default)]
+pub struct SourceCredentials {
+    pub rawg_key: Option<String>,
+    pub igdb_client_id: Option<String>,
+    pub igdb_client_secret: Option<String>,
+}
+
+impl SourceCredentials {
+    /// Resolve credentials from the `VAPOURFLY_*` environment variables.
+    pub fn from_env() -> Self {
+        fn non_empty(var: &str) -> Option<String> {
+            std::env::var(var).ok().filter(|v| !v.is_empty())
+        }
+        Self {
+            rawg_key: non_empty("VAPOURFLY_RAWG_KEY"),
+            igdb_client_id: non_empty("VAPOURFLY_IGDB_CLIENT_ID"),
+            igdb_client_secret: non_empty("VAPOURFLY_IGDB_CLIENT_SECRET"),
+        }
+    }
+}
+
 /// Enrich a list of games with data from external APIs.
 ///
 /// For each game and each source in `options.sources`:
@@ -143,10 +168,34 @@ pub struct SourceStatus {
 ///
 /// Returns a summary of what was done. Errors for individual games are
 /// collected into the summary rather than failing the whole batch.
+///
+/// Credentials come from the environment and HTTP from the real backend;
+/// tests inject both via [`enrich_games_with`].
 pub fn enrich_games(
     games: &mut [Game],
     cache: &DiskCache,
     options: &EnrichmentOptions,
+) -> EnrichmentSummary {
+    enrich_games_with(
+        games,
+        cache,
+        options,
+        &SourceCredentials::from_env(),
+        &HttpClient::new(),
+    )
+}
+
+/// [`enrich_games`] with injected credentials and HTTP client.
+///
+/// This is the testable seam: one [`HttpClient`] (real or mock) serves every
+/// source, so the full cache/offline/fetch/stale-fallback wiring of all six
+/// sources is exercisable without the network.
+pub fn enrich_games_with(
+    games: &mut [Game],
+    cache: &DiskCache,
+    options: &EnrichmentOptions,
+    credentials: &SourceCredentials,
+    http: &HttpClient,
 ) -> EnrichmentSummary {
     let mut summary = EnrichmentSummary {
         games_processed: games.len(),
@@ -154,7 +203,15 @@ pub fn enrich_games(
     };
 
     for source_name in &options.sources {
-        let stats = enrich_source(games, cache, source_name, options, &mut summary.errors);
+        let stats = enrich_source(
+            games,
+            cache,
+            source_name,
+            options,
+            credentials,
+            http,
+            &mut summary.errors,
+        );
         summary.cache_hits += stats.entries_skipped;
         summary.network_fetches += stats.entries_refreshed;
         summary.source_stats.push(stats);
@@ -163,12 +220,135 @@ pub fn enrich_games(
     summary
 }
 
-/// Enrich games from a single source.
+// ---------------------------------------------------------------------------
+// Cache key derivation — owned here, per source
+// ---------------------------------------------------------------------------
+//
+// Writers (the enrichment state-machine) and readers (`hydrate_from_cache`,
+// `missing_store_details`) derive keys through these functions only, so the
+// key convention cannot drift between them.
+
+fn app_key_for(app_id: u32) -> String {
+    format!("app/{app_id}")
+}
+
+fn app_key(game: &Game) -> String {
+    app_key_for(game.app_id)
+}
+
+fn appid_key(game: &Game) -> String {
+    format!("appid/{}", game.app_id)
+}
+
+fn name_key(game: &Game) -> String {
+    format!("name/{}", game.name)
+}
+
+// ---------------------------------------------------------------------------
+// Source adapter + the cache state-machine (written once)
+// ---------------------------------------------------------------------------
+
+/// One Hydration source behind the enrichment seam: how to key the cache,
+/// how long entries live, which [`Game`] field it fills, and how to fetch.
+///
+/// `fetch` returning `Ok(None)` means "the source has no data for this game"
+/// (e.g. no IGDB mapping) — counted as skipped, never cached, never an error.
+struct SourceAdapter<'a, T> {
+    source: &'static str,
+    ttl: Duration,
+    key: fn(&Game) -> String,
+    field: fn(&mut Game) -> &mut Option<T>,
+    fetch: &'a dyn Fn(&Game) -> vapourfly_core::error::Result<Option<T>>,
+}
+
+/// Persist a freshly fetched record. Cache-write failures are logged, never
+/// fatal (the in-memory Game still gets the data).
+fn put_fresh_record<T: Clone + serde::Serialize>(
+    cache: &DiskCache,
+    source: &str,
+    key: &str,
+    ttl: Duration,
+    data: &T,
+) {
+    let record = CacheRecord {
+        source: source.to_string(),
+        key: key.to_string(),
+        fetched_at: chrono::Utc::now(),
+        ttl,
+        data: data.clone(),
+        stale: false,
+        etag: None,
+    };
+    if let Err(e) = cache.put(&record) {
+        tracing::warn!(error = %e, "failed to cache {}/{} record", record.source, record.key);
+    }
+}
+
+/// The per-source enrichment protocol, written once for all six sources:
+///
+/// 1. fresh cache hit (unless `force`) → apply, skip
+/// 2. `offline` → leave the field for cache-only hydration
+/// 3. fetch → cache + apply; `Ok(None)` → skip; error → record it and fall
+///    back to whatever cache entry exists (stale included)
+fn enrich_with<T>(
+    games: &mut [Game],
+    cache: &DiskCache,
+    adapter: SourceAdapter<'_, T>,
+    options: &EnrichmentOptions,
+    stats: &mut SourceRefreshStats,
+    errors: &mut Vec<EnrichmentError>,
+) where
+    T: Clone + serde::Serialize + serde::de::DeserializeOwned,
+{
+    for game in games.iter_mut() {
+        let key = (adapter.key)(game);
+        if !options.force
+            && let Ok(Some(record)) = cache.get::<T>(adapter.source, &key)
+            && !record.stale
+        {
+            *(adapter.field)(game) = Some(record.data);
+            stats.entries_skipped += 1;
+            continue;
+        }
+        if options.offline {
+            continue;
+        }
+        match (adapter.fetch)(game) {
+            Ok(Some(data)) => {
+                put_fresh_record(cache, adapter.source, &key, adapter.ttl, &data);
+                *(adapter.field)(game) = Some(data);
+                stats.entries_refreshed += 1;
+                stats.last_success = Some(chrono::Utc::now());
+            }
+            Ok(None) => {
+                stats.entries_skipped += 1;
+            }
+            Err(e) => {
+                errors.push(EnrichmentError {
+                    app_id: game.app_id,
+                    source: adapter.source.to_string(),
+                    message: e.to_string(),
+                });
+                stats.errors += 1;
+                // Stale-cache fallback: degrade gracefully (ADR-0002).
+                if let Ok(Some(record)) = cache.get::<T>(adapter.source, &key) {
+                    *(adapter.field)(game) = Some(record.data);
+                }
+            }
+        }
+    }
+}
+
+/// Enrich games from a single source by binding its adapter and running the
+/// shared state-machine. One client per source batch so rate limiting
+/// accumulates across games; all clients share `http`'s backend and limiter.
 fn enrich_source(
     games: &mut [Game],
     cache: &DiskCache,
     source: &str,
     options: &EnrichmentOptions,
+    credentials: &SourceCredentials,
+    http: &HttpClient,
     errors: &mut Vec<EnrichmentError>,
 ) -> SourceRefreshStats {
     let mut stats = SourceRefreshStats {
@@ -181,234 +361,123 @@ fn enrich_source(
 
     match source {
         SOURCE_PROTONDB => {
-            // One client per source batch so rate limiting accumulates across games.
-            let client = crate::protondb::ProtonDbClient::new();
-            for game in games.iter_mut() {
-                let key = format!("app/{}", game.app_id);
-                if !options.force {
-                    if let Ok(Some(record)) = cache.get::<ProtonDbData>(source, &key) {
-                        if !record.stale {
-                            game.protondb = Some(record.data);
-                            stats.entries_skipped += 1;
-                            continue;
-                        }
-                    }
-                }
-                if options.offline {
-                    continue;
-                }
-                match client.fetch_summary(game.app_id) {
-                    Ok(data) => {
-                        let record = CacheRecord {
-                            source: source.to_string(),
-                            key: key.clone(),
-                            fetched_at: chrono::Utc::now(),
-                            ttl: PROTONDB_TTL,
-                            data: data.clone(),
-                            stale: false,
-                            etag: None,
-                        };
-                        if let Err(e) = cache.put(&record) {
-                            tracing::warn!(error = %e, "failed to cache {}/{} record", record.source, record.key);
-                        }
-                        game.protondb = Some(data);
-                        stats.entries_refreshed += 1;
-                        stats.last_success = Some(chrono::Utc::now());
-                    }
-                    Err(e) => {
-                        errors.push(EnrichmentError {
-                            app_id: game.app_id,
-                            source: source.to_string(),
-                            message: e.to_string(),
-                        });
-                        stats.errors += 1;
-                        // Try stale cache as fallback
-                        if let Ok(Some(record)) = cache.get::<ProtonDbData>(source, &key) {
-                            game.protondb = Some(record.data);
-                        }
-                    }
-                }
-            }
+            let client = crate::protondb::ProtonDbClient::with_http(http.clone());
+            enrich_with(
+                games,
+                cache,
+                SourceAdapter {
+                    source: SOURCE_PROTONDB,
+                    ttl: PROTONDB_TTL,
+                    key: app_key,
+                    field: |g| &mut g.protondb,
+                    fetch: &|g| client.fetch_summary(g.app_id).map(Some),
+                },
+                options,
+                &mut stats,
+                errors,
+            );
         }
         SOURCE_PCGW => {
-            let client = crate::pcgw::PcgwClient::new();
-            for game in games.iter_mut() {
-                let key = format!("app/{}", game.app_id);
-                if !options.force {
-                    if let Ok(Some(record)) = cache.get::<PcgwData>(source, &key) {
-                        if !record.stale {
-                            game.pcgw = Some(record.data);
-                            stats.entries_skipped += 1;
-                            continue;
-                        }
-                    }
-                }
-                if options.offline {
-                    continue;
-                }
-                match client.fetch_by_appid(game.app_id) {
-                    Ok(data) => {
-                        let record = CacheRecord {
-                            source: source.to_string(),
-                            key: key.clone(),
-                            fetched_at: chrono::Utc::now(),
-                            ttl: PCGW_TTL,
-                            data: data.clone(),
-                            stale: false,
-                            etag: None,
-                        };
-                        if let Err(e) = cache.put(&record) {
-                            tracing::warn!(error = %e, "failed to cache {}/{} record", record.source, record.key);
-                        }
-                        game.pcgw = Some(data);
-                        stats.entries_refreshed += 1;
-                        stats.last_success = Some(chrono::Utc::now());
-                    }
-                    Err(e) => {
-                        errors.push(EnrichmentError {
-                            app_id: game.app_id,
-                            source: source.to_string(),
-                            message: e.to_string(),
-                        });
-                        stats.errors += 1;
-                        if let Ok(Some(record)) = cache.get::<PcgwData>(source, &key) {
-                            game.pcgw = Some(record.data);
-                        }
-                    }
-                }
-            }
+            let client = crate::pcgw::PcgwClient::with_http(http.clone());
+            enrich_with(
+                games,
+                cache,
+                SourceAdapter {
+                    source: SOURCE_PCGW,
+                    ttl: PCGW_TTL,
+                    key: app_key,
+                    field: |g| &mut g.pcgw,
+                    fetch: &|g| client.fetch_by_appid(g.app_id).map(Some),
+                },
+                options,
+                &mut stats,
+                errors,
+            );
         }
         SOURCE_HLTB => {
-            let client = crate::hltb::HltbClient::new();
-            for game in games.iter_mut() {
-                let key = format!("name/{}", game.name);
-                if !options.force {
-                    if let Ok(Some(record)) = cache.get::<HltbData>(source, &key) {
-                        if !record.stale {
-                            game.hltb = Some(record.data);
-                            stats.entries_skipped += 1;
-                            continue;
-                        }
-                    }
-                }
-                if options.offline {
-                    continue;
-                }
-                match client.fetch(&game.name) {
-                    Ok(Some(data)) => {
-                        let record = CacheRecord {
-                            source: source.to_string(),
-                            key: key.clone(),
-                            fetched_at: chrono::Utc::now(),
-                            ttl: HLTB_TTL,
-                            data: data.clone(),
-                            stale: false,
-                            etag: None,
-                        };
-                        if let Err(e) = cache.put(&record) {
-                            tracing::warn!(error = %e, "failed to cache {}/{} record", record.source, record.key);
-                        }
-                        game.hltb = Some(data);
-                        stats.entries_refreshed += 1;
-                        stats.last_success = Some(chrono::Utc::now());
-                    }
-                    Ok(None) => {
-                        stats.entries_skipped += 1;
-                    }
-                    Err(e) => {
-                        errors.push(EnrichmentError {
-                            app_id: game.app_id,
-                            source: source.to_string(),
-                            message: e.to_string(),
-                        });
-                        stats.errors += 1;
-                        if let Ok(Some(record)) = cache.get::<HltbData>(source, &key) {
-                            game.hltb = Some(record.data);
-                        }
-                    }
-                }
-            }
+            let client = crate::hltb::HltbClient::with_http(http.clone());
+            enrich_with(
+                games,
+                cache,
+                SourceAdapter {
+                    source: SOURCE_HLTB,
+                    ttl: HLTB_TTL,
+                    key: name_key,
+                    field: |g| &mut g.hltb,
+                    fetch: &|g| client.fetch(&g.name),
+                },
+                options,
+                &mut stats,
+                errors,
+            );
         }
         SOURCE_RAWG => {
             // RAWG requires an API key; skip silently if not configured.
-            let rawg_key = match std::env::var("VAPOURFLY_RAWG_KEY") {
-                Ok(k) if !k.is_empty() => k,
-                _ => return stats,
+            let Some(rawg_key) = credentials.rawg_key.clone() else {
+                return stats;
             };
-            // One HttpClient + RawgClient for the whole batch (rate-limit locality).
-            let client = crate::rawg::RawgClient::new(rawg_key, HttpClient::new());
-            for game in games.iter_mut() {
-                let key = format!("name/{}", game.name);
-                if !options.force {
-                    if let Ok(Some(record)) = cache.get::<RawgData>(source, &key) {
-                        if !record.stale {
-                            game.rawg = Some(record.data);
-                            stats.entries_skipped += 1;
-                            continue;
-                        }
-                    }
-                }
-                if options.offline {
-                    continue;
-                }
-                match client.search_by_name(&game.name) {
-                    Ok(Some(data)) => {
-                        let record = CacheRecord {
-                            source: source.to_string(),
-                            key: key.clone(),
-                            fetched_at: chrono::Utc::now(),
-                            ttl: RAWG_TTL,
-                            data: data.clone(),
-                            stale: false,
-                            etag: None,
-                        };
-                        if let Err(e) = cache.put(&record) {
-                            tracing::warn!(error = %e, "failed to cache {}/{} record", record.source, record.key);
-                        }
-                        game.rawg = Some(data);
-                        stats.entries_refreshed += 1;
-                        stats.last_success = Some(chrono::Utc::now());
-                    }
-                    Ok(None) => {
-                        stats.entries_skipped += 1;
-                    }
-                    Err(e) => {
-                        errors.push(EnrichmentError {
-                            app_id: game.app_id,
-                            source: source.to_string(),
-                            message: e.to_string(),
-                        });
-                        stats.errors += 1;
-                        if let Ok(Some(record)) = cache.get::<RawgData>(source, &key) {
-                            game.rawg = Some(record.data);
-                        }
-                    }
-                }
-            }
+            let client = crate::rawg::RawgClient::new(rawg_key, http.clone());
+            enrich_with(
+                games,
+                cache,
+                SourceAdapter {
+                    source: SOURCE_RAWG,
+                    ttl: RAWG_TTL,
+                    key: name_key,
+                    field: |g| &mut g.rawg,
+                    fetch: &|g| client.search_by_name(&g.name),
+                },
+                options,
+                &mut stats,
+                errors,
+            );
         }
         SOURCE_IGDB => {
             // IGDB requires credentials; skip silently if not configured.
-            let igdb_id = match std::env::var("VAPOURFLY_IGDB_CLIENT_ID") {
-                Ok(id) if !id.is_empty() => id,
-                _ => return stats,
+            let (Some(id), Some(secret)) = (
+                credentials.igdb_client_id.clone(),
+                credentials.igdb_client_secret.clone(),
+            ) else {
+                return stats;
             };
-            let igdb_secret = match std::env::var("VAPOURFLY_IGDB_CLIENT_SECRET") {
-                Ok(s) if !s.is_empty() => s,
-                _ => return stats,
-            };
-            enrich_igdb(
+            // resolve_by_steam_appid maps Steam AppID -> IGDB ID via
+            // external_games, then fetches game details and time-to-beat.
+            // Calling fetch_game_details directly would treat the Steam
+            // AppID as an IGDB game ID, returning wrong/empty data.
+            let client = crate::igdb::IgdbClient::new(id, secret, http.clone());
+            enrich_with(
                 games,
                 cache,
-                &igdb_id,
-                &igdb_secret,
-                HttpClient::new(),
+                SourceAdapter {
+                    source: SOURCE_IGDB,
+                    ttl: IGDB_TTL,
+                    key: appid_key,
+                    field: |g| &mut g.igdb,
+                    fetch: &|g| client.resolve_by_steam_appid(g.app_id),
+                },
                 options,
                 &mut stats,
                 errors,
             );
         }
         SOURCE_STEAM_STORE => {
-            enrich_steam_store(games, cache, HttpClient::new(), options, &mut stats, errors);
+            let client = crate::steam_store::SteamStoreClient::with_http(http.clone());
+            // Default locale; could be made configurable via EnrichmentOptions.
+            let (cc, lang) = ("us", "english");
+            enrich_with(
+                games,
+                cache,
+                SourceAdapter {
+                    source: SOURCE_STEAM_STORE,
+                    ttl: STEAM_STORE_TTL,
+                    key: app_key,
+                    field: |g| &mut g.steam_store,
+                    fetch: &|g| client.fetch_appdetails(g.app_id, cc, lang).map(Some),
+                },
+                options,
+                &mut stats,
+                errors,
+            );
         }
         _ => {}
     }
@@ -417,158 +486,31 @@ fn enrich_source(
 }
 
 // ---------------------------------------------------------------------------
-// IGDB enrichment helper (testable with injected HttpClient)
-// ---------------------------------------------------------------------------
-
-/// Enrich games from IGDB using the given credentials and HTTP client.
-///
-/// Extracted from `enrich_source` so tests can inject a mock HTTP backend.
-/// Uses `resolve_by_steam_appid` to map Steam AppID → IGDB ID via
-/// `external_games`, then fetches full details and time-to-beat.
-#[allow(clippy::too_many_arguments)]
-fn enrich_igdb(
-    games: &mut [Game],
-    cache: &DiskCache,
-    igdb_id: &str,
-    igdb_secret: &str,
-    http: HttpClient,
-    options: &EnrichmentOptions,
-    stats: &mut SourceRefreshStats,
-    errors: &mut Vec<EnrichmentError>,
-) {
-    let source = SOURCE_IGDB;
-    let client = crate::igdb::IgdbClient::new(igdb_id.to_string(), igdb_secret.to_string(), http);
-    for game in games.iter_mut() {
-        let key = format!("appid/{}", game.app_id);
-        if !options.force {
-            if let Ok(Some(record)) = cache.get::<IgdbData>(source, &key) {
-                if !record.stale {
-                    game.igdb = Some(record.data);
-                    stats.entries_skipped += 1;
-                    continue;
-                }
-            }
-        }
-        if options.offline {
-            continue;
-        }
-        // Use resolve_by_steam_appid to map Steam AppID -> IGDB ID
-        // via external_games, then fetch game details and time-to-beat.
-        // Calling fetch_game_details directly would treat the Steam
-        // AppID as an IGDB game ID, returning wrong/empty data.
-        match client.resolve_by_steam_appid(game.app_id) {
-            Ok(Some(data)) => {
-                let record = CacheRecord {
-                    source: source.to_string(),
-                    key: key.clone(),
-                    fetched_at: chrono::Utc::now(),
-                    ttl: IGDB_TTL,
-                    data: data.clone(),
-                    stale: false,
-                    etag: None,
-                };
-                if let Err(e) = cache.put(&record) {
-                    tracing::warn!(error = %e, "failed to cache {}/{} record", record.source, record.key);
-                }
-                game.igdb = Some(data);
-                stats.entries_refreshed += 1;
-                stats.last_success = Some(chrono::Utc::now());
-            }
-            Ok(None) => {
-                // No IGDB mapping found for this Steam AppID.
-                stats.entries_skipped += 1;
-            }
-            Err(e) => {
-                errors.push(EnrichmentError {
-                    app_id: game.app_id,
-                    source: source.to_string(),
-                    message: e.to_string(),
-                });
-                stats.errors += 1;
-                if let Ok(Some(record)) = cache.get::<IgdbData>(source, &key) {
-                    game.igdb = Some(record.data);
-                }
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Steam Store enrichment helper (testable with injected HttpClient)
-// ---------------------------------------------------------------------------
-
-/// Enrich games with Steam Store data (price, genres, platforms, etc.).
-///
-/// Extracted from `enrich_source` so tests can inject a mock HTTP backend.
-/// Uses the public `appdetails` endpoint — no credentials required.
-fn enrich_steam_store(
-    games: &mut [Game],
-    cache: &DiskCache,
-    http: HttpClient,
-    options: &EnrichmentOptions,
-    stats: &mut SourceRefreshStats,
-    errors: &mut Vec<EnrichmentError>,
-) {
-    let source = SOURCE_STEAM_STORE;
-    let client = crate::steam_store::SteamStoreClient::with_http(http);
-    // Default locale; could be made configurable via EnrichmentOptions.
-    let cc = "us";
-    let lang = "english";
-    for game in games.iter_mut() {
-        let key = format!("app/{}", game.app_id);
-        if !options.force {
-            if let Ok(Some(record)) = cache.get::<SteamStoreDetails>(source, &key) {
-                if !record.stale {
-                    game.steam_store = Some(record.data);
-                    stats.entries_skipped += 1;
-                    continue;
-                }
-            }
-        }
-        if options.offline {
-            continue;
-        }
-        match client.fetch_appdetails(game.app_id, cc, lang) {
-            Ok(data) => {
-                let record = CacheRecord {
-                    source: source.to_string(),
-                    key: key.clone(),
-                    fetched_at: chrono::Utc::now(),
-                    ttl: STEAM_STORE_TTL,
-                    data: data.clone(),
-                    stale: false,
-                    etag: None,
-                };
-                if let Err(e) = cache.put(&record) {
-                    tracing::warn!(error = %e, "failed to cache {}/{} record", record.source, record.key);
-                }
-                game.steam_store = Some(data);
-                stats.entries_refreshed += 1;
-                stats.last_success = Some(chrono::Utc::now());
-            }
-            Err(e) => {
-                errors.push(EnrichmentError {
-                    app_id: game.app_id,
-                    source: source.to_string(),
-                    message: e.to_string(),
-                });
-                stats.errors += 1;
-                if let Ok(Some(record)) = cache.get::<SteamStoreDetails>(source, &key) {
-                    game.steam_store = Some(record.data);
-                }
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Cache-only hydration (for Junk / Recommend / Playlist workflows)
 // ---------------------------------------------------------------------------
+
+/// Apply one cached field onto a game record, tracking hydration stats.
+fn hydrate_field<T: serde::de::DeserializeOwned>(
+    cache: &DiskCache,
+    source: &str,
+    key: &str,
+    slot: &mut Option<T>,
+    summary: &mut HydrationSummary,
+) {
+    if let Ok(Some(record)) = cache.get::<T>(source, key) {
+        *slot = Some(record.data);
+        summary.fields_hydrated += 1;
+        if record.stale {
+            summary.stale_fields_used += 1;
+        }
+    }
+}
 
 /// Load cached external metadata onto game records without network calls.
 ///
 /// Fresh and stale cache entries are both applied. Missing cache entries are
-/// left unset so callers can still degrade gracefully.
+/// left unset so callers can still degrade gracefully. Keys come from the
+/// same per-source derivation the enrichment writer uses.
 pub fn hydrate_from_cache(games: &mut [Game], cache: &DiskCache) -> HydrationSummary {
     let mut summary = HydrationSummary {
         games_processed: games.len(),
@@ -576,52 +518,28 @@ pub fn hydrate_from_cache(games: &mut [Game], cache: &DiskCache) -> HydrationSum
     };
 
     for game in games.iter_mut() {
-        let app_key = format!("app/{}", game.app_id);
-        let appid_key = format!("appid/{}", game.app_id);
-        let name_key = format!("name/{}", game.name);
+        let app = app_key(game);
+        let appid = appid_key(game);
+        let name = name_key(game);
 
-        if let Ok(Some(record)) = cache.get::<ProtonDbData>(SOURCE_PROTONDB, &app_key) {
-            game.protondb = Some(record.data);
-            summary.fields_hydrated += 1;
-            if record.stale {
-                summary.stale_fields_used += 1;
-            }
-        }
-        if let Ok(Some(record)) = cache.get::<PcgwData>(SOURCE_PCGW, &app_key) {
-            game.pcgw = Some(record.data);
-            summary.fields_hydrated += 1;
-            if record.stale {
-                summary.stale_fields_used += 1;
-            }
-        }
-        if let Ok(Some(record)) = cache.get::<HltbData>(SOURCE_HLTB, &name_key) {
-            game.hltb = Some(record.data);
-            summary.fields_hydrated += 1;
-            if record.stale {
-                summary.stale_fields_used += 1;
-            }
-        }
-        if let Ok(Some(record)) = cache.get::<RawgData>(SOURCE_RAWG, &name_key) {
-            game.rawg = Some(record.data);
-            summary.fields_hydrated += 1;
-            if record.stale {
-                summary.stale_fields_used += 1;
-            }
-        }
-        if let Ok(Some(record)) = cache.get::<IgdbData>(SOURCE_IGDB, &appid_key) {
-            game.igdb = Some(record.data);
-            summary.fields_hydrated += 1;
-            if record.stale {
-                summary.stale_fields_used += 1;
-            }
-        }
-        if let Ok(Some(record)) = cache.get::<SteamStoreDetails>(SOURCE_STEAM_STORE, &app_key) {
-            game.steam_store = Some(record.data);
-            summary.fields_hydrated += 1;
-            if record.stale {
-                summary.stale_fields_used += 1;
-            }
-        }
+        hydrate_field::<ProtonDbData>(
+            cache,
+            SOURCE_PROTONDB,
+            &app,
+            &mut game.protondb,
+            &mut summary,
+        );
+        hydrate_field::<PcgwData>(cache, SOURCE_PCGW, &app, &mut game.pcgw, &mut summary);
+        hydrate_field::<HltbData>(cache, SOURCE_HLTB, &name, &mut game.hltb, &mut summary);
+        hydrate_field::<RawgData>(cache, SOURCE_RAWG, &name, &mut game.rawg, &mut summary);
+        hydrate_field::<IgdbData>(cache, SOURCE_IGDB, &appid, &mut game.igdb, &mut summary);
+        hydrate_field::<SteamStoreDetails>(
+            cache,
+            SOURCE_STEAM_STORE,
+            &app,
+            &mut game.steam_store,
+            &mut summary,
+        );
     }
 
     summary
@@ -647,7 +565,7 @@ pub fn missing_store_details(
 ) -> std::collections::HashMap<u32, SteamStoreDetails> {
     let mut map = std::collections::HashMap::new();
     for &app_id in app_ids {
-        let key = format!("app/{app_id}");
+        let key = app_key_for(app_id);
         if let Ok(Some(record)) = cache.get::<SteamStoreDetails>(SOURCE_STEAM_STORE, &key) {
             map.insert(app_id, record.data);
         }
@@ -676,6 +594,18 @@ pub fn resolve_missing_store_details(
     cc: &str,
     lang: &str,
 ) -> std::collections::HashMap<u32, SteamStoreDetails> {
+    resolve_missing_store_details_with_http(app_ids, cache, offline, cc, lang, &HttpClient::new())
+}
+
+/// [`resolve_missing_store_details`] with an injected HTTP client (testable).
+pub fn resolve_missing_store_details_with_http(
+    app_ids: &[u32],
+    cache: &DiskCache,
+    offline: bool,
+    cc: &str,
+    lang: &str,
+    http: &HttpClient,
+) -> std::collections::HashMap<u32, SteamStoreDetails> {
     // Start with cache-only lookups for all AppIDs.
     let mut map = missing_store_details(app_ids, cache);
 
@@ -684,26 +614,20 @@ pub fn resolve_missing_store_details(
     }
 
     // Fetch any AppIDs not yet in cache via SteamStoreClient.
-    let client = crate::steam_store::SteamStoreClient::new();
+    let client = crate::steam_store::SteamStoreClient::with_http(http.clone());
     for &app_id in app_ids {
         if map.contains_key(&app_id) {
             continue;
         }
-        let key = format!("app/{app_id}");
         match client.fetch_appdetails(app_id, cc, lang) {
             Ok(data) => {
-                let record = CacheRecord {
-                    source: SOURCE_STEAM_STORE.to_string(),
-                    key: key.clone(),
-                    fetched_at: chrono::Utc::now(),
-                    ttl: STEAM_STORE_TTL,
-                    data: data.clone(),
-                    stale: false,
-                    etag: None,
-                };
-                if let Err(e) = cache.put(&record) {
-                    tracing::warn!(error = %e, "failed to cache {}/{} record", record.source, record.key);
-                }
+                put_fresh_record(
+                    cache,
+                    SOURCE_STEAM_STORE,
+                    &app_key_for(app_id),
+                    STEAM_STORE_TTL,
+                    &data,
+                );
                 map.insert(app_id, data);
             }
             Err(e) => {
@@ -878,30 +802,17 @@ mod tests {
         };
 
         let mut games = vec![make_test_game(292030, "The Witcher 3")];
-        let mut stats = SourceRefreshStats {
-            source: SOURCE_IGDB.to_string(),
-            entries_refreshed: 0,
-            entries_skipped: 0,
-            errors: 0,
-            last_success: None,
+        let credentials = SourceCredentials {
+            igdb_client_id: Some("test_id".into()),
+            igdb_client_secret: Some("test_secret".into()),
+            ..Default::default()
         };
-        let mut errors = Vec::new();
 
-        enrich_igdb(
-            &mut games,
-            &cache,
-            "test_id",
-            "test_secret",
-            http,
-            &options,
-            &mut stats,
-            &mut errors,
-        );
+        let summary = enrich_games_with(&mut games, &cache, &options, &credentials, &http);
 
         // Verify the enrichment succeeded via the full chain.
-        assert_eq!(stats.entries_refreshed, 1);
-        assert_eq!(stats.errors, 0);
-        assert!(errors.is_empty());
+        assert_eq!(summary.network_fetches, 1);
+        assert!(summary.errors.is_empty());
 
         // Verify game got IGDB data.
         let game = &games[0];
@@ -965,20 +876,16 @@ mod tests {
         };
 
         let mut games = vec![make_test_game(292030, "The Witcher 3")];
-        let mut stats = SourceRefreshStats {
-            source: SOURCE_STEAM_STORE.to_string(),
-            entries_refreshed: 0,
-            entries_skipped: 0,
-            errors: 0,
-            last_success: None,
-        };
-        let mut errors = Vec::new();
+        let summary = enrich_games_with(
+            &mut games,
+            &cache,
+            &options,
+            &SourceCredentials::default(),
+            &http,
+        );
 
-        enrich_steam_store(&mut games, &cache, http, &options, &mut stats, &mut errors);
-
-        assert_eq!(stats.entries_refreshed, 1);
-        assert_eq!(stats.errors, 0);
-        assert!(errors.is_empty());
+        assert_eq!(summary.network_fetches, 1);
+        assert!(summary.errors.is_empty());
 
         let store = games[0]
             .steam_store
@@ -996,6 +903,161 @@ mod tests {
             .unwrap()
             .expect("cache entry should exist");
         assert_eq!(cached.data.app_id, 292030);
+    }
+
+    #[test]
+    fn protondb_wiring_fetches_and_caches_under_owned_key() {
+        // The ProtonDB arm was previously wired to a real network backend and
+        // untestable; this pins the full state-machine path for it.
+        let mut mock = MockBackend::new();
+        mock.register(
+            "https://www.protondb.com/",
+            HttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: br#"{"tier":"gold","confidence":"high","score":0.92,"total":1500}"#.to_vec(),
+            },
+        );
+        let http = HttpClient::with_backend(Box::new(mock));
+        let tmp = TempDir::new().unwrap();
+        let cache = DiskCache::new(tmp.path());
+        let options = EnrichmentOptions {
+            sources: vec![SOURCE_PROTONDB.to_string()],
+            offline: false,
+            force: false,
+        };
+
+        let mut games = vec![make_test_game(292030, "The Witcher 3")];
+        let summary = enrich_games_with(
+            &mut games,
+            &cache,
+            &options,
+            &SourceCredentials::default(),
+            &http,
+        );
+
+        assert_eq!(summary.network_fetches, 1);
+        assert!(summary.errors.is_empty());
+        assert_eq!(games[0].protondb.as_ref().unwrap().tier, ProtonTier::Gold);
+
+        // Cache key derivation is owned by the enrichment module: the reader
+        // must find what the writer wrote.
+        let cached = cache
+            .get::<ProtonDbData>(SOURCE_PROTONDB, "app/292030")
+            .unwrap()
+            .expect("cache entry under app/<id>");
+        assert_eq!(cached.data.tier, ProtonTier::Gold);
+
+        // Second pass: fresh cache hit, no network fetch.
+        let mut games2 = vec![make_test_game(292030, "The Witcher 3")];
+        let summary2 = enrich_games_with(
+            &mut games2,
+            &cache,
+            &options,
+            &SourceCredentials::default(),
+            &http,
+        );
+        assert_eq!(summary2.network_fetches, 0);
+        assert_eq!(summary2.cache_hits, 1);
+        assert_eq!(games2[0].protondb.as_ref().unwrap().tier, ProtonTier::Gold);
+    }
+
+    #[test]
+    fn fetch_failure_falls_back_to_stale_cache() {
+        // ADR-0002 degradation: a per-game fetch failure applies whatever
+        // cache entry exists (stale included) and never fails the batch.
+        let tmp = TempDir::new().unwrap();
+        let cache = DiskCache::new(tmp.path());
+        let stale = CacheRecord {
+            source: SOURCE_PROTONDB.to_string(),
+            key: "app/730".to_string(),
+            fetched_at: chrono::Utc::now() - chrono::Duration::days(30),
+            ttl: Duration::from_secs(3600),
+            data: ProtonDbData {
+                tier: ProtonTier::Platinum,
+                confidence: Some("high".into()),
+                score: None,
+            },
+            stale: false, // recomputed from fetched_at + ttl on read
+            etag: None,
+        };
+        cache.put(&stale).unwrap();
+
+        let mut mock = MockBackend::new();
+        mock.register_error("https://www.protondb.com/", "connection refused");
+        let http = HttpClient::with_backend(Box::new(mock));
+        let options = EnrichmentOptions {
+            sources: vec![SOURCE_PROTONDB.to_string()],
+            offline: false,
+            force: false,
+        };
+
+        let mut games = vec![make_test_game(730, "Counter-Strike 2")];
+        let summary = enrich_games_with(
+            &mut games,
+            &cache,
+            &options,
+            &SourceCredentials::default(),
+            &http,
+        );
+
+        assert_eq!(summary.errors.len(), 1);
+        assert_eq!(summary.errors[0].source, SOURCE_PROTONDB);
+        assert_eq!(
+            games[0].protondb.as_ref().unwrap().tier,
+            ProtonTier::Platinum,
+            "stale cache entry must be applied as fallback"
+        );
+    }
+
+    #[test]
+    fn offline_mode_never_touches_the_network_for_any_source() {
+        // No mock registrations: any network call would surface as an error.
+        let http = HttpClient::with_backend(Box::new(MockBackend::new()));
+        let tmp = TempDir::new().unwrap();
+        let cache = DiskCache::new(tmp.path());
+        let options = EnrichmentOptions {
+            sources: ALL_SOURCES.iter().map(|s| (*s).to_string()).collect(),
+            offline: true,
+            force: false,
+        };
+        let credentials = SourceCredentials {
+            rawg_key: Some("k".into()),
+            igdb_client_id: Some("id".into()),
+            igdb_client_secret: Some("s".into()),
+        };
+
+        let mut games = vec![make_test_game(730, "Counter-Strike 2")];
+        let summary = enrich_games_with(&mut games, &cache, &options, &credentials, &http);
+
+        assert!(summary.errors.is_empty(), "offline must not fetch");
+        assert_eq!(summary.network_fetches, 0);
+    }
+
+    #[test]
+    fn missing_credentials_skip_sources_silently() {
+        let http = HttpClient::with_backend(Box::new(MockBackend::new()));
+        let tmp = TempDir::new().unwrap();
+        let cache = DiskCache::new(tmp.path());
+        let options = EnrichmentOptions {
+            sources: vec![SOURCE_RAWG.to_string(), SOURCE_IGDB.to_string()],
+            offline: false,
+            force: true,
+        };
+
+        let mut games = vec![make_test_game(730, "Counter-Strike 2")];
+        let summary = enrich_games_with(
+            &mut games,
+            &cache,
+            &options,
+            &SourceCredentials::default(),
+            &http,
+        );
+
+        assert!(summary.errors.is_empty());
+        assert_eq!(summary.network_fetches, 0);
+        assert!(games[0].rawg.is_none());
+        assert!(games[0].igdb.is_none());
     }
 
     #[test]

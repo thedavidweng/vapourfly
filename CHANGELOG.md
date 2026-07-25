@@ -56,6 +56,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `vapourfly scan --enrich` now applies cached entries (including stale ones) to its output, so `--offline` surfaces stale cache data instead of dropping it (consistent with the ADR-0002 hydration contract).
 - `vapourfly diagnostics export` now includes the sanitized fields documented in PRIVACY.md: redacted Steam/cache directories (full paths with `--verbose`), account and library-folder counts, and active warnings.
 
+#### Architecture (ADR-0008)
+
+- **Act-half workflow verbs**: the evaluate → disposition → preview assembly for Junk apply/hide, recommendation collection, and Playlist sync now lives in `vapourfly_core::actions` (one verb per workflow); the two-pass Playlist match with missing-entry store prices lives in `vapourfly_api::workflow::match_playlist_full`. CLI and GUI call the verbs instead of wiring the pipelines independently — rule-Playlist sync resolution now has exactly one implementation.
+- **Type-guarded confirmation gate**: `write::preview` returns a `PreviewedPlan` (no public constructor) and `write::commit`/`commit_with_retention` accept only that type — a commit that skipped preview no longer compiles. The GUI path that could commit a junk write whose diff was never displayed is removed; only backup restore executes without a stored plan.
+- **One adapter per enrichment source**: the cache/offline/fetch/stale-fallback protocol is one generic state-machine bound to a per-source adapter (cache key + TTL + field + fetch). Cache-key derivation is owned by the enrichment module (writers and `hydrate_from_cache` cannot drift), credentials resolve once at the seam (`SourceCredentials`), and `HttpClient` is cheaply cloneable (shared backend + rate limiter) so a mock client can exercise all six sources — previously 4 of 6 wirings were untestable. `Ok(None)` ("source has no data") is now uniformly counted as skipped.
+- **Eligibility and signal vocabulary**: `match_playlist` report buckets derive unplayed/hidden/junk through `eligibility` predicates instead of inline re-derivation; the raw HLTB signal has one accessor (`signal::main_story_seconds`); the ≤4h/≥20h session thresholds live in `scoring` (`is_short_game`/`is_long_game`) instead of per-mood magic numbers.
+- New tests: `workflow::prepare` and `match_playlist_full` (previously zero coverage), CLI write-handler dry-run/gate tests, `core::actions` verb tests, enrichment wiring tests (stale fallback, offline short-circuit, credential skip), and direct `scoring`/`signal` precedence tests.
+
 #### Core
 
 - Recommendation `time_match` now requires a known main-story completion time (HLTB, falling back to IGDB time-to-beat) that fits the available window; games without completion-time data no longer receive the signal, and the undocumented 15-minute minimum window is removed.

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use eframe::egui;
 use egui::{Color32, RichText};
 use egui_phosphor::regular as icons;
+use vapourfly_core::actions;
 use vapourfly_core::config::VapourflyConfig;
 use vapourfly_core::discover::{self, DiscoverOptions, DiscoverPick};
 use vapourfly_core::display;
@@ -275,7 +276,7 @@ impl JunkModeChoice {
 static SCAN_RESULT: JobSlot<ScanResult> = JobSlot::new();
 static WRITE_RESULT: JobSlot<String> = JobSlot::new();
 static ENRICH_RESULT: JobSlot<vapourfly_api::enrichment::EnrichmentSummary> = JobSlot::new();
-static DRY_RUN_RESULT: JobSlot<vapourfly_core::models::WritePlan> = JobSlot::new();
+static DRY_RUN_RESULT: JobSlot<vapourfly_core::write::PreviewedPlan> = JobSlot::new();
 static JUNK_PREVIEW_RESULT: JobSlot<Vec<JunkDecision>> = JobSlot::new();
 static RECOMMEND_RESULT: JobSlot<Vec<Recommendation>> = JobSlot::new();
 static DISCOVER_RESULT: JobSlot<(Vec<DiscoverPick>, PlaylistFile)> = JobSlot::new();
@@ -509,7 +510,7 @@ struct VapourflyApp {
     write_result: Option<Result<String, String>>,
     show_confirm_dialog: bool,
     pending_action: Option<PendingAction>,
-    dry_run_plan: Option<vapourfly_core::models::WritePlan>,
+    dry_run_plan: Option<vapourfly_core::write::PreviewedPlan>,
     dry_run_loading: bool,
     dry_run_error: Option<String>,
 
@@ -2948,6 +2949,7 @@ impl VapourflyApp {
                 fixtures,
                 junk_mode: JunkMode::Default,
                 offline,
+                cache_root: None,
             };
             let result = vapourfly_api::workflow::prepare(&opts);
             ctx.request_repaint();
@@ -2957,9 +2959,10 @@ impl VapourflyApp {
 
     /// Execute a pending write action in a background thread.
     ///
-    /// For junk apply/hide the [`WritePlan`] was already generated during the
-    /// dry-run step and stored in `self.dry_run_plan`.  For backup restores we
-    /// fall back to the original on-the-fly path.
+    /// Every plan-based action commits the [`vapourfly_core::write::PreviewedPlan`]
+    /// generated during the dry-run step and stored in `self.dry_run_plan` —
+    /// exactly the diff the user confirmed. Backup restore is the only action
+    /// without a plan (it has no diff to preview).
     fn execute_pending_action(&mut self) {
         let action = match self.pending_action.take() {
             Some(a) => a,
@@ -3004,7 +3007,9 @@ impl VapourflyApp {
             return;
         }
 
-        // Legacy path for BackupRestore (no dry-run diff).
+        // Legacy path for BackupRestore (no dry-run diff). Every other
+        // action commits only a stored PreviewedPlan — a Steam write whose
+        // diff was never shown must not happen (confirmation gate).
         let cloud_path = match self.cloud_storage_path() {
             Ok(p) => p,
             Err(e) => {
@@ -3017,11 +3022,7 @@ impl VapourflyApp {
         self.write_result = None;
         self.success_msg = None;
 
-        let junk_results = self.junk_results.clone();
-        let junk_selected = self.junk_selected.clone();
-        let collection_name = self.junk_collection_name.clone();
         let allow_steam_running = self.allow_steam_running;
-        let retention = self.backup_retention();
 
         let job_id = self
             .job_runner
@@ -3031,23 +3032,11 @@ impl VapourflyApp {
 
         std::thread::spawn(move || {
             let result = match action {
-                PendingAction::JunkApply => execute_junk_apply(
-                    cloud_path,
-                    junk_results,
-                    junk_selected.clone(),
-                    collection_name,
-                    allow_steam_running,
-                    retention,
-                ),
-                PendingAction::JunkHide => execute_junk_hide(
-                    cloud_path,
-                    junk_results,
-                    junk_selected,
-                    allow_steam_running,
-                    retention,
-                ),
                 PendingAction::BackupRestore(backup_path) => {
                     execute_backup_restore(backup_path, cloud_path, allow_steam_running)
+                }
+                PendingAction::JunkApply | PendingAction::JunkHide => {
+                    Err("Junk writes require a confirmed dry-run plan.".into())
                 }
                 PendingAction::RecommendCollection => {
                     Err("Recommendation collection writes require a dry-run plan.".into())
@@ -3565,39 +3554,15 @@ impl VapourflyApp {
             .map(|c| (c.cc.clone(), c.lang.clone()))
             .unwrap_or_else(|| ("us".to_string(), "english".to_string()));
         std::thread::spawn(move || {
-            // First pass: find missing AppIDs with empty store details.
-            let empty = std::collections::HashMap::new();
-            let preliminary = match playlist::match_playlist(&pf, &games, &empty) {
-                Ok(r) => r,
-                Err(e) => {
-                    ctx.request_repaint();
-                    PLAYLIST_MATCH_RESULT.set(job_id, Err(format!("Match failed: {e}")));
-                    return;
-                }
-            };
-            // Resolve store details for missing entries (online fetch + cache).
-            let missing_details = if preliminary.missing.is_empty() {
-                std::collections::HashMap::new()
-            } else {
-                let cache = vapourfly_api::cache::DiskCache::new(cache_dir);
-                vapourfly_api::enrichment::resolve_missing_store_details(
-                    &preliminary.missing,
-                    &cache,
-                    offline,
-                    &cc,
-                    &lang,
-                )
-            };
-            let report = match playlist::match_playlist(&pf, &games, &missing_details) {
-                Ok(r) => r,
-                Err(e) => {
-                    ctx.request_repaint();
-                    PLAYLIST_MATCH_RESULT.set(job_id, Err(format!("Match failed: {e}")));
-                    return;
-                }
-            };
+            // Two-pass match with missing-entry store details is owned by
+            // the workflow module (shared with the CLI).
+            let cache = vapourfly_api::cache::DiskCache::new(cache_dir);
+            let result = vapourfly_api::workflow::match_playlist_full(
+                &pf, &games, &cache, offline, &cc, &lang,
+            )
+            .map_err(|e| format!("Match failed: {e}"));
             ctx.request_repaint();
-            PLAYLIST_MATCH_RESULT.set(job_id, Ok(report));
+            PLAYLIST_MATCH_RESULT.set(job_id, result);
         });
     }
 
@@ -4382,10 +4347,7 @@ fn generate_dry_run_plan(
     collection_name: &str,
     recommend_results: &[Recommendation],
     games: &[Game],
-) -> Result<vapourfly_core::models::WritePlan, String> {
-    let cloud = vapourfly_core::steam::read_cloud_storage(&cloud_path)
-        .map_err(|e| format!("Failed to read cloud storage: {e}"))?;
-
+) -> Result<vapourfly_core::write::PreviewedPlan, String> {
     // Filter junk results to only selected items. Empty selection = 0 targets.
     let effective_junk: Vec<JunkDecision> = junk_results
         .iter()
@@ -4393,135 +4355,41 @@ fn generate_dry_run_plan(
         .cloned()
         .collect();
 
-    let op = match action {
+    match action {
         PendingAction::JunkApply => {
             if effective_junk.is_empty() {
                 return Err("No junk candidates selected.".into());
             }
             let junk_app_ids = disposition::junk_app_ids_from_decisions(&effective_junk);
-            disposition::junk_apply(collection_name, junk_app_ids).map_err(|e| e.to_string())?
+            actions::preview_junk_apply(collection_name, junk_app_ids, &cloud_path)
+                .map_err(|e| format!("Failed to generate write plan: {e}"))
         }
         PendingAction::JunkHide => {
             if effective_junk.is_empty() {
                 return Err("No junk candidates selected.".into());
             }
             let junk_app_ids = disposition::junk_app_ids_from_decisions(&effective_junk);
-            disposition::junk_hide(junk_app_ids).map_err(|e| e.to_string())?
+            actions::preview_junk_hide(junk_app_ids, &cloud_path)
+                .map_err(|e| format!("Failed to generate write plan: {e}"))
         }
         PendingAction::RecommendCollection => {
             let app_ids: Vec<u32> = recommend_results.iter().map(|r| r.app_id).collect();
-            disposition::recommend_to_collection(app_ids).map_err(|e| e.to_string())?
+            actions::preview_recommend_collection(app_ids, &cloud_path)
+                .map_err(|e| format!("Failed to generate write plan: {e}"))
         }
         PendingAction::PlaylistSync(pf) => {
-            // Resolve rule-based playlists off-frame: match the rules against
-            // the prepared library to get the owned AppID set, then build a
-            // manual-equivalent sync operation.
-            let resolved_pf = match &pf.playlist.content {
-                PlaylistContent::Manual { .. } => pf.clone(),
-                PlaylistContent::Rules { .. } => {
-                    let empty = std::collections::HashMap::new();
-                    let report = playlist::match_playlist(pf, games, &empty)
-                        .map_err(|e| format!("Match failed: {e}"))?;
-                    PlaylistFile {
-                        vapourfly_schema: pf.vapourfly_schema.clone(),
-                        created_by: pf.created_by.clone(),
-                        playlist: Playlist {
-                            id: pf.playlist.id.clone(),
-                            name: pf.playlist.name.clone(),
-                            description: pf.playlist.description.clone(),
-                            content: PlaylistContent::Manual {
-                                app_ids: report.owned,
-                            },
-                        },
-                    }
-                }
-            };
-            let app_ids = disposition::playlist_sync_app_ids(&resolved_pf, None)
-                .map_err(|e| e.to_string())?;
-            disposition::playlist_sync(&resolved_pf, app_ids).map_err(|e| e.to_string())?
+            // Rule-Playlist → owned-AppID resolution is owned by the sync
+            // verb (shared with the CLI); this runs off-frame in the dry-run
+            // job so rules are never matched on the egui frame.
+            let sync = actions::preview_playlist_sync(pf, Some(games), &cloud_path)
+                .map_err(|e| format!("Failed to generate write plan: {e}"))?;
+            match sync {
+                Some(sync) => Ok(sync.plan),
+                None => Err("No app IDs to sync.".into()),
+            }
         }
-        PendingAction::BackupRestore(_) => {
-            return Err("Dry-run not supported for backup restore.".into());
-        }
-    };
-
-    vapourfly_core::write::preview(&cloud, vec![op], cloud_path)
-        .map_err(|e| format!("Failed to generate write plan: {e}"))
-}
-
-fn execute_junk_apply(
-    cloud_path: PathBuf,
-    junk_results: Vec<JunkDecision>,
-    junk_selected: std::collections::HashSet<u32>,
-    collection_name: String,
-    allow_steam_running: bool,
-    retention: u32,
-) -> Result<String, String> {
-    // Filter to selected items only. Empty selection = 0 targets.
-    let effective_junk: Vec<JunkDecision> = junk_results
-        .iter()
-        .filter(|d| junk_selected.contains(&d.app_id))
-        .cloned()
-        .collect();
-    let junk_app_ids = disposition::junk_app_ids_from_decisions(&effective_junk);
-    if junk_app_ids.is_empty() {
-        return Err("No junk candidates selected.".into());
+        PendingAction::BackupRestore(_) => Err("Dry-run not supported for backup restore.".into()),
     }
-
-    let cloud = vapourfly_core::steam::read_cloud_storage(&cloud_path)
-        .map_err(|e| format!("Failed to read cloud storage: {e}"))?;
-
-    let op = disposition::junk_apply(&collection_name, junk_app_ids.clone())
-        .map_err(|e| e.to_string())?;
-    let plan = vapourfly_core::write::preview(&cloud, vec![op], cloud_path.clone())
-        .map_err(|e| format!("Failed to generate write plan: {e}"))?;
-
-    let backup =
-        vapourfly_core::write::commit_with_retention(&plan, allow_steam_running, retention)
-            .map_err(|e| format!("Write failed: {e}"))?;
-
-    Ok(format!(
-        "Applied {} junk games to collection '{}'. Backup: {}",
-        junk_app_ids.len(),
-        collection_name,
-        backup.display()
-    ))
-}
-
-fn execute_junk_hide(
-    cloud_path: PathBuf,
-    junk_results: Vec<JunkDecision>,
-    junk_selected: std::collections::HashSet<u32>,
-    allow_steam_running: bool,
-    retention: u32,
-) -> Result<String, String> {
-    // Filter to selected items only. Empty selection = 0 targets.
-    let effective_junk: Vec<JunkDecision> = junk_results
-        .iter()
-        .filter(|d| junk_selected.contains(&d.app_id))
-        .cloned()
-        .collect();
-    let junk_app_ids = disposition::junk_app_ids_from_decisions(&effective_junk);
-    if junk_app_ids.is_empty() {
-        return Err("No junk candidates selected.".into());
-    }
-
-    let cloud = vapourfly_core::steam::read_cloud_storage(&cloud_path)
-        .map_err(|e| format!("Failed to read cloud storage: {e}"))?;
-
-    let op = disposition::junk_hide(junk_app_ids.clone()).map_err(|e| e.to_string())?;
-    let plan = vapourfly_core::write::preview(&cloud, vec![op], cloud_path.clone())
-        .map_err(|e| format!("Failed to generate write plan: {e}"))?;
-
-    let backup =
-        vapourfly_core::write::commit_with_retention(&plan, allow_steam_running, retention)
-            .map_err(|e| format!("Write failed: {e}"))?;
-
-    Ok(format!(
-        "Added {} junk games to Hidden collection. Backup: {}",
-        junk_app_ids.len(),
-        backup.display()
-    ))
 }
 
 fn execute_backup_restore(
@@ -12309,7 +12177,7 @@ mod tests {
         let target_path = temp_dir.path().join("cloud-storage-namespace-1.json");
         std::fs::write(&target_path, "[]").unwrap();
         let cloud = vapourfly_core::steam::read_cloud_storage(&target_path).unwrap();
-        let stale_plan = vapourfly_core::steam::generate_write_plan(
+        let stale_plan = vapourfly_core::write::preview(
             &cloud,
             vec![WriteOp::UpsertCollection {
                 id: "junk".into(),
@@ -12785,7 +12653,7 @@ mod tests {
         std::fs::write(&target_path, "[]").unwrap();
 
         let cloud = vapourfly_core::steam::read_cloud_storage(&target_path).unwrap();
-        let plan = vapourfly_core::steam::generate_write_plan(
+        let plan = vapourfly_core::write::preview(
             &cloud,
             vec![WriteOp::UpsertCollection {
                 id: "junk".into(),

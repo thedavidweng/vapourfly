@@ -28,6 +28,7 @@ fn long_version() -> &'static str {
 
 mod format;
 
+use vapourfly_core::actions;
 use vapourfly_core::config::{self, ConfigField, VapourflyConfig};
 use vapourfly_core::discover::{self, DiscoverOptions};
 use vapourfly_core::disposition;
@@ -36,7 +37,7 @@ use vapourfly_core::junk::{JunkPreviewResult, evaluate_junk, load_default_manual
 use vapourfly_core::models::{
     JunkMode, JunkRules, PlaylistContent, PlaylistFile, PlaylistRule, RecommendRequest, ScanResult,
     VAPOURFLY_JUNK_PREVIEW_SCHEMA, VAPOURFLY_PLAYLIST_SCHEMA, VAPOURFLY_RECOMMENDATIONS_SCHEMA,
-    VAPOURFLY_SCAN_SCHEMA, WriteOp,
+    VAPOURFLY_SCAN_SCHEMA,
 };
 use vapourfly_core::mood::{self, EditorialMood};
 use vapourfly_core::playlist;
@@ -1099,6 +1100,7 @@ fn scan_library_hydrated(
         fixtures: cli.fixtures.clone(),
         junk_mode,
         offline: cli.offline,
+        cache_root: None,
     })?;
     Ok(result)
 }
@@ -1107,59 +1109,32 @@ fn scan_library_hydrated(
 /// so `completion_price` reflects the corrected semantics (missing
 /// non-free entries only).
 ///
-/// Uses the shared [`vapourfly_api::enrichment::resolve_missing_store_details`]
-/// API: in online mode it fetches uncached missing AppIDs via SteamStoreClient
-/// and writes them to cache; in offline mode it uses cache-only lookups.
+/// The two-pass match itself lives in [`vapourfly_api::workflow::match_playlist_full`];
+/// this wrapper only sources the pricing locale from CLI config.
 fn match_playlist_with_missing(
     cli: &Cli,
     pf: &PlaylistFile,
     games: &[vapourfly_core::models::Game],
 ) -> Result<vapourfly_core::models::PlaylistMatchReport, Box<dyn std::error::Error>> {
-    use std::collections::HashMap;
-    // First pass: find missing AppIDs with no store details.
-    let empty: HashMap<u32, vapourfly_core::models::SteamStoreDetails> = HashMap::new();
-    let preliminary = playlist::match_playlist(pf, games, &empty)?;
-    // Resolve store details for missing entries (online fetch + cache).
     let cache = vapourfly_api::cache::DiskCache::new(vapourfly_core::config::default_cache_dir());
     // Build config from the same CLI context that produced the scan — do NOT
     // use Default::default() which would re-run Steam detection and fail in
-    // fixture-only or custom --steam-dir environments.
-    let cfg = match cli.resolve_steam_dir() {
+    // fixture-only or custom --steam-dir environments. If Steam dir
+    // resolution fails (fixture-only without real Steam), fall back to the
+    // default locale — completion price is best-effort, not critical.
+    let (cc, lang) = match cli.resolve_steam_dir() {
         Ok(steam_dir) => {
             let overrides = vapourfly_core::config::CliOverrides {
                 steam_dir: Some(steam_dir),
                 account: cli.account.clone(),
             };
-            vapourfly_core::config::VapourflyConfig::from_cli_and_env(overrides)?
+            let cfg = vapourfly_core::config::VapourflyConfig::from_cli_and_env(overrides)?;
+            (cfg.cc, cfg.lang)
         }
-        Err(_) => {
-            // If Steam dir resolution fails (e.g. fixture-only without real
-            // Steam), fall back to default locale so the match report still
-            // succeeds — completion price is best-effort, not critical.
-            vapourfly_core::config::VapourflyConfig {
-                steam_dir: PathBuf::new(),
-                account: None,
-                cache_root: vapourfly_core::config::default_cache_dir(),
-                app_data_root: std::env::var("HOME")
-                    .map(|h| PathBuf::from(h).join(".local").join("share"))
-                    .unwrap_or_else(|_| PathBuf::from(".")),
-                has_igdb_credentials: false,
-                has_rawg_credentials: false,
-                cc: "US".into(),
-                lang: "english".into(),
-                backup_retention_count: 5,
-            }
-        }
+        Err(_) => ("US".into(), "english".into()),
     };
-    let missing_details = vapourfly_api::enrichment::resolve_missing_store_details(
-        &preliminary.missing,
-        &cache,
-        cli.offline,
-        &cfg.cc,
-        &cfg.lang,
-    );
-    // Second pass with store details for completion price.
-    let report = playlist::match_playlist(pf, games, &missing_details)?;
+    let report =
+        vapourfly_api::workflow::match_playlist_full(pf, games, &cache, cli.offline, &cc, &lang)?;
     Ok(report)
 }
 
@@ -1269,9 +1244,7 @@ fn cmd_junk_apply(
         return Ok(());
     }
 
-    let cloud = steam::read_cloud_storage(&cloud_path)?;
-    let op = disposition::junk_apply(&collection, junk_app_ids.clone())?;
-    let plan = write::preview(&cloud, vec![op], cloud_path.clone())?;
+    let plan = actions::preview_junk_apply(&collection, junk_app_ids.clone(), &cloud_path)?;
 
     println!("Junk Apply");
     println!("==========");
@@ -1321,9 +1294,7 @@ fn cmd_junk_hide(
         return Ok(());
     }
 
-    let cloud = steam::read_cloud_storage(&cloud_path)?;
-    let op = disposition::junk_hide(junk_app_ids.clone())?;
-    let plan = write::preview(&cloud, vec![op], cloud_path.clone())?;
+    let plan = actions::preview_junk_hide(junk_app_ids.clone(), &cloud_path)?;
 
     println!("Junk Hide");
     println!("=========");
@@ -1392,9 +1363,7 @@ fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::erro
         }
 
         let cloud_path = cli.cloud_storage_path()?;
-        let cloud = steam::read_cloud_storage(&cloud_path)?;
-        let op = disposition::recommend_to_collection(app_ids.clone())?;
-        let plan = write::preview(&cloud, vec![op], cloud_path.clone())?;
+        let plan = actions::preview_recommend_collection(app_ids.clone(), &cloud_path)?;
 
         println!("Temporary recommendation collection");
         println!("===============================");
@@ -1721,37 +1690,24 @@ fn cmd_sync_collection(
     // Load the stored playlist to get app IDs to sync.
     let pf = load_stored_playlist(&id)?;
 
-    let resolved_owned = match &pf.playlist.content {
+    // Rules playlists need a prepared library for resolution; manual
+    // playlists don't, so skip the (potentially network-hydrating) scan.
+    let library = match &pf.playlist.content {
         PlaylistContent::Manual { .. } => None,
-        PlaylistContent::Rules { .. } => {
-            let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
-            let report = playlist::match_playlist(
-                &pf,
-                &scan_result.games,
-                &std::collections::HashMap::new(),
-            )?;
-            Some(report.owned)
-        }
+        PlaylistContent::Rules { .. } => Some(scan_library_hydrated(cli, JunkMode::Default)?.games),
     };
-    let app_ids = disposition::playlist_sync_app_ids(&pf, resolved_owned)?;
-    if app_ids.is_empty() {
-        println!("No app IDs to sync.");
-        return Ok(());
-    }
 
     let cloud_path = cli.cloud_storage_path()?;
-    let cloud = steam::read_cloud_storage(&cloud_path)?;
-    let op = disposition::playlist_sync(&pf, app_ids.clone())?;
-    let collection_id = match &op {
-        WriteOp::UpsertCollection { id, .. } => id.clone(),
-        _ => playlist::slugify(&pf.playlist.id),
+    let Some(sync) = actions::preview_playlist_sync(&pf, library.as_deref(), &cloud_path)? else {
+        println!("No app IDs to sync.");
+        return Ok(());
     };
-    let plan = write::preview(&cloud, vec![op], cloud_path.clone())?;
+    let plan = sync.plan;
 
     println!("Sync playlist '{}' to Steam collection", pf.playlist.name);
     println!("  Playlist ID:   {}", pf.playlist.id);
-    println!("  Collection ID: {collection_id}");
-    println!("  App IDs:       {}", app_ids.len());
+    println!("  Collection ID: {}", sync.collection_id);
+    println!("  App IDs:       {}", sync.app_ids.len());
     println!("  Target:        {}", cloud_path.display());
     println!();
     println!("Diff:");
@@ -2409,6 +2365,44 @@ mod tests {
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("could not read"), "got: {msg}");
+    }
+
+    fn fixtures_cli() -> Option<Cli> {
+        let fixtures = std::path::Path::new("data/fixtures/steam_minimal");
+        if !fixtures.exists() {
+            eprintln!("skipping: fixtures not found at {}", fixtures.display());
+            return None;
+        }
+        Some(Cli {
+            fixtures: Some(fixtures.to_path_buf()),
+            steam_dir: None,
+            account: None,
+            verbose: false,
+            offline: true,
+            allow_steam_running: false,
+            command: Commands::Doctor,
+        })
+    }
+
+    /// The confirmation gate: every write command requires exactly one of
+    /// --dry-run / --confirm before anything else happens.
+    #[test]
+    fn write_commands_require_exactly_one_write_flag() {
+        let Some(cli) = fixtures_cli() else { return };
+        assert!(cmd_junk_hide(&cli, false, false).is_err());
+        assert!(cmd_junk_hide(&cli, true, true).is_err());
+        assert!(cmd_junk_apply(&cli, "junk".into(), false, false).is_err());
+        assert!(cmd_sync_collection(&cli, "nonexistent".into(), false, false).is_err());
+    }
+
+    /// Dry-run junk commands must run the whole handler path (scan →
+    /// hydrate → classify → verb) against fixtures without touching disk.
+    #[test]
+    fn junk_dry_run_succeeds_against_fixtures() {
+        let Some(cli) = fixtures_cli() else { return };
+        cmd_junk_hide(&cli, true, false).expect("junk hide dry-run must succeed");
+        cmd_junk_apply(&cli, "junk-test".into(), true, false)
+            .expect("junk apply dry-run must succeed");
     }
 
     /// Regression: Playlist Match must succeed in fixture-only environments
