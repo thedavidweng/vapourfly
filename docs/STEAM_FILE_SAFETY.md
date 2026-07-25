@@ -25,7 +25,7 @@ This is Steam's cloud storage file. It contains user-defined collections, hidden
 
 Before any write, Vapourfly performs these checks in order:
 
-1. **Steam process detection.** If the Steam client is running, the write is refused with an error. Close Steam before making changes. Detection uses `pgrep` on macOS/Linux and `tasklist` on Windows.
+1. **Steam process detection.** If the Steam client is running, the write is refused with an error. Close Steam before making changes. Detection uses `pgrep` on macOS, `pidof` (with `pgrep` as fallback) on Linux, and `tasklist` on Windows.
 
 2. **Target file existence.** The target cloud storage file must exist. If it is missing, Vapourfly cannot create it (Steam must create it first).
 
@@ -76,7 +76,9 @@ vapourfly backup list --format json
 ### Restoring a Backup
 
 ```bash
-vapourfly backup restore /path/to/cloud-storage-namespace-1.json.vapourfly-backup-20260624T120000Z-a1b2c3d4.json
+# Preview first, then confirm (restore is a write operation)
+vapourfly backup restore /path/to/cloud-storage-namespace-1.json.vapourfly-backup-20260624T120000Z-a1b2c3d4.json --dry-run
+vapourfly backup restore /path/to/cloud-storage-namespace-1.json.vapourfly-backup-20260624T120000Z-a1b2c3d4.json --confirm
 ```
 
 Restoring copies the backup content over the current cloud storage file. The pre-restore state is itself backed up, so you can always undo a restore.

@@ -75,8 +75,8 @@ vapourfly backup list
 # List as JSON
 vapourfly backup list --format json
 
-# Restore a specific backup
-vapourfly backup restore /path/to/cloud-storage-namespace-1.json.vapourfly-backup-20260624T120000Z-a1b2c3d4.json
+# Restore a specific backup (a write operation: requires --dry-run or --confirm)
+vapourfly backup restore /path/to/cloud-storage-namespace-1.json.vapourfly-backup-20260624T120000Z-a1b2c3d4.json --confirm
 ```
 
 Backups are stored alongside the original file and include a SHA-256 hash for integrity verification. The most recent 5 backups are retained by default.

@@ -9,8 +9,8 @@
 //! - [`build_taste_vector`]: maps keywords to log-scaled playtime weights.
 //! - [`taste_overlap`]: normalized overlap between a game's keywords and a
 //!   taste vector (0.0–1.0).
-//! - [`is_high_rating`]: true when the effective rating is ≥ 4.0 on a 0–5
-//!   scale.
+//! - [`is_high_rating`]: true when RAWG rates ≥ 4.0 or IGDB rates ≥ 80,
+//!   evaluated as an independent OR over the two sources.
 
 use std::collections::HashMap;
 
@@ -82,9 +82,22 @@ pub fn taste_overlap(game: &Game, taste_vector: &HashMap<String, f32>) -> f32 {
 // High rating
 // ---------------------------------------------------------------------------
 
-/// Check whether a game's effective rating is ≥ 4.0 on a 0–5 scale.
+/// Check whether a game is highly rated: RAWG ≥ 4.0 **or** IGDB ≥ 80.
 ///
-/// Uses [`signal::effective_rating`] for precedence (RAWG > IGDB).
+/// The two sources are evaluated independently (PRD: "RAWG ≥4.0 或 IGDB ≥80"),
+/// so a game whose RAWG rating is mediocre still qualifies when IGDB rates it
+/// highly. This differs from [`signal::effective_rating`], which resolves a
+/// single rating by source precedence.
 pub fn is_high_rating(game: &Game) -> bool {
-    signal::effective_rating(game, None).is_some_and(|(r, _)| r >= 4.0)
+    let rawg_high = game
+        .rawg
+        .as_ref()
+        .and_then(|r| r.rating_0_5)
+        .is_some_and(|r| r >= 4.0);
+    let igdb_high = game
+        .igdb
+        .as_ref()
+        .and_then(|i| i.rating_0_100.or(i.total_rating_0_100))
+        .is_some_and(|r| r >= 80.0);
+    rawg_high || igdb_high
 }

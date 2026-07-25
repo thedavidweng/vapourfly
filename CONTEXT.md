@@ -144,8 +144,10 @@ Evaluated from three signals — **playtime**, **completion time** (HLTB),
 
 - **Default**: low playtime + at least one other low signal + at least
   `min_available_signals` data points.
-- **Strict**: every *available* signal low + at least `min_available_signals`
-  data points.
+- **Strict**: low playtime + every *available* signal low + at least
+  `min_available_signals` data points. Playtime is the one first-party
+  signal, so junk always requires it to be present and low; Strict is a
+  strict subset of Default.
 - **Aggressive**: low playtime + at least one other low signal, no minimum
   data count.
 

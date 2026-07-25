@@ -166,6 +166,9 @@ vapourfly recommend --minutes 60 --count 3 --installed-only --deck
 # Reproducible with a seed
 vapourfly recommend --minutes 120 --seed 42
 
+# Exclude games in specific Steam collections (repeatable, by name)
+vapourfly recommend --minutes 120 --exclude-collection "Favorites" --exclude-collection "Backlog"
+
 # JSON output
 vapourfly recommend --minutes 120 --format json
 
@@ -213,7 +216,7 @@ vapourfly playlist match my-playlist.json
 vapourfly playlist match my-playlist.json --format json
 ```
 
-**Match report columns (table):** Owned, Missing, Played, Unplayed, Hidden, Junk counts, plus Completion price (sum of Steam Store prices for owned, unplayed, non-free games; requires `steam-store` cache entries).
+**Match report columns (table):** Owned, Missing, Played, Unplayed, Hidden, Junk counts, plus Completion price (sum of Steam Store final prices for **missing, non-free** playlist entries; owned/unplayed games are never included; rule playlists have no missing entries so their completion price is absent). In online mode missing prices are fetched on-demand from the Steam Store API; with `--offline` only cached prices are used. Mixed currencies are reported as per-currency grouped totals.
 
 **Playlist types:**
 - **Manual** -- explicit list of AppIDs
@@ -275,7 +278,7 @@ vapourfly sources status
 vapourfly sources status --format json
 ```
 
-**Output columns (table):** Source, Credentials (configured / missing / not required), Last Success, Cache Entries.
+**Output columns (table):** Source, Credentials (configured / missing / not required), Last Success, Entries, Stale, Cached (whether the cache directory exists).
 
 ### `vapourfly backup`
 
@@ -286,8 +289,11 @@ Manage timestamped backups of Steam files.
 vapourfly backup list
 vapourfly backup list --format json
 
-# Restore a backup
-vapourfly backup restore /path/to/backup.json
+# Preview a restore without writing
+vapourfly backup restore /path/to/backup.json --dry-run
+
+# Restore a backup (a write operation: requires --dry-run or --confirm)
+vapourfly backup restore /path/to/backup.json --confirm
 ```
 
 **Output columns (list table):** Path, Created, SHA256 (first 8 chars).
@@ -335,7 +341,7 @@ you can edit it by hand if needed.
 
 ## Write Operations
 
-All commands that modify Steam files (`junk apply`, `junk hide`, `recommend --to-collection`, `sync collection`) require exactly one of:
+All commands that modify Steam files (`junk apply`, `junk hide`, `recommend --to-collection`, `sync collection`, `backup restore`) require exactly one of:
 
 | Flag | Behaviour |
 |---|---|

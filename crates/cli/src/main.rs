@@ -63,11 +63,11 @@ struct Cli {
     fixtures: Option<PathBuf>,
 
     /// Override the Steam installation directory.
-    #[arg(long)]
+    #[arg(long, global = true)]
     steam_dir: Option<PathBuf>,
 
     /// Override the Steam account identifier.
-    #[arg(long)]
+    #[arg(long, global = true)]
     account: Option<String>,
 
     /// Enable verbose output (shows full paths instead of redacted names).
@@ -176,6 +176,10 @@ enum Commands {
         /// Deterministic seed for reproducible results.
         #[arg(long)]
         seed: Option<u64>,
+
+        /// Exclude games in this Steam collection (by name; repeatable).
+        #[arg(long = "exclude-collection", value_name = "NAME")]
+        exclude_collections: Vec<String>,
 
         /// Write recommendations to a temporary Steam collection.
         #[arg(long)]
@@ -529,13 +533,14 @@ enum OutputFormat {
 
 /// Bundled arguments for `cmd_recommend` so the function stays under clippy's
 /// argument-count threshold.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct RecommendArgs {
     minutes: u32,
     count: usize,
     deck: bool,
     installed_only: bool,
     seed: Option<u64>,
+    exclude_collections: Vec<String>,
     to_collection: bool,
     dry_run: bool,
     confirm: bool,
@@ -595,6 +600,7 @@ fn main() {
             deck,
             installed_only,
             seed,
+            exclude_collections,
             to_collection,
             dry_run,
             confirm,
@@ -607,6 +613,7 @@ fn main() {
                 deck: *deck,
                 installed_only: *installed_only,
                 seed: *seed,
+                exclude_collections: exclude_collections.clone(),
                 to_collection: *to_collection,
                 dry_run: *dry_run,
                 confirm: *confirm,
@@ -859,6 +866,10 @@ fn cmd_scan(
             force: false,
         };
         let summary = vapourfly_api::enrichment::enrich_games(&mut result.games, &cache, &options);
+        // Apply cached entries (including stale ones) onto the games, exactly
+        // as workflow::prepare does, so `scan --enrich --offline` surfaces
+        // stale cache data instead of dropping it (ADR-0002 degradation).
+        vapourfly_api::enrichment::hydrate_from_cache(&mut result.games, &cache);
         tracing::info!(
             processed = summary.games_processed,
             cache_hits = summary.cache_hits,
@@ -1349,6 +1360,7 @@ fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::erro
         deck,
         installed_only,
         seed,
+        exclude_collections,
         to_collection,
         dry_run,
         confirm,
@@ -1367,7 +1379,7 @@ fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::erro
         deck_mode: deck,
         include_installed_only: installed_only,
         seed,
-        exclude_collections: vec![],
+        exclude_collections,
     };
 
     let recommendations = recommend::recommend(&scan_result.games, &request);
@@ -1997,17 +2009,64 @@ fn cmd_backup_restore(
     Ok(())
 }
 
-fn cmd_diagnostics_export(_cli: &Cli, out: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_diagnostics_export(cli: &Cli, out: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let (igdb_configured, rawg_configured) = credential_status();
+
+    // Sanitized environment summary (PRIVACY.md "Diagnostics Export"):
+    // paths are redacted unless --verbose; accounts and library folders are
+    // reported as counts only, never as names or IDs.
+    let steam_dir = cli.resolve_steam_dir().ok();
+    let mut warnings: Vec<String> = Vec::new();
+
+    let (steam_dir_str, account_count, library_folder_count) = match &steam_dir {
+        Some(dir) => {
+            let accounts = steam::detect_accounts(dir).unwrap_or_default();
+            if accounts.is_empty() {
+                warnings.push("no Steam accounts detected".into());
+            }
+            let folders = steam::detect_library_folders(dir).unwrap_or_default();
+            if folders.is_empty() {
+                warnings.push("no Steam library folders detected".into());
+            }
+            if let Ok(acc) = steam::select_account(&accounts, cli.account.as_deref()) {
+                let cloud_path = steam::cloud_storage_path(dir, &acc.steam_id64);
+                if !cloud_path.exists() {
+                    warnings.push("cloud storage file not found for selected account".into());
+                }
+            }
+            let dir_str = if cli.verbose {
+                dir.display().to_string()
+            } else {
+                steam::redact_path(dir)
+            };
+            (Some(dir_str), accounts.len(), folders.len())
+        }
+        None => {
+            warnings.push("Steam directory not detected".into());
+            (None, 0, 0)
+        }
+    };
+
+    let cache_dir = vapourfly_core::config::default_cache_dir();
+    let cache_dir_str = if cli.verbose {
+        cache_dir.display().to_string()
+    } else {
+        steam::redact_path(&cache_dir)
+    };
 
     let diagnostics = serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "platform": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
+        "steam_dir": steam_dir_str,
+        "accounts_detected": account_count,
+        "library_folders": library_folder_count,
+        "cache_dir": cache_dir_str,
         "sources": {
             "IGDB": if igdb_configured { "configured" } else { "not configured" },
             "RAWG": if rawg_configured { "configured" } else { "not configured" },
         },
+        "warnings": warnings,
         "timestamp": chrono::Utc::now().to_rfc3339(),
     });
 

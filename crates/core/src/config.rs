@@ -188,16 +188,18 @@ impl VapourflyConfig {
         let has_rawg_credentials = env_present("VAPOURFLY_RAWG_KEY");
 
         // -- store locale ----------------------------------------------------
-        let cc = file
-            .as_ref()
-            .and_then(|f| f.cc.clone())
-            .or_else(|| std::env::var("VAPOURFLY_CC").ok())
+        // Environment variables override the config file (documented
+        // precedence: CLI > env > file > default), matching steam_dir/account.
+        let cc = std::env::var("VAPOURFLY_CC")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .or_else(|| file.as_ref().and_then(|f| f.cc.clone()))
             .unwrap_or_else(|| "US".into());
 
-        let lang = file
-            .as_ref()
-            .and_then(|f| f.lang.clone())
-            .or_else(|| std::env::var("VAPOURFLY_LANG").ok())
+        let lang = std::env::var("VAPOURFLY_LANG")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .or_else(|| file.as_ref().and_then(|f| f.lang.clone()))
             .unwrap_or_else(|| "english".into());
 
         // -- backup retention ------------------------------------------------
@@ -612,7 +614,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn env_cc_lang_used_when_no_file() {
+    fn env_cc_lang_override_config_file() {
         set_env("VAPOURFLY_CC", "JP");
         set_env("VAPOURFLY_LANG", "japanese");
 
@@ -622,10 +624,10 @@ mod tests {
         };
         let cfg = VapourflyConfig::from_cli_and_env(cli).unwrap();
 
-        // Without a config file on disk, env vars for cc/lang are used if
-        // present. Either way the fields must be non-empty.
-        assert!(!cfg.cc.is_empty());
-        assert!(!cfg.lang.is_empty());
+        // Documented precedence is CLI > env > file > default, so with the
+        // env vars set the result is exact regardless of any config file.
+        assert_eq!(cfg.cc, "JP");
+        assert_eq!(cfg.lang, "japanese");
 
         clear_test_env();
     }

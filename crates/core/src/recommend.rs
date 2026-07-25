@@ -124,20 +124,23 @@ fn score_game(
 
     // -- time_match -----------------------------------------------------------
     if request.available_minutes > 0 {
-        // We consider a game a good time match if the available window could
-        // meaningfully cover at least a short session (15+ min) and the HLTB
-        // main story is within the available time (or no HLTB data at all).
-        let fits = match &game.hltb {
-            Some(hltb) => match hltb.main_story_seconds {
-                Some(main_secs) => {
-                    let main_mins = main_secs / 60;
-                    main_mins <= request.available_minutes && request.available_minutes >= 15
-                }
-                None => request.available_minutes >= 15,
-            },
-            None => request.available_minutes >= 15,
-        };
-        if fits {
+        // A game is a time match when its known main-story completion time
+        // fits inside the available window (PRD: "HLTB 主线 ≤ 可用时长").
+        // HLTB main story is preferred; IGDB time-to-beat (normally) is the
+        // fallback. Games with no known completion time get no time_match.
+        let main_secs = game
+            .hltb
+            .as_ref()
+            .and_then(|h| h.main_story_seconds)
+            .or_else(|| {
+                game.igdb
+                    .as_ref()
+                    .and_then(|i| i.time_to_beat.as_ref())
+                    .and_then(|t| t.normally_seconds)
+            });
+        if let Some(secs) = main_secs
+            && secs / 60 <= request.available_minutes
+        {
             score += W_TIME_MATCH;
             reasons.push(RecommendReason {
                 code: "time_match".into(),
@@ -175,10 +178,15 @@ fn score_game(
     if let Some(last_played) = game.last_played_unix {
         let days_since = (now_unix - last_played) / 86400;
         if days_since < RECENTLY_PLAYED_DAYS {
+            let desc = match days_since {
+                0 => "Played today".to_string(),
+                1 => "Played 1 day ago".to_string(),
+                n => format!("Played {n} days ago"),
+            };
             score += W_RECENTLY_PLAYED;
             reasons.push(RecommendReason {
                 code: "recently_played_penalty".into(),
-                description: format!("Played {} days ago", RECENTLY_PLAYED_DAYS - days_since),
+                description: desc,
                 weight: W_RECENTLY_PLAYED,
             });
         }
@@ -387,9 +395,9 @@ mod tests {
         let result = recommend(&games, &req);
         assert_eq!(result.len(), 1);
         // Score should be exactly the sum of applied weights with no perturbation.
-        // low_playtime (2.0) + time_match (1.5) = 3.5
+        // low_playtime (2.0) only — no completion-time data, so no time_match.
         assert!(
-            (result[0].score - 3.5).abs() < f32::EPSILON,
+            (result[0].score - 2.0).abs() < f32::EPSILON,
             "score without seed should have no perturbation, got {}",
             result[0].score
         );
@@ -462,6 +470,89 @@ mod tests {
             !long_rec.reasons.iter().any(|r| r.code == "time_match"),
             "long game should NOT get time_match"
         );
+    }
+
+    // time_match requires a known completion time (PRD: HLTB 主线 ≤ 可用时长).
+
+    #[test]
+    fn time_match_requires_known_completion_time() {
+        // No HLTB and no IGDB time-to-beat: no time_match regardless of window.
+        let unknown = make_game(1, "Unknown Length");
+
+        // No HLTB, but IGDB time-to-beat fits: time_match via fallback.
+        let mut igdb_fallback = make_game(2, "IGDB Timed");
+        igdb_fallback.igdb = Some(IgdbData {
+            igdb_id: 2,
+            name: "IGDB Timed".into(),
+            slug: None,
+            rating_0_100: None,
+            total_rating_0_100: None,
+            genres: vec![],
+            themes: vec![],
+            keywords: vec![],
+            similar_game_ids: vec![],
+            steam_app_id_confirmed: false,
+            time_to_beat: Some(crate::models::IgdbTimeToBeat {
+                hastily_seconds: None,
+                normally_seconds: Some(3600), // 60 min
+                completely_seconds: None,
+                submission_count: None,
+            }),
+        });
+
+        let games = vec![unknown, igdb_fallback];
+        let mut req = default_request(); // available_minutes = 120
+        req.seed = None;
+        let result = recommend(&games, &req);
+
+        let unknown_rec = result.iter().find(|r| r.app_id == 1).unwrap();
+        let fallback_rec = result.iter().find(|r| r.app_id == 2).unwrap();
+        assert!(
+            !unknown_rec.reasons.iter().any(|r| r.code == "time_match"),
+            "game without completion-time data must not get time_match"
+        );
+        assert!(
+            fallback_rec.reasons.iter().any(|r| r.code == "time_match"),
+            "IGDB time-to-beat fallback should grant time_match"
+        );
+    }
+
+    #[test]
+    fn time_match_has_no_minimum_window_floor() {
+        // A 5-minute game fits a 10-minute window; no hidden 15-minute floor.
+        let mut tiny = make_game(1, "Tiny Game");
+        tiny.hltb = Some(HltbData {
+            main_story_seconds: Some(300), // 5 min
+            main_extra_seconds: None,
+            completionist_seconds: None,
+            source: HltbSource::HltbScrape,
+        });
+        let games = vec![tiny];
+        let mut req = default_request();
+        req.available_minutes = 10;
+        req.seed = None;
+        let result = recommend(&games, &req);
+        assert!(
+            result[0].reasons.iter().any(|r| r.code == "time_match"),
+            "a game fitting a sub-15-minute window should still get time_match"
+        );
+    }
+
+    #[test]
+    fn recently_played_reason_reports_actual_days() {
+        let mut game = make_game(1, "Fresh Game");
+        // Played 3 days ago.
+        game.last_played_unix = Some(chrono::Utc::now().timestamp() - 3 * 86400);
+        let games = vec![game];
+        let mut req = default_request();
+        req.seed = None;
+        let result = recommend(&games, &req);
+        let reason = result[0]
+            .reasons
+            .iter()
+            .find(|r| r.code == "recently_played_penalty")
+            .expect("recently played game should carry the penalty");
+        assert_eq!(reason.description, "Played 3 days ago");
     }
 
     // Test 7: Empty library returns empty.
@@ -655,6 +746,44 @@ mod tests {
                 rec.name
             );
         }
+    }
+
+    // high_rating is an independent OR: a low RAWG rating must not mask a
+    // high IGDB rating (PRD: RAWG ≥4.0 或 IGDB ≥80).
+
+    #[test]
+    fn high_rating_or_semantics_low_rawg_high_igdb() {
+        let mut game = make_game(1, "Divisive Gem");
+        game.rawg = Some(RawgData {
+            rawg_id: 1,
+            rating_0_5: Some(3.0), // below the RAWG threshold
+            ratings_count: Some(1000),
+            genres: vec![],
+            tags: vec![],
+            stores: vec![],
+        });
+        game.igdb = Some(IgdbData {
+            igdb_id: 1,
+            name: "Divisive Gem".into(),
+            slug: None,
+            rating_0_100: Some(85.0), // above the IGDB threshold
+            total_rating_0_100: None,
+            genres: vec![],
+            themes: vec![],
+            keywords: vec![],
+            similar_game_ids: vec![],
+            steam_app_id_confirmed: false,
+            time_to_beat: None,
+        });
+
+        let games = vec![game];
+        let mut req = default_request();
+        req.seed = None;
+        let result = recommend(&games, &req);
+        assert!(
+            result[0].reasons.iter().any(|r| r.code == "high_rating"),
+            "IGDB ≥ 80 must grant high_rating even when RAWG < 4.0"
+        );
     }
 
     #[test]

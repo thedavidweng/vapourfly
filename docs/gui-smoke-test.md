@@ -68,7 +68,7 @@ Shell defaults to the light desktop token theme (warm canvas, white cards, orchi
 14. Confirm app 999 remains in the grid with a library/non-installed status and playtime `5m`; missing artwork keeps a stable image area without layout shift.
 15. Type a title or AppID in Search and verify the card grid filters immediately.
 16. Select each primary scope and verify Installed, Unplayed, and Hidden return only their named subsets.
-17. Click the card actions and overflow menu; verify Recommend opens Recommendations with the AppID seed, Copy AppID updates the clipboard, and Open Steam Store launches the system browser.
+17. Click the card actions and overflow menu; verify Discover similar opens Discover with that AppID as the Discover seed, Copy AppID updates the clipboard, and Open Steam Store launches the system browser.
 18. Verify the insights rail shows total games, installed count, total playtime, junk excluded, backlog progress, recent activity, hidden count, and average HLTB.
 
 ### 2. Junk Preview (from Library)
@@ -95,9 +95,9 @@ Shell defaults to the light desktop token theme (warm canvas, white cards, orchi
 
 ### 4. Recommendation Result
 
-1. Navigate to **Recommendations** via the left sidebar (or arrive via Library card Recommend with seed filled).
+1. Navigate to **Recommendations** via the left sidebar.
 2. Set available minutes (e.g., 60).
-3. Set Count and optionally enter a numeric Seed AppID.
+3. Set Count and optionally enter a numeric Shuffle seed (deterministic results); optionally exclude Steam collections via the Exclude-collections picker.
 4. Toggle **Installed only** and **Deck mode** as needed.
 5. Click **Preview**.
 6. Verify recommendations are displayed sorted by score.

@@ -26,7 +26,7 @@ Steam 重度玩家（尤其是 Deck 用户、中国"喜加一"党），想要更
 | 模式 | 逻辑 |
 |---|---|
 | **Default** | 游时低 + 至少一个其他信号低 + 至少 `min_available_signals` 个数据点 |
-| **Strict** | 所有*可用*信号都低 + 至少 `min_available_signals` 个数据点 |
+| **Strict** | 游时低 + 所有*可用*信号都低 + 至少 `min_available_signals` 个数据点 |
 | **Aggressive** | 游时低 + 至少一个其他信号低，不要求数据点数 |
 
 Default 是默认模式。每个判定可解释：matched 信号、missing 信号、confidence 分数。支持手动 override（force_include / force_exclude / 手动 HLTB / 手动评分）。可一键隐藏或建 Junk 收藏集。

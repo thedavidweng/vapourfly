@@ -9,21 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Playlist sharing, generators, and moods
+
+- **`VF1:` compact binary share codes** (ADR-0003): `vapourfly playlist share <id>` / `vapourfly playlist import --code <code>` and GUI copy/import controls. The payload carries content + name + description, compressed and base64url-encoded. **Breaking:** the old `VF1:<base64url(JSON)>` format no longer decodes.
+- **Discover** (ADR-0005): `vapourfly playlist discover [--seed <appid>] [--count <n>]` and a GUI top-level Discover view generate a similar-picks playlist from the user's taste vector, optionally seeded by an AppID. Discover owns the entire seed-based similar-picks surface.
+- **Dynamic collection templates** (transparent rules): `vapourfly collections dynamic deck-session|finish-it` and a GUI chooser in Playlists.
+- **Editorial Moods** (ADR-0004, opaque curated criteria): `vapourfly collections mood [name]` and a GUI chooser for the seven canonical moods (Today's Biggest Hits, Indie Rising, Friday Party, Deck Guardians, Unopened Treasures, Weekend Marathon, Quick Round).
+- **Generator playlist slots** (ADR-0007): GUI generations write stable playlist ids (`discover`, `dynamic-deck-session`, `dynamic-finish-it`, `mood-<id>`) and overwrite on regenerate.
+
+#### GUI redesign (ADR-0006)
+
+- Dual-theme design-system shell (light neutral / dark cool) with persisted theme toggle, monochrome line icons, and the sidebar IA Discover, Library, Recommendations, Playlists, Collections + Data Sources, Settings.
+- Library: responsive card grid with deterministic illustrated offline covers, search + scope segments (All/Installed/Unplayed/Hidden), labelled Deck/Controller/playtime/genre/tag/sort filters, editorial category chips, advanced ProtonDB/HLTB/exclusion controls, 48-per-page **Load more** pagination, insights rail, skeleton loading cards, and card actions (Discover similar, Copy AppID, Open Steam Store).
+- Junk moved into a Library toolbar panel: dense preview table with per-row selection, bulk select, summary rail (threshold, HLTB coverage, focus reclaimed); apply/hide operate on the selected subset only.
+- Recommendations: Session Planner (minutes, count, quick presets, shuffle seed, exclude-collections picker, Deck/installed toggles), top-3 highlight cards with covers and match-percent badges, explanation rail, and a "Why this pick?" panel.
+- Playlists: master-detail layout — left rail of stored playlists with covers and generator badges, hero card, Games/Rules/Match tabs, search-based game adding, a visual rule tree editor with quick-add and parameterized rule adders (Genre, Tag, HLTB max, ProtonDB tier, Playtime range, Rating min) and a data-loss-safe Advanced JSON toggle.
+- Data Sources: unified source table (credentials, entries, stale, last success, refresh) plus a Cache Health gauge; offline toggle lives here.
+- Settings: grouped cards (Appearance, Configuration, accounts, write safety, setup diagnostics, backups, diagnostics export, About) with a summary rail.
+- Collections: card grid with poster collages and an **Export all** action (native save dialog).
+- `--ui-demo` mode: fully isolated demo data (no real Steam I/O, no CDN fetches, deterministic placeholder art).
+- Background job runner: junk preview, recommendations, discover, dynamic, mood, and playlist match all run off the UI thread with staleness-checked job tickets.
+
 #### CLI
 
+- `vapourfly recommend --exclude-collection <NAME>` (repeatable) — exclude games in specific Steam collections from recommendations.
 - `vapourfly settings show [--format json]` — display resolved Vapourfly configuration and the config file path.
 - `vapourfly settings set <field> <value>` — write a config field to `config.toml` (steam_dir, account, cc, lang, backup_retention_count).
 - `vapourfly settings unset <field>` — remove a config field from `config.toml`.
 - `vapourfly playlist create-rules --id --name --description --rules <file>` — create and store a rule-based playlist from a JSON rules array or a full playlist file.
 - `vapourfly playlist match` and `vapourfly playlist import` now print the completion price line (with a hint when no Steam Store price is cached).
 
-#### GUI
-
-- Playlists view: added a Rules JSON text area for creating rule-based playlists directly in the GUI.
-- Match report: completion price is now formatted as a currency string (e.g. `USD 7.99`) instead of raw cents, with a hint when no price data is cached.
-
 #### Core
 
+- Shared domain seams: `workflow::prepare` (scan + lazy hydration + junk classification, ADR-0002), `disposition` (Steam collection write assembly), `playlist_store`, `eligibility`, and `display` modules shared by CLI and GUI.
+- Manual junk overrides loaded from `{data}/vapourfly/manual_overrides.json` in all product paths.
+- `PriceCoverage` split into confirmed free / non-free / unknown categories for accurate completion-price reporting.
 - `vapourfly_core::config::ConfigField` enum and `set_config_field` / `unset_config_field` functions for programmatic config editing.
 - `vapourfly_core::models::Money::format()` method for rendering prices as major-unit currency strings.
 
@@ -32,15 +52,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### CLI
 
 - `vapourfly backup restore` now requires either `--dry-run` or `--confirm` (matching the write-safety convention used by other write commands). `--dry-run` previews the restore (showing backup and current SHA-256 hashes) without writing; `--confirm` executes the restore. The previous implicit-confirm behaviour is removed.
+- `--steam-dir` and `--account` are now global flags and may be placed after the subcommand (e.g. `vapourfly doctor --steam-dir /path`), matching the documented "available on all commands" contract.
+- `vapourfly scan --enrich` now applies cached entries (including stale ones) to its output, so `--offline` surfaces stale cache data instead of dropping it (consistent with the ADR-0002 hydration contract).
+- `vapourfly diagnostics export` now includes the sanitized fields documented in PRIVACY.md: redacted Steam/cache directories (full paths with `--verbose`), account and library-folder counts, and active warnings.
 
 #### Core
 
+- Recommendation `time_match` now requires a known main-story completion time (HLTB, falling back to IGDB time-to-beat) that fits the available window; games without completion-time data no longer receive the signal, and the undocumented 15-minute minimum window is removed.
+- Recommendation `high_rating` is now a true independent OR (RAWG ≥ 4.0 **or** IGDB ≥ 80) instead of source precedence, matching the PRD.
+- Environment variables (`VAPOURFLY_CC`, `VAPOURFLY_LANG`) now override config-file values, matching the documented CLI > env > file > default precedence.
 - `config::load_config_table_at` now returns an error when the config file exists but cannot be parsed, instead of silently replacing it with an empty table. A missing file still yields an empty table so first-run creation works.
 - `steam::appinfo::lookup_appinfo_names` no longer takes a generic `BuildHasher` parameter; it accepts a standard `HashSet<u32>`. No caller used a custom hasher.
+- Dependency refresh: egui/eframe 0.35 and workspace dependency bumps.
 
 #### GUI
 
+- Library card "Recommend" action is now **Discover similar**: it opens Discover seeded with that game's AppID (seed-based similarity belongs to Discover — ADR-0005). The Recommendations seed field is relabelled **Shuffle seed** and documents its real semantics (deterministic result ordering).
 - Settings panel now writes `config.toml` via the shared `vapourfly_core::config` batch API (`apply_config_updates`) instead of a duplicated read-modify-write implementation. All field updates are validated before any write and persisted in a single atomic write (temp file + rename), so the file is never left in a partially-updated, truncated, or corrupt state — even if the process is interrupted mid-write.
+
+### Fixed
+
+- `sources status` (CLI) and the Data Sources table + Cache Health gauge (GUI) now compute staleness from each cache record's age and TTL; previously the persisted `stale` flag was read literally and was always `false`, so stale counts were permanently 0 and the health gauge was permanently green.
+- Recommendation reason text for recently played games reported an inverted day count ("Played 14 days ago" for a game played today); it now reports the actual days.
+- `WritePlan.backup_path` reports the real timestamped backup path created at commit; backup retention honours `backup_retention_count` from config.
+
+### Removed
+
+- **`playlist-radio` dynamic template** (breaking, ADR-0005): `collections dynamic playlist-radio` and the corresponding GUI entry are gone; Discover with a seed AppID covers every playlist-radio scenario.
+- The old tag/genre-filter `mood` dynamic template (ADR-0004), replaced by Editorial Moods with curated hidden criteria.
 
 ## [0.1.0] - 2026-06-26
 

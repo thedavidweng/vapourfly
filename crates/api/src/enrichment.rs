@@ -742,17 +742,31 @@ pub fn source_status(cache_root: &Path) -> Vec<SourceStatus> {
                         // Try to read fetched_at for last_success tracking
                         if let Ok(bytes) = std::fs::read(entry.path()) {
                             if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                                let mut fetched_utc = None;
                                 if let Some(ts) = val.get("fetched_at").and_then(|v| v.as_str()) {
                                     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
                                         let utc = dt.with_timezone(&chrono::Utc);
+                                        fetched_utc = Some(utc);
                                         match last_success {
                                             Some(existing) if existing >= utc => {}
                                             _ => last_success = Some(utc),
                                         }
                                     }
                                 }
-                                if let Some(is_stale) = val.get("stale").and_then(|v| v.as_bool()) {
-                                    if is_stale {
+                                // Staleness is computed from fetched_at + ttl
+                                // (mirroring CacheRecord::is_expired). The
+                                // persisted `stale` field only records the
+                                // fallback state at write time, which the
+                                // normal put path always writes as false.
+                                let ttl_secs = val
+                                    .get("ttl")
+                                    .and_then(|t| t.get("secs"))
+                                    .and_then(|v| v.as_u64());
+                                if let (Some(fetched), Some(ttl)) = (fetched_utc, ttl_secs) {
+                                    let age = chrono::Utc::now()
+                                        .signed_duration_since(fetched)
+                                        .num_seconds();
+                                    if age > 0 && age as u64 > ttl {
                                         stale += 1;
                                     }
                                 }
@@ -1042,13 +1056,16 @@ mod tests {
             stale: false,
             etag: None,
         };
+        // Expired by age (48h old, 1h TTL). The persisted `stale` flag is
+        // false — exactly what the production put path always writes — so
+        // this asserts staleness is recomputed from fetched_at + ttl.
         let r2 = CacheRecord {
             source: "protondb".to_string(),
             key: "app/730".to_string(),
             fetched_at: chrono::Utc::now() - chrono::Duration::hours(48),
             ttl: Duration::from_secs(3600),
             data: serde_json::json!({"tier": "gold"}),
-            stale: true,
+            stale: false,
             etag: None,
         };
         cache.put(&r1).unwrap();
@@ -1057,6 +1074,10 @@ mod tests {
         let statuses = source_status(tmp.path());
         let protondb = statuses.iter().find(|s| s.name == "protondb").unwrap();
         assert_eq!(protondb.cache_entries, 2);
+        assert_eq!(
+            protondb.stale_entries, 1,
+            "the expired record must be counted stale regardless of its persisted flag"
+        );
         assert!(protondb.last_success.is_some());
     }
 

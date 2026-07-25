@@ -402,8 +402,8 @@ struct VapourflyApp {
     recommend_request_at_start: Option<RecommendRequest>,
     /// Selected recommendation AppID for "Why this pick?" panel.
     recommend_selected: Option<u32>,
-    /// Search filter for the seed autocomplete.
-    recommend_seed_search: String,
+    /// Steam collection names excluded from recommendations.
+    recommend_exclude_collections: Vec<String>,
 
     // Playlists view
     playlist_import_path: String,
@@ -2240,7 +2240,7 @@ impl VapourflyApp {
             recommend_results: Vec::new(),
             recommend_request_at_start: None,
             recommend_selected: None,
-            recommend_seed_search: String::new(),
+            recommend_exclude_collections: Vec::new(),
 
             playlist_import_path: String::new(),
             playlist_export_path: String::new(),
@@ -3774,14 +3774,59 @@ impl VapourflyApp {
             return Err("Choose an export path before exporting diagnostics.".into());
         }
 
+        // Sanitized environment summary (PRIVACY.md "Diagnostics Export"):
+        // paths are always redacted in the GUI; accounts and library folders
+        // are counts only. Demo mode never touches the real Steam install.
+        let steam_dir = if self.ui_demo {
+            self.config.as_ref().map(|c| c.steam_dir.clone())
+        } else {
+            self.config
+                .as_ref()
+                .map(|c| c.steam_dir.clone())
+                .or_else(VapourflyConfig::detect_steam_dir)
+        };
+        let mut warnings: Vec<String> = Vec::new();
+        let (steam_dir_str, account_count, library_folder_count) = match &steam_dir {
+            Some(dir) => {
+                let accounts = detect_accounts(dir).unwrap_or_default();
+                if accounts.is_empty() {
+                    warnings.push("no Steam accounts detected".into());
+                }
+                let folders = detect_library_folders(dir).unwrap_or_default();
+                if folders.is_empty() {
+                    warnings.push("no Steam library folders detected".into());
+                }
+                if let Ok(acc) = select_account(
+                    &accounts,
+                    self.config.as_ref().and_then(|c| c.account.as_deref()),
+                ) {
+                    let cloud_path =
+                        vapourfly_core::steam::cloud_storage_path(dir, &acc.steam_id64);
+                    if !cloud_path.exists() {
+                        warnings.push("cloud storage file not found for selected account".into());
+                    }
+                }
+                (Some(redact_path(dir)), accounts.len(), folders.len())
+            }
+            None => {
+                warnings.push("Steam directory not detected".into());
+                (None, 0, 0)
+            }
+        };
+
         let diagnostics = serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),
             "platform": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
+            "steam_dir": steam_dir_str,
+            "accounts_detected": account_count,
+            "library_folders": library_folder_count,
+            "cache_dir": redact_path(&self.cache_dir),
             "sources": {
                 "IGDB": if self.has_igdb { "configured" } else { "not configured" },
                 "RAWG": if self.has_rawg { "configured" } else { "not configured" },
             },
+            "warnings": warnings,
             "timestamp": chrono::Utc::now().to_rfc3339(),
         });
 
@@ -4007,7 +4052,7 @@ impl VapourflyApp {
             deck_mode: self.recommend_deck,
             include_installed_only: self.recommend_installed_only,
             seed: parse_optional_u64("Seed", &self.recommend_seed)?,
-            exclude_collections: vec![],
+            exclude_collections: self.recommend_exclude_collections.clone(),
         })
     }
 
@@ -5691,6 +5736,39 @@ impl VapourflyApp {
                     .size(TS_SM)
                     .color(t().text_secondary),
             );
+            ui.add_space(SP_3);
+            // Skeleton placeholder cards mirroring the real grid geometry.
+            let skeleton_width = library_main_width(ui.available_width(), self.rails_below);
+            let columns = library_grid_columns(skeleton_width).max(1);
+            for _row in 0..2 {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_3);
+                    for _col in 0..columns {
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(GAME_CARD_W, GAME_CARD_H),
+                            egui::Sense::hover(),
+                        );
+                        let painter = ui.painter();
+                        painter.rect_filled(rect, CORNER_MD, t().surface);
+                        let poster = egui::Rect::from_min_size(
+                            rect.min + egui::vec2(6.0, 6.0),
+                            egui::vec2(POSTER_W, POSTER_H),
+                        );
+                        painter.rect_filled(poster, CORNER_SM, t().border_soft);
+                        let line1 = egui::Rect::from_min_size(
+                            poster.left_bottom() + egui::vec2(0.0, SP_2),
+                            egui::vec2(POSTER_W * 0.7, 10.0),
+                        );
+                        painter.rect_filled(line1, CORNER_SM, t().border_soft);
+                        let line2 = egui::Rect::from_min_size(
+                            line1.left_bottom() + egui::vec2(0.0, 6.0),
+                            egui::vec2(POSTER_W * 0.45, 10.0),
+                        );
+                        painter.rect_filled(line2, CORNER_SM, t().border_soft);
+                    }
+                });
+                ui.add_space(SP_3);
+            }
             return;
         }
 
@@ -5966,9 +6044,9 @@ impl VapourflyApp {
                                 .corner_radius(CORNER_SM),
                             );
                             egui::Popup::menu(&menu_resp).show(|ui| {
-                                if ui.button("Recommend").clicked() {
-                                    self.recommend_seed = game.app_id.to_string();
-                                    self.current_view = View::Recommendations;
+                                if ui.button("Discover similar").clicked() {
+                                    self.discover_seed = game.app_id.to_string();
+                                    self.current_view = View::Discover;
                                 }
                                 if ui.button("Copy AppID").clicked() {
                                     ui.ctx().copy_text(game.app_id.to_string());
@@ -6058,11 +6136,11 @@ impl VapourflyApp {
                                 };
                                 if ui
                                     .add(action(icons::HEART))
-                                    .on_hover_text("Recommend games like this")
+                                    .on_hover_text("Discover games like this")
                                     .clicked()
                                 {
-                                    self.recommend_seed = game.app_id.to_string();
-                                    self.current_view = View::Recommendations;
+                                    self.discover_seed = game.app_id.to_string();
+                                    self.current_view = View::Discover;
                                 }
                                 if ui
                                     .add(action(icons::COPY))
@@ -6854,47 +6932,45 @@ impl VapourflyApp {
             ui.add_space(SP_2);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_2);
-                form_field(ui, "Seed AppID", |ui| {
+                // The seed makes shuffling deterministic (PRD: 可选 seed 让结果
+                // 可复现). Seed-by-game similarity lives in Discover (ADR-0005).
+                form_field(ui, "Shuffle seed", |ui| {
                     ui.add_sized(
                         [100.0, 28.0],
-                        egui::TextEdit::singleline(&mut self.recommend_seed).hint_text("optional"),
+                        egui::TextEdit::singleline(&mut self.recommend_seed)
+                            .hint_text("optional — reproducible results"),
                     );
                 });
-                // Searchable seed autocomplete from library.
-                if let Some(scan) = &self.scan_result {
-                    ui.label(
-                        RichText::new("Search:")
-                            .size(TS_SM)
-                            .color(t().text_secondary),
-                    );
-                    ui.add_sized(
-                        [120.0, 28.0],
-                        egui::TextEdit::singleline(&mut self.recommend_seed_search)
-                            .hint_text("library search"),
-                    );
-                    let q = self.recommend_seed_search.to_lowercase();
-                    let seed_games: Vec<(u32, String)> = scan
-                        .games
-                        .iter()
-                        .filter(|g| q.is_empty() || g.name.to_lowercase().contains(&q))
-                        .take(20)
-                        .map(|g| (g.app_id, g.name.clone()))
-                        .collect();
-                    if !seed_games.is_empty() {
-                        egui::ComboBox::from_id_salt("rec_seed_picker")
-                            .selected_text("Pick from library\u{2026}")
-                            .width(200.0)
-                            .show_ui(ui, |ui| {
-                                for (app_id, name) in seed_games {
-                                    if ui
-                                        .selectable_label(false, format!("{app_id} — {name}"))
-                                        .clicked()
-                                    {
-                                        self.recommend_seed = app_id.to_string();
+                // Exclude-collections picker (PRD: 排除集合 external parameter).
+                if !self.collections.is_empty() {
+                    let selected = self.recommend_exclude_collections.len();
+                    let label = if selected == 0 {
+                        "Exclude collections\u{2026}".to_string()
+                    } else {
+                        format!("Excluding {selected} collection(s)")
+                    };
+                    egui::ComboBox::from_id_salt("rec_exclude_collections")
+                        .selected_text(label)
+                        .width(200.0)
+                        .show_ui(ui, |ui| {
+                            let names: Vec<String> = self
+                                .collections
+                                .iter()
+                                .filter(|c| !c.is_hidden_collection)
+                                .map(|c| c.name.clone())
+                                .collect();
+                            for name in names {
+                                let mut checked =
+                                    self.recommend_exclude_collections.contains(&name);
+                                if ui.checkbox(&mut checked, &name).changed() {
+                                    if checked {
+                                        self.recommend_exclude_collections.push(name);
+                                    } else {
+                                        self.recommend_exclude_collections.retain(|n| n != &name);
                                     }
                                 }
-                            });
-                    }
+                            }
+                        });
                 }
             });
             ui.add_space(SP_2);
@@ -11818,6 +11894,20 @@ mod tests {
 
         app.recommend_seed.clear();
         assert_eq!(app.recommend_request_from_inputs().unwrap().seed, None);
+    }
+
+    #[test]
+    fn recommend_request_carries_excluded_collections() {
+        let mut app = VapourflyApp::new(None, false);
+        app.recommend_minutes = "60".into();
+        app.recommend_count = "5".into();
+        app.recommend_exclude_collections = vec!["Favorites".into(), "Backlog".into()];
+
+        let request = app.recommend_request_from_inputs().unwrap();
+        assert_eq!(
+            request.exclude_collections,
+            vec!["Favorites".to_string(), "Backlog".to_string()]
+        );
     }
 
     #[test]

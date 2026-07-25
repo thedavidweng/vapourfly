@@ -238,7 +238,7 @@ pub fn library_main_width(available: f32, rail_below: bool) -> f32 {
     }
 }
 
-#[cfg(test)]
+/// Number of game-card columns that fit in the main library width.
 pub fn library_grid_columns(main_width: f32) -> usize {
     ((main_width + SP_3) / (GAME_CARD_W + SP_3)).floor() as usize
 }
