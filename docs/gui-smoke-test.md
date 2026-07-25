@@ -46,9 +46,9 @@ Shell defaults to the light desktop token theme (warm canvas, white cards, orchi
 ### 0. Theme toggle
 
 1. Launch the GUI (fixtures or real library).
-2. Confirm the top chrome shows a **☾ Dark** control on the right.
+2. Confirm the top chrome shows a **Dark** control (moon icon) on the right.
 3. Click it and verify the shell switches to the dark palette (cool surfaces, violet accent) without changing navigation destinations.
-4. Click **☀ Light** and verify the warm light palette returns.
+4. Click **Light** (sun icon) and verify the warm light palette returns.
 
 ### 1. Fixture Scan + Library
 
@@ -58,11 +58,11 @@ Shell defaults to the light desktop token theme (warm canvas, white cards, orchi
 4. Verify the top-chrome game count appears after the scan completes.
 5. Verify the Library header stays on one line and the top chrome metrics remain right-aligned at 1024px, 1280px, and 1440px widths.
 6. Verify Search and the All / Installed / Unplayed / Hidden segmented control share the first toolbar row.
-7. Verify the labelled Deck, Controller, playtime, genre, tag, and sort controls form the second row; advanced ProtonDB, HLTB, exclusion, and descending controls open from the gear menu.
+7. Verify the second row is a single line of uniform label-over-value filter dropdowns (Steam Deck, Controller, Play time, Genre, Tags, Sort by) whose bodies open as popups, followed by a square filter-icon button that opens the advanced ProtonDB, HLTB, exclusion, and descending controls.
 8. Verify Cozy, Story-rich, Great on Deck, and Short sessions appear as editorial chips below the functional filters.
 9. Verify the default 1280–1440px layout keeps four game cards in the main column and the complete Library insights rail on-screen. At 1024–1279px the rail moves below the grid without horizontal overflow.
 10. Verify real Steam art loads for real AppIDs such as Counter-Strike 2 (`730`) and Factorio (`427520`). In demo/offline mode, verify each game receives a stable illustrated local cover with no network request.
-11. Confirm each card shows title, status, compact genre/compatibility metadata, playtime, and three persistent actions.
+11. Confirm each card overlays a status icon chip (top-left) and an overflow menu button (top-right) on the artwork, followed by title, genre chips, a playtime/deck-badge metadata row, and three persistent icon actions.
 12. Confirm CS2 shows Installed and playtime `6h 58m`.
 13. Confirm Factorio shows Installed and playtime `17h 18m`.
 14. Confirm app 999 remains in the grid with a library/non-installed status and playtime `5m`; missing artwork keeps a stable image area without layout shift.
@@ -74,9 +74,10 @@ Shell defaults to the light desktop token theme (warm canvas, white cards, orchi
 ### 2. Junk Preview (from Library)
 
 1. From Library, click **Junk…** in the toolbar (not the sidebar).
-2. Choose Default, Strict, or Aggressive mode.
-3. Click **Preview**.
-4. Verify the preview table is displayed with confidence scores and signal text.
+2. Verify the header reads **Junk cleanup** and the rules card lists the default thresholds as chips (playtime < 30m, HLTB < 2h, rating < 2.5).
+3. Choose Default, Strict, or Aggressive mode.
+4. Click **Preview**.
+5. Verify the preview table is displayed with confidence badges and signal text; playtime/HLTB/rating cells that trip a rule render in the error color, and the Junk summary rail stays fully on-screen at 1280px+.
 5. If the active fixture/cache has candidates, verify the Candidates metric is nonzero and **Apply to collection** / **Hide** actions appear.
 6. If using bare `steam_minimal`, verify the table reports zero candidates without errors and write actions stay unavailable.
 7. Switch modes, preview again, and confirm the table updates without errors.
@@ -121,7 +122,7 @@ Shell defaults to the light desktop token theme (warm canvas, white cards, orchi
    - Red border error card for corrupt/unreadable files
 4. Click **+ New playlist** in the rail and verify the ID field auto-generates from the Name field (slugified). Manually editing the ID disables auto-gen.
 5. Enter an ID with path separators (e.g. `../test`) and verify a real-time validation warning appears.
-6. Fill in Name, Description, and use the **Games tab** search to Add games from the library. Verify search is the primary editing interface.
+6. Fill in Name, Description, and use the **Games tab** search to Add games from the library. Verify added games appear in a columned table (#, Game, Genre, Deck tier, HLTB, Playtime) with per-row remove, and that search is the primary editing interface.
 7. Expand **Advanced: Raw AppID CSV** (collapsed by default) and verify the comma-separated AppID field is available but secondary.
 8. Enter an invalid AppID (e.g. `730, invalid, 440`) in the CSV field and Save; verify a specific error message identifies the invalid token and no playlist is saved.
 9. Click **Save Playlist** and verify a match report appears (owned/missing/… pills + owned preview when games are known).
@@ -150,8 +151,8 @@ Shell defaults to the light desktop token theme (warm canvas, white cards, orchi
 ### 6. Discover
 
 1. Navigate to **Discover** via the left sidebar (not via Playlists).
-2. Confirm seed AppID, count, and **Generate** controls on this page.
-3. Set seed AppID and Count, click **Generate**, and verify on-page **result cards** show names, scores, and reason codes when candidates exist; the playlist is stored under stable id `discover`.
+2. Confirm the page shows the "Tonight, what should I play?" headline with a seed AppID input, pick-count presets (10/20/40), and a **Generate** control.
+3. Set seed AppID and pick count, click **Generate**, and verify the highest-scored pick renders as a **Top recommendation hero card** (artwork, metadata chips, reason pills) with the remaining picks in a "Picked for you" card row; the playlist is stored under stable id `discover`.
 4. Clear seed AppID, regenerate, and verify the taste-based playlist **overwrites** the same `discover` slot (no second playlist id).
 5. Click **Open in Playlists** and verify the generated playlist is loaded for edit/share/sync. To keep a long-term copy, change id/name and Save again.
 6. Optionally click **Sync to Steam Collection** on Discover and verify dry-run confirmation before any Steam write.
@@ -159,7 +160,7 @@ Shell defaults to the light desktop token theme (warm canvas, white cards, orchi
 ### 7. Collections
 
 1. Navigate to Collections view via the left sidebar.
-2. Verify collections appear as a **card grid** (not a dense table): each card shows name, game count, and a poster collage when member AppIDs resolve art.
+2. Verify collections appear as a **card grid** (not a dense table): each card shows an icon tile, name, a poster collage when member AppIDs resolve art, and a footer with game count and a Synced indicator.
 3. Confirm there is **no** member drill-in / edit UI on cards.
 4. Confirm `Favorites` reports `2` games against `steam_minimal` (collage may show CS2 and Factorio posters).
 5. Click **Export all**, choose a save location in the file dialog, and verify a JSON file is written.

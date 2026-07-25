@@ -226,8 +226,8 @@ pub const RECOMMEND_CARD_IMG_H: f32 = 124.0;
 pub const POSTER_W: f32 = 194.0;
 pub const POSTER_H: f32 = 142.0;
 pub const GAME_CARD_W: f32 = 206.0;
-/// Artwork + title + compact metadata/action row.
-pub const GAME_CARD_H: f32 = 292.0;
+/// Artwork (with overlaid status/menu) + title + chips + metadata + actions.
+pub const GAME_CARD_H: f32 = 268.0;
 pub const LIBRARY_RAIL_WIDTH: f32 = 214.0;
 
 pub fn library_main_width(available: f32, rail_below: bool) -> f32 {
