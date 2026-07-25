@@ -290,8 +290,8 @@ fn is_party_game(game: &Game) -> bool {
     })
 }
 
-/// Deck Guardians: ProtonDB Platinum or Gold + full controller support + short
-/// HLTB main story (≤ 4 hours).
+/// Deck Guardians: ProtonDB Platinum or Gold + full controller support + a
+/// short game ([`scoring::is_short_game`]).
 fn is_deck_guardian(game: &Game) -> bool {
     use crate::models::ProtonTier;
     let proton_ok = game
@@ -309,10 +309,7 @@ fn is_deck_guardian(game: &Game) -> bool {
     if !controller_ok {
         return false;
     }
-    game.hltb
-        .as_ref()
-        .and_then(|h| h.main_story_seconds)
-        .is_some_and(|secs| secs <= 4 * 3600)
+    scoring::is_short_game(game)
 }
 
 /// Unopened Treasures: unplayed + high rating + not junk.
@@ -320,29 +317,15 @@ fn is_unopened_treasure(game: &Game) -> bool {
     is_unplayed(game) && scoring::is_high_rating(game)
 }
 
-/// Weekend Marathon: unplayed + long HLTB (≥ 20 hours) + high rating.
+/// Weekend Marathon: unplayed + a long game ([`scoring::is_long_game`]) +
+/// high rating.
 fn is_weekend_marathon(game: &Game) -> bool {
-    if !is_unplayed(game) {
-        return false;
-    }
-    if !scoring::is_high_rating(game) {
-        return false;
-    }
-    game.hltb
-        .as_ref()
-        .and_then(|h| h.main_story_seconds)
-        .is_some_and(|secs| secs >= 20 * 3600)
+    is_unplayed(game) && scoring::is_high_rating(game) && scoring::is_long_game(game)
 }
 
-/// Quick Round: unplayed + short HLTB (≤ 4 hours) + not junk.
+/// Quick Round: unplayed + a short game ([`scoring::is_short_game`]) + not junk.
 fn is_quick_round(game: &Game) -> bool {
-    if !is_unplayed(game) {
-        return false;
-    }
-    game.hltb
-        .as_ref()
-        .and_then(|h| h.main_story_seconds)
-        .is_some_and(|secs| secs <= 4 * 3600)
+    is_unplayed(game) && scoring::is_short_game(game)
 }
 
 // ---------------------------------------------------------------------------

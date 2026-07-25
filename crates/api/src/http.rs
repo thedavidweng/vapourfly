@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -334,10 +334,15 @@ impl Default for HttpClientConfig {
 ///
 /// Wraps an [`HttpBackend`] and adds timeout configuration, user-agent
 /// injection, per-source rate limiting, and exponential backoff retry.
+///
+/// Cloning is cheap and **shares** the backend and the per-source rate
+/// limiter, so one client (real or mock) can serve every enrichment source
+/// while rate-limit accounting stays global.
+#[derive(Clone)]
 pub struct HttpClient {
-    backend: Box<dyn HttpBackend>,
-    config: HttpClientConfig,
-    rate_limiter: RateLimiter,
+    backend: Arc<dyn HttpBackend>,
+    config: Arc<HttpClientConfig>,
+    rate_limiter: Arc<RateLimiter>,
 }
 
 impl std::fmt::Debug for HttpClient {
@@ -352,27 +357,27 @@ impl HttpClient {
     /// Create a new client with the default ureq-based backend.
     pub fn new() -> Self {
         Self {
-            backend: Box::new(UreqBackend::new()),
-            config: HttpClientConfig::default(),
-            rate_limiter: RateLimiter::new(),
+            backend: Arc::new(UreqBackend::new()),
+            config: Arc::new(HttpClientConfig::default()),
+            rate_limiter: Arc::new(RateLimiter::new()),
         }
     }
 
     /// Create a client with a custom backend (e.g. [`MockBackend`] for tests).
     pub fn with_backend(backend: Box<dyn HttpBackend>) -> Self {
         Self {
-            backend,
-            config: HttpClientConfig::default(),
-            rate_limiter: RateLimiter::new(),
+            backend: Arc::from(backend),
+            config: Arc::new(HttpClientConfig::default()),
+            rate_limiter: Arc::new(RateLimiter::new()),
         }
     }
 
     /// Create a client with a custom backend and configuration.
     pub fn with_config(backend: Box<dyn HttpBackend>, config: HttpClientConfig) -> Self {
         Self {
-            backend,
-            config,
-            rate_limiter: RateLimiter::new(),
+            backend: Arc::from(backend),
+            config: Arc::new(config),
+            rate_limiter: Arc::new(RateLimiter::new()),
         }
     }
 

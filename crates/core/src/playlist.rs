@@ -288,7 +288,7 @@ fn eval(rule: &PlaylistRule, game: &Game) -> bool {
 
         // -- HLTB max minutes --------------------------------------------------
         PlaylistRule::HltbMaxMinutes { minutes } => {
-            match game.hltb.as_ref().and_then(|h| h.main_story_seconds) {
+            match crate::signal::main_story_seconds(game) {
                 Some(seconds) => (seconds / 60) <= *minutes,
                 None => false, // fail closed
             }
@@ -422,46 +422,37 @@ pub fn match_playlist(
     let mut hidden: Vec<u32> = Vec::new();
     let mut junk: Vec<u32> = Vec::new();
 
+    // Unplayed/hidden/junk semantics are owned by `eligibility`, not
+    // re-derived here.
+    let mut classify_owned = |game: &Game| {
+        owned.push(game.app_id);
+        if crate::eligibility::is_unplayed(game) {
+            unplayed.push(game.app_id);
+        } else {
+            played.push(game.app_id);
+        }
+        if game.is_hidden {
+            hidden.push(game.app_id);
+        }
+        if game.is_junk {
+            junk.push(game.app_id);
+        }
+    };
+
     match &playlist.playlist.content {
         PlaylistContent::Manual { app_ids } => {
             let id_set: HashSet<u32> = app_ids.iter().copied().collect();
             for &id in &id_set {
                 match by_id.get(&id) {
-                    Some(game) => {
-                        owned.push(id);
-                        if game.playtime_minutes.is_none_or(|m| m == 0) {
-                            unplayed.push(id);
-                        } else {
-                            played.push(id);
-                        }
-                        if game.is_hidden {
-                            hidden.push(id);
-                        }
-                        if game.is_junk {
-                            junk.push(id);
-                        }
-                    }
-                    None => {
-                        missing.push(id);
-                    }
+                    Some(game) => classify_owned(game),
+                    None => missing.push(id),
                 }
             }
         }
         PlaylistContent::Rules { rules } => {
             for game in games {
                 if evaluate_rules(rules, game) {
-                    owned.push(game.app_id);
-                    if game.playtime_minutes.is_none_or(|m| m == 0) {
-                        unplayed.push(game.app_id);
-                    } else {
-                        played.push(game.app_id);
-                    }
-                    if game.is_hidden {
-                        hidden.push(game.app_id);
-                    }
-                    if game.is_junk {
-                        junk.push(game.app_id);
-                    }
+                    classify_owned(game);
                 }
             }
         }

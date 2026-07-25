@@ -11,7 +11,6 @@
 use vapourfly_core::error::Result;
 use vapourfly_core::models::HltbData;
 
-#[cfg(feature = "hltb_scrape")]
 use crate::http::HttpClient;
 
 /// HLTB client.
@@ -40,7 +39,12 @@ impl HltbClient {
     }
 
     /// Create an HLTB client with a custom [`HttpClient`].
-    pub fn with_http(#[cfg(feature = "hltb_scrape")] http: HttpClient) -> Self {
+    ///
+    /// The client is unused (and dropped) when the `hltb_scrape` feature is
+    /// disabled, so callers can wire HTTP uniformly across all sources.
+    pub fn with_http(http: HttpClient) -> Self {
+        #[cfg(not(feature = "hltb_scrape"))]
+        let _ = http;
         Self {
             #[cfg(feature = "hltb_scrape")]
             http,
@@ -260,11 +264,11 @@ mod types {
         #[serde(rename = "game_name")]
         pub game_name: String,
         #[serde(rename = "comp_main", default)]
-        comp_main: Option<f64>,
+        pub comp_main: Option<f64>,
         #[serde(rename = "comp_plus", default)]
-        comp_plus: Option<f64>,
+        pub comp_plus: Option<f64>,
         #[serde(rename = "comp_100", default)]
-        comp_100: Option<f64>,
+        pub comp_100: Option<f64>,
     }
 
     impl HltbSearchEntry {
@@ -323,6 +327,8 @@ mod tests {
     use super::*;
     use crate::http::{HttpResponse, MockBackend};
     use std::collections::HashMap;
+    #[cfg(feature = "hltb_scrape")]
+    use vapourfly_core::models::HltbSource;
 
     #[test]
     fn stub_returns_none_when_feature_disabled() {
@@ -335,15 +341,13 @@ mod tests {
                 body: Vec::new(),
             },
         );
-        #[cfg(feature = "hltb_scrape")]
-        let http = HttpClient::with_backend(Box::new(mock));
-        #[cfg(feature = "hltb_scrape")]
-        let client = HltbClient::with_http(http);
-        #[cfg(not(feature = "hltb_scrape"))]
-        let client = HltbClient::new();
+        let client = HltbClient::with_http(HttpClient::with_backend(Box::new(mock)));
 
         let result = client.fetch("Test Game").unwrap();
+        #[cfg(not(feature = "hltb_scrape"))]
         assert!(result.is_none());
+        #[cfg(feature = "hltb_scrape")]
+        assert!(result.is_none(), "empty body must parse to no match");
     }
 
     #[test]

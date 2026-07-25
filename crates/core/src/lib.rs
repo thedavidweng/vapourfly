@@ -4,6 +4,7 @@
 //! management, junk detection, recommendation scoring, and playlist evaluation.
 //! It has no network dependencies and no UI dependencies.
 
+pub mod actions;
 pub mod config;
 pub mod discover;
 pub mod display;

@@ -6,6 +6,15 @@
 //!
 //! Base policy (CONTEXT.md): generators operate on owned games that are not
 //! hidden, not junk, and not non-game app types (Application / Tool / DLC).
+//!
+//! This module is the single owner of eligibility vocabulary. Anywhere else
+//! that classifies a Game as unplayed or non-game (e.g. `match_playlist`'s
+//! report buckets) must call these predicates rather than re-derive them.
+//! The declarative `PlaylistRule::{Installed, NotHidden, NotJunk}` variants
+//! read the same `Game` fields directly — those fields *are* the definition,
+//! so the two encodings cannot drift; the parity test at the bottom of this
+//! file pins the one place they could (non-game-type exclusion across
+//! generators).
 
 use crate::models::{Game, SteamAppType};
 
@@ -71,7 +80,6 @@ pub fn is_discover_eligible(game: &Game) -> bool {
 mod tests {
     use super::*;
     use crate::models::SteamAppType;
-    use std::path::PathBuf;
 
     fn game(app_id: u32, app_type: SteamAppType) -> Game {
         Game {
@@ -99,7 +107,6 @@ mod tests {
 
     #[test]
     fn base_excludes_non_game_types() {
-        let _ = PathBuf::new(); // keep import quiet if unused after edits
         let tool = game(1, SteamAppType::Tool);
         let app = game(2, SteamAppType::Application);
         let dlc = game(3, SteamAppType::Dlc);
