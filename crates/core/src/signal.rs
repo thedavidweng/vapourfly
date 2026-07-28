@@ -17,10 +17,6 @@ use std::collections::HashMap;
 
 use crate::models::{Game, HltbSource, ManualOverrides, RatingSource};
 
-// ---------------------------------------------------------------------------
-// Rating
-// ---------------------------------------------------------------------------
-
 /// Return the effective rating on a 0–5 scale and its source.
 ///
 /// Priority: `overrides` > RAWG (native 0–5) > IGDB (0–100, converted).
@@ -50,10 +46,6 @@ pub fn effective_rating(
     None
 }
 
-// ---------------------------------------------------------------------------
-// Completion time
-// ---------------------------------------------------------------------------
-
 /// Return the effective completion time in seconds and its source.
 ///
 /// Manual overrides take precedence over scraped HLTB data. Overrides are a
@@ -79,10 +71,6 @@ pub fn effective_completion_time(
 pub fn main_story_seconds(game: &Game) -> Option<u32> {
     game.hltb.as_ref().and_then(|h| h.main_story_seconds)
 }
-
-// ---------------------------------------------------------------------------
-// Keywords
-// ---------------------------------------------------------------------------
 
 /// Return lowercase keywords (genres, themes, tags) for similarity matching.
 ///

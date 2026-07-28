@@ -12,10 +12,6 @@ use serde::Deserialize;
 
 use crate::error::{Result, VapourflyError};
 
-// ---------------------------------------------------------------------------
-// Settable config fields
-// ---------------------------------------------------------------------------
-
 /// A config field that can be shown, set, or unset via the CLI `settings`
 /// command or the GUI Settings panel.
 ///
@@ -27,6 +23,9 @@ pub enum ConfigField {
     Cc,
     Lang,
     BackupRetentionCount,
+    /// Steam Web API key (<https://steamcommunity.com/dev/apikey>) —
+    /// user-created, stored locally, never distributed with the app.
+    SteamApiKey,
 }
 
 impl ConfigField {
@@ -38,6 +37,7 @@ impl ConfigField {
             ConfigField::Cc => "cc",
             ConfigField::Lang => "lang",
             ConfigField::BackupRetentionCount => "backup_retention_count",
+            ConfigField::SteamApiKey => "steam_api_key",
         }
     }
 
@@ -49,6 +49,7 @@ impl ConfigField {
             "cc" => Some(ConfigField::Cc),
             "lang" => Some(ConfigField::Lang),
             "backup_retention_count" => Some(ConfigField::BackupRetentionCount),
+            "steam_api_key" => Some(ConfigField::SteamApiKey),
             _ => None,
         }
     }
@@ -61,6 +62,7 @@ impl ConfigField {
             ConfigField::Cc,
             ConfigField::Lang,
             ConfigField::BackupRetentionCount,
+            ConfigField::SteamApiKey,
         ]
     }
 
@@ -83,13 +85,18 @@ impl ConfigField {
                     .map_err(|_| "value must be a non-negative integer".to_string())?;
                 Ok(n.to_string())
             }
+            ConfigField::SteamApiKey => {
+                if trimmed.is_empty() {
+                    return Err("value must not be empty".into());
+                }
+                if trimmed.chars().any(char::is_whitespace) {
+                    return Err("a Steam Web API key contains no spaces".into());
+                }
+                Ok(trimmed.to_string())
+            }
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// On-disk config file schema (TOML)
-// ---------------------------------------------------------------------------
 
 /// Raw deserialization target for `config.toml`. All fields are optional so a
 /// partial file is valid.
@@ -100,11 +107,8 @@ struct ConfigFile {
     cc: Option<String>,
     lang: Option<String>,
     backup_retention_count: Option<u32>,
+    steam_api_key: Option<String>,
 }
-
-// ---------------------------------------------------------------------------
-// CLI overrides
-// ---------------------------------------------------------------------------
 
 /// Values supplied via CLI flags. All fields are optional -- only explicitly
 /// passed flags should be `Some`.
@@ -113,10 +117,6 @@ pub struct CliOverrides {
     pub steam_dir: Option<PathBuf>,
     pub account: Option<String>,
 }
-
-// ---------------------------------------------------------------------------
-// Resolved configuration
-// ---------------------------------------------------------------------------
 
 /// Fully resolved Vapourfly configuration. Every field is populated; there are
 /// no remaining optionals on paths that would require fallible access at
@@ -149,6 +149,13 @@ pub struct VapourflyConfig {
 
     /// Number of rolling backups to keep for modified files.
     pub backup_retention_count: u32,
+
+    /// User-created Steam Web API key for bulk name resolution
+    /// (env `VAPOURFLY_STEAM_API_KEY` overrides the config file).
+    /// Status/echo displays mask it; edit fields show it plainly — the key
+    /// is displayed in plaintext on Steam's own creation page, so masking
+    /// input would be theater.
+    pub steam_api_key: Option<String>,
 }
 
 impl VapourflyConfig {
@@ -157,7 +164,6 @@ impl VapourflyConfig {
     pub fn from_cli_and_env(cli: CliOverrides) -> Result<Self> {
         let file = load_config_file();
 
-        // -- steam_dir -------------------------------------------------------
         let steam_dir = cli
             .steam_dir
             .or_else(|| env_path("VAPOURFLY_STEAM_DIR"))
@@ -171,23 +177,19 @@ impl VapourflyConfig {
                     .into(),
             ))?;
 
-        // -- account ---------------------------------------------------------
         let account = cli
             .account
             .or_else(|| std::env::var("VAPOURFLY_ACCOUNT").ok())
             .or_else(|| file.as_ref().and_then(|f| f.account.clone()));
 
-        // -- cache_root / app_data_root (platform dirs) ----------------------
         let cache_root = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("."));
         let app_data_root = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
 
-        // -- credentials (presence only) -------------------------------------
         let has_igdb_credentials =
             env_present("VAPOURFLY_IGDB_CLIENT_ID") && env_present("VAPOURFLY_IGDB_CLIENT_SECRET");
 
         let has_rawg_credentials = env_present("VAPOURFLY_RAWG_KEY");
 
-        // -- store locale ----------------------------------------------------
         // Environment variables override the config file (documented
         // precedence: CLI > env > file > default), matching steam_dir/account.
         let cc = std::env::var("VAPOURFLY_CC")
@@ -202,11 +204,16 @@ impl VapourflyConfig {
             .or_else(|| file.as_ref().and_then(|f| f.lang.clone()))
             .unwrap_or_else(|| "english".into());
 
-        // -- backup retention ------------------------------------------------
         let backup_retention_count = file
             .as_ref()
             .and_then(|f| f.backup_retention_count)
             .unwrap_or(5);
+
+        let steam_api_key = std::env::var("VAPOURFLY_STEAM_API_KEY")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .or_else(|| file.as_ref().and_then(|f| f.steam_api_key.clone()))
+            .filter(|v| !v.is_empty());
 
         Ok(Self {
             steam_dir,
@@ -218,6 +225,7 @@ impl VapourflyConfig {
             cc,
             lang,
             backup_retention_count,
+            steam_api_key,
         })
     }
 
@@ -275,20 +283,12 @@ pub fn default_manual_overrides_path() -> PathBuf {
         .join("manual_overrides.json")
 }
 
-// ---------------------------------------------------------------------------
-// Platform Steam detection — delegate to steam::paths
-// ---------------------------------------------------------------------------
-
 /// Try well-known Steam paths for the current platform.
 fn detect_steam_dir() -> Option<PathBuf> {
     crate::steam::paths::detect_steam_dirs(None)
         .into_iter()
         .next()
 }
-
-// ---------------------------------------------------------------------------
-// Config file loading
-// ---------------------------------------------------------------------------
 
 /// Return the platform-specific path to the Vapourfly config file.
 ///
@@ -304,6 +304,17 @@ fn load_config_file() -> Option<ConfigFile> {
     let path = config_file_path()?;
     let contents = std::fs::read_to_string(&path).ok()?;
     toml::from_str(&contents).ok()
+}
+
+/// Resolve the Steam Web API key with the documented precedence
+/// (env `VAPOURFLY_STEAM_API_KEY` > config file), without requiring a full
+/// [`VapourflyConfig`] resolution (which needs a detectable Steam dir).
+pub fn resolve_steam_api_key() -> Option<String> {
+    std::env::var("VAPOURFLY_STEAM_API_KEY")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| load_config_file().and_then(|f| f.steam_api_key))
+        .filter(|v| !v.is_empty())
 }
 
 /// Read the config file at `path` as a TOML table.
@@ -379,18 +390,20 @@ fn write_config_table_at(table: &toml::Value, path: &Path) -> Result<()> {
     })
 }
 
+/// [`config_file_path`], turned into an error when the platform config
+/// directory cannot be determined.
+fn require_config_path() -> Result<PathBuf> {
+    config_file_path().ok_or_else(|| {
+        VapourflyError::Internal("could not determine platform config directory".into())
+    })
+}
+
 /// Set a single config field in `config.toml`, creating the file if needed.
 ///
 /// Existing keys that are not `field` are preserved. Pass the already-normalised
 /// string value; use [`ConfigField::normalise`] to validate user input first.
 pub fn set_config_field(field: ConfigField, value: &str) -> Result<()> {
-    set_config_field_at(
-        field,
-        value,
-        &config_file_path().ok_or_else(|| {
-            VapourflyError::Internal("could not determine platform config directory".into())
-        })?,
-    )
+    set_config_field_at(field, value, &require_config_path()?)
 }
 
 /// Same as [`set_config_field`] but writes to an explicit path. Used by tests.
@@ -404,12 +417,7 @@ pub(crate) fn set_config_field_at(field: ConfigField, value: &str, path: &Path) 
 /// when it does not exist, so callers can treat the result as "field is now
 /// unset".
 pub fn unset_config_field(field: ConfigField) -> Result<()> {
-    unset_config_field_at(
-        field,
-        &config_file_path().ok_or_else(|| {
-            VapourflyError::Internal("could not determine platform config directory".into())
-        })?,
-    )
+    unset_config_field_at(field, &require_config_path()?)
 }
 
 /// Same as [`unset_config_field`] but writes to an explicit path. Used by tests.
@@ -433,12 +441,7 @@ pub type ConfigUpdate = (ConfigField, Option<String>);
 /// of them do — the file is never left in a partially-updated state, even if
 /// the process is interrupted mid-write.
 pub fn apply_config_updates(updates: &[ConfigUpdate]) -> Result<()> {
-    apply_config_updates_at(
-        updates,
-        &config_file_path().ok_or_else(|| {
-            VapourflyError::Internal("could not determine platform config directory".into())
-        })?,
-    )
+    apply_config_updates_at(updates, &require_config_path()?)
 }
 
 /// Same as [`apply_config_updates`] but writes to an explicit path. Used by
@@ -477,10 +480,6 @@ pub(crate) fn apply_config_updates_at(updates: &[ConfigUpdate], path: &Path) -> 
     write_config_table_at(&table, path)
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /// Read a `PathBuf` from an environment variable, returning `None` if the var
 /// is unset or empty.
 fn env_path(key: &str) -> Option<PathBuf> {
@@ -494,10 +493,6 @@ fn env_path(key: &str) -> Option<PathBuf> {
 fn env_present(env_key: &str) -> bool {
     std::env::var(env_key).is_ok_and(|val| !val.is_empty())
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -847,6 +842,7 @@ backup_retention_count = 10
             cc: "US".into(),
             lang: "english".into(),
             backup_retention_count: 5,
+            steam_api_key: None,
         }
     }
 
@@ -977,6 +973,28 @@ backup_retention_count = 10
         assert_eq!(parsed.lang.as_deref(), Some("english"));
         assert_eq!(parsed.backup_retention_count, Some(5));
         assert!(parsed.account.is_none(), "account should have been unset");
+    }
+
+    #[test]
+    fn steam_api_key_field_roundtrips_and_validates() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+
+        // normalise: trims, rejects empties and embedded whitespace.
+        assert_eq!(
+            ConfigField::SteamApiKey.normalise("  ABC123  ").unwrap(),
+            "ABC123"
+        );
+        assert!(ConfigField::SteamApiKey.normalise("   ").is_err());
+        assert!(ConfigField::SteamApiKey.normalise("AB C").is_err());
+
+        set_config_field_at(ConfigField::SteamApiKey, "ABC123", &path).unwrap();
+        let parsed: ConfigFile = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(parsed.steam_api_key.as_deref(), Some("ABC123"));
+
+        apply_config_updates_at(&[(ConfigField::SteamApiKey, None)], &path).unwrap();
+        let parsed: ConfigFile = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(parsed.steam_api_key.is_none());
     }
 
     #[test]

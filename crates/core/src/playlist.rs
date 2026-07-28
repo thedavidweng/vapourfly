@@ -7,7 +7,7 @@
 //! # Import / Export
 //!
 //! [`import_playlist`] reads a JSON file and validates the schema, playlist ID
-//! uniqueness, name, AppIDs, rule operators, and rule nesting depth.
+//! uniqueness, name, AppIDs, and rule nesting depth.
 //! [`export_playlist`] writes a playlist back to disk with sorted AppIDs and
 //! pretty-printed JSON.
 //!
@@ -24,29 +24,20 @@
 //! a [`PlaylistMatchReport`] summarising owned, missing, played, unplayed,
 //! hidden, and junk games, plus an optional completion price.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
 use crate::error::{Result, SafePath, VapourflyError};
 use crate::models::{
     CompletionPrice, ControllerSupport, Game, Money, PlaylistContent, PlaylistFile,
-    PlaylistMatchReport, PlaylistRule, PriceCoverage, ProtonTier, SteamStoreDetails,
+    PlaylistMatchReport, PlaylistRule, PriceCoverage, SteamStoreDetails,
     VAPOURFLY_PLAYLIST_SCHEMA,
 };
 use crate::signal;
-use std::collections::HashMap;
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
 
 /// Maximum nesting depth for rule trees before we reject the file.
 const MAX_RULE_DEPTH: usize = 16;
-
-// ---------------------------------------------------------------------------
-// slugify
-// ---------------------------------------------------------------------------
 
 /// Produce a lowercased, hyphen-separated slug suitable for Steam collection IDs.
 ///
@@ -60,75 +51,11 @@ const MAX_RULE_DEPTH: usize = 16;
 /// assert_eq!(slugify("  spaces  "), "spaces");
 /// ```
 pub fn slugify(name: &str) -> String {
-    let slug: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect();
-
-    // Collapse runs of hyphens.
-    let mut collapsed = String::with_capacity(slug.len());
-    let mut prev_hyphen = false;
-    for ch in slug.chars() {
-        if ch == '-' {
-            if !prev_hyphen {
-                collapsed.push(ch);
-            }
-            prev_hyphen = true;
-        } else {
-            collapsed.push(ch);
-            prev_hyphen = false;
-        }
-    }
-
-    // Strip leading/trailing hyphens.
-    collapsed.trim_matches('-').to_string()
-}
-
-// ---------------------------------------------------------------------------
-// Validation helpers
-// ---------------------------------------------------------------------------
-
-/// Check that every rule in the tree is a known variant.
-fn validate_rule_operators(rules: &[PlaylistRule]) -> Result<()> {
-    for rule in rules {
-        match rule {
-            PlaylistRule::ProtonAtLeast { tier } => {
-                // All ProtonTier variants are known; this is a sanity check
-                // that the tier deserialized correctly.
-                match tier {
-                    ProtonTier::Borked
-                    | ProtonTier::Bronze
-                    | ProtonTier::Silver
-                    | ProtonTier::Gold
-                    | ProtonTier::Platinum
-                    | ProtonTier::Native
-                    | ProtonTier::Unknown => {}
-                }
-            }
-            PlaylistRule::HltbMaxMinutes { minutes: _ }
-            | PlaylistRule::ControllerSupportFull
-            | PlaylistRule::PlaytimeBetween { min: _, max: _ }
-            | PlaylistRule::RatingAtLeast { rating_0_5: _ }
-            | PlaylistRule::HasGenre { genre: _ }
-            | PlaylistRule::HasTag { tag: _ }
-            | PlaylistRule::Installed
-            | PlaylistRule::NotJunk
-            | PlaylistRule::NotHidden => {}
-            PlaylistRule::And(children) | PlaylistRule::Or(children) => {
-                validate_rule_operators(children)?;
-            }
-            PlaylistRule::Not(inner) => {
-                validate_rule_operators(std::slice::from_ref(inner))?;
-            }
-        }
-    }
-    Ok(())
+    name.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 /// Compute the maximum nesting depth of a rule tree and reject if it exceeds
@@ -156,12 +83,10 @@ fn validate_rule_depth(rules: &[PlaylistRule], current: usize) -> Result<()> {
 /// Validate that all AppIDs in a manual playlist are non-zero (Steam AppID 0 is
 /// not a real game).
 fn validate_app_ids(app_ids: &[u32]) -> Result<()> {
-    for &id in app_ids {
-        if id == 0 {
-            return Err(VapourflyError::InvalidInput(
-                "playlist contains invalid AppID 0".into(),
-            ));
-        }
+    if app_ids.contains(&0) {
+        return Err(VapourflyError::InvalidInput(
+            "playlist contains invalid AppID 0".into(),
+        ));
     }
     Ok(())
 }
@@ -192,17 +117,12 @@ pub(crate) fn validate_playlist_file(pf: &PlaylistFile) -> Result<()> {
             validate_app_ids(app_ids)?;
         }
         PlaylistContent::Rules { rules } => {
-            validate_rule_operators(rules)?;
             validate_rule_depth(rules, 1)?;
         }
     }
 
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// import_playlist
-// ---------------------------------------------------------------------------
 
 /// Read and validate a playlist JSON file from disk.
 ///
@@ -212,8 +132,7 @@ pub(crate) fn validate_playlist_file(pf: &PlaylistFile) -> Result<()> {
 /// 3. Playlist `id` is non-empty.
 /// 4. Playlist `name` is non-empty.
 /// 5. All AppIDs are valid (non-zero).
-/// 6. All rule operators are known variants.
-/// 7. Rule nesting depth does not exceed 16.
+/// 6. Rule nesting depth does not exceed 16.
 pub fn import_playlist(path: &Path) -> Result<PlaylistFile> {
     let content = fs::read_to_string(path).map_err(|_| VapourflyError::FileNotFound {
         path: SafePath::new(path),
@@ -230,10 +149,6 @@ pub fn import_playlist(path: &Path) -> Result<PlaylistFile> {
     Ok(pf)
 }
 
-// ---------------------------------------------------------------------------
-// export_playlist
-// ---------------------------------------------------------------------------
-
 /// Write a playlist to disk with sorted AppIDs and pretty-printed JSON.
 ///
 /// For manual playlists, the AppID list is sorted ascending before writing.
@@ -243,7 +158,6 @@ pub fn export_playlist(playlist: &PlaylistFile, path: &Path) -> Result<()> {
 
     let mut pf = playlist.clone();
 
-    // Sort AppIDs in manual playlists for deterministic output.
     if let PlaylistContent::Manual { ref mut app_ids } = pf.playlist.content {
         app_ids.sort_unstable();
     }
@@ -261,9 +175,10 @@ pub fn export_playlist(playlist: &PlaylistFile, path: &Path) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// evaluate_rules
-// ---------------------------------------------------------------------------
+/// Case-insensitive membership test.
+fn any_eq_ci(items: &[String], lower: &str) -> bool {
+    items.iter().any(|s| s.to_lowercase() == lower)
+}
 
 /// Evaluate a single leaf or compound rule against a game.
 ///
@@ -278,97 +193,47 @@ pub fn export_playlist(playlist: &PlaylistFile, path: &Path) -> Result<()> {
 /// (because `HasGenre` fails closed to `false`, and `Not(false)` is `true`).
 fn eval(rule: &PlaylistRule, game: &Game) -> bool {
     match rule {
-        // -- Proton tier -------------------------------------------------------
         PlaylistRule::ProtonAtLeast { tier } => {
-            match &game.protondb {
-                Some(pdb) => pdb.tier >= *tier,
-                None => false, // fail closed: no data => doesn't match
-            }
+            game.protondb.as_ref().is_some_and(|pdb| pdb.tier >= *tier)
         }
-
-        // -- HLTB max minutes --------------------------------------------------
         PlaylistRule::HltbMaxMinutes { minutes } => {
-            match crate::signal::main_story_seconds(game) {
-                Some(seconds) => (seconds / 60) <= *minutes,
-                None => false, // fail closed
-            }
+            signal::main_story_seconds(game).is_some_and(|seconds| (seconds / 60) <= *minutes)
         }
-
-        // -- Controller support -----------------------------------------------
         PlaylistRule::ControllerSupportFull => game
             .pcgw
             .as_ref()
             .is_some_and(|pcgw| matches!(pcgw.controller_support, ControllerSupport::Full)),
-
-        // -- Playtime between --------------------------------------------------
-        PlaylistRule::PlaytimeBetween { min, max } => {
-            match game.playtime_minutes {
-                Some(minutes) => minutes >= *min && minutes <= *max,
-                None => false, // fail closed
-            }
-        }
-
-        // -- Rating at least ---------------------------------------------------
-        PlaylistRule::RatingAtLeast { rating_0_5 } => {
-            match signal::effective_rating(game, None) {
-                Some((rating, _)) => rating >= *rating_0_5,
-                None => false, // fail closed
-            }
-        }
-
-        // -- Has genre ----------------------------------------------------------
+        PlaylistRule::PlaytimeBetween { min, max } => game
+            .playtime_minutes
+            .is_some_and(|minutes| minutes >= *min && minutes <= *max),
+        PlaylistRule::RatingAtLeast { rating_0_5 } => signal::effective_rating(game, None)
+            .is_some_and(|(rating, _)| rating >= *rating_0_5),
         PlaylistRule::HasGenre { genre } => {
             let lower = genre.to_lowercase();
-            let has_igdb = game
-                .igdb
+            game.igdb
                 .as_ref()
-                .is_some_and(|ig| ig.genres.iter().any(|g| g.to_lowercase() == lower));
-            let has_rawg = game
-                .rawg
-                .as_ref()
-                .is_some_and(|r| r.genres.iter().any(|g| g.to_lowercase() == lower));
-            has_igdb || has_rawg
+                .is_some_and(|ig| any_eq_ci(&ig.genres, &lower))
+                || game
+                    .rawg
+                    .as_ref()
+                    .is_some_and(|r| any_eq_ci(&r.genres, &lower))
         }
-
-        // -- Has tag ------------------------------------------------------------
         PlaylistRule::HasTag { tag } => {
             let lower = tag.to_lowercase();
-            // Check RAWG tags, IGDB keywords, IGDB themes, and Steam collections.
-            let has_rawg = game
-                .rawg
+            game.rawg
                 .as_ref()
-                .is_some_and(|r| r.tags.iter().any(|t| t.to_lowercase() == lower));
-            let has_igdb_kw = game
-                .igdb
-                .as_ref()
-                .is_some_and(|ig| ig.keywords.iter().any(|k| k.to_lowercase() == lower));
-            let has_igdb_theme = game
-                .igdb
-                .as_ref()
-                .is_some_and(|ig| ig.themes.iter().any(|t| t.to_lowercase() == lower));
-            let has_steam_col = game
-                .steam_collections
-                .iter()
-                .any(|c| c.to_lowercase() == lower);
-            has_rawg || has_igdb_kw || has_igdb_theme || has_steam_col
+                .is_some_and(|r| any_eq_ci(&r.tags, &lower))
+                || game
+                    .igdb
+                    .as_ref()
+                    .is_some_and(|ig| any_eq_ci(&ig.keywords, &lower) || any_eq_ci(&ig.themes, &lower))
+                || any_eq_ci(&game.steam_collections, &lower)
         }
-
-        // -- Installed ----------------------------------------------------------
         PlaylistRule::Installed => game.installed,
-
-        // -- Not junk -----------------------------------------------------------
         PlaylistRule::NotJunk => !game.is_junk,
-
-        // -- Not hidden ---------------------------------------------------------
         PlaylistRule::NotHidden => !game.is_hidden,
-
-        // -- And ---------------------------------------------------------------
         PlaylistRule::And(children) => children.iter().all(|r| eval(r, game)),
-
-        // -- Or ----------------------------------------------------------------
         PlaylistRule::Or(children) => children.iter().any(|r| eval(r, game)),
-
-        // -- Not ---------------------------------------------------------------
         PlaylistRule::Not(inner) => !eval(inner, game),
     }
 }
@@ -379,10 +244,6 @@ fn eval(rule: &PlaylistRule, game: &Game) -> bool {
 pub fn evaluate_rules(rules: &[PlaylistRule], game: &Game) -> bool {
     rules.iter().all(|r| eval(r, game))
 }
-
-// ---------------------------------------------------------------------------
-// match_playlist
-// ---------------------------------------------------------------------------
 
 /// Evaluate a playlist against a full game library and produce a match report.
 ///
@@ -412,8 +273,7 @@ pub fn match_playlist(
     games: &[Game],
     missing_store_details: &HashMap<u32, SteamStoreDetails>,
 ) -> Result<PlaylistMatchReport> {
-    let by_id: std::collections::HashMap<u32, &Game> =
-        games.iter().map(|g| (g.app_id, g)).collect();
+    let by_id: HashMap<u32, &Game> = games.iter().map(|g| (g.app_id, g)).collect();
 
     let mut owned: Vec<u32> = Vec::new();
     let mut missing: Vec<u32> = Vec::new();
@@ -466,28 +326,19 @@ pub fn match_playlist(
     hidden.sort_unstable();
     junk.sort_unstable();
 
-    // completion_price: sum of Steam Store final prices for **missing,
-    // non-free** entries. Owned/unplayed games are never included.
-    // Rule Playlists have no missing entries → completion_price is None.
-    //
     // Mixed-currency handling: if all priced missing entries share one
     // currency, return a Single total. If multiple currencies are
     // encountered, do not sum them — return per-currency grouped totals.
     let (completion_price, price_coverage) = {
-        // Only manual playlists can have missing entries.
         let is_manual = matches!(playlist.playlist.content, PlaylistContent::Manual { .. });
 
         if !is_manual || missing.is_empty() {
             (None, None)
         } else {
-            // Classify each missing entry into:
-            //   confirmed_free, confirmed_non_free_priced,
-            //   confirmed_non_free_unpriced, unknown.
             let mut confirmed_free: usize = 0;
             let mut confirmed_non_free_priced: usize = 0;
             let mut confirmed_non_free_unpriced: usize = 0;
             let mut unknown: usize = 0;
-            // Per-currency totals (only for confirmed non-free priced).
             let mut totals: HashMap<String, u64> = HashMap::new();
 
             for &id in &missing {
@@ -502,7 +353,6 @@ pub fn match_playlist(
                     continue;
                 }
 
-                // Confirmed non-free.
                 if let Some(price) = &store.price_overview {
                     confirmed_non_free_priced += 1;
                     *totals.entry(price.currency.clone()).or_default() +=
@@ -561,15 +411,12 @@ pub fn match_playlist(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::{
-        HltbData, HltbSource, IgdbData, PcgwData, Playlist, ProtonDbData, RawgData, SteamAppType,
+        HltbData, HltbSource, IgdbData, PcgwData, Playlist, ProtonDbData, ProtonTier, RawgData,
+        SteamAppType,
     };
     use std::fs;
 

@@ -10,10 +10,6 @@ use crate::error::{Result, VapourflyError};
 use crate::models::VdfNode;
 use crate::steam::parse_text_vdf;
 
-// ---------------------------------------------------------------------------
-// Data types
-// ---------------------------------------------------------------------------
-
 /// A Steam user account parsed from `loginusers.vdf`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SteamAccount {
@@ -45,10 +41,6 @@ pub struct AppManifest {
     /// The library folder this app belongs to.
     pub library_folder: PathBuf,
 }
-
-// ---------------------------------------------------------------------------
-// Platform Steam directory detection
-// ---------------------------------------------------------------------------
 
 /// Detect all candidate Steam installation directories for the current platform.
 ///
@@ -99,10 +91,6 @@ pub fn detect_steam_dirs(fixtures_root: Option<&Path>) -> Vec<PathBuf> {
 
     dirs
 }
-
-// ---------------------------------------------------------------------------
-// Account detection
-// ---------------------------------------------------------------------------
 
 /// Parse `loginusers.vdf` inside `steam_dir` and return all known accounts.
 ///
@@ -212,10 +200,6 @@ fn userdata_dir_has_account_data(dir: &Path) -> bool {
             .is_file()
 }
 
-// ---------------------------------------------------------------------------
-// Library folder detection
-// ---------------------------------------------------------------------------
-
 /// Parse `libraryfolders.vdf` inside `steam_dir` and return all library
 /// folder paths.
 ///
@@ -239,7 +223,6 @@ pub fn detect_library_folders(steam_dir: &Path) -> Result<Vec<PathBuf>> {
 
     let root = parse_text_vdf(&content)?;
 
-    // Navigate to the "LibraryFolders" object.
     let lib_folders = match root.child_object(&["LibraryFolders"]) {
         Some(obj) => obj,
         None => return Ok(folders),
@@ -264,10 +247,6 @@ pub fn detect_library_folders(steam_dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(folders)
 }
 
-// ---------------------------------------------------------------------------
-// Path redaction
-// ---------------------------------------------------------------------------
-
 /// Redact a path for safe display: returns only the file-name component,
 /// with the directory portion replaced by `[REDACTED]`.
 ///
@@ -279,10 +258,6 @@ pub fn redact_path(path: &Path) -> String {
         None => "[REDACTED]".to_string(),
     }
 }
-
-// ---------------------------------------------------------------------------
-// App manifest parsing
-// ---------------------------------------------------------------------------
 
 /// Parse all `appmanifest_*.acf` files in a library folder's `steamapps/`
 /// directory.
@@ -352,10 +327,6 @@ pub fn parse_appmanifests(library_folder: &Path) -> Result<Vec<AppManifest>> {
     Ok(manifests)
 }
 
-// ---------------------------------------------------------------------------
-// Windows registry helper
-// ---------------------------------------------------------------------------
-
 /// On Windows, attempt to read the Steam install path from the registry key
 /// `HKCU\Software\Valve\Steam\SteamPath`.
 ///
@@ -370,10 +341,6 @@ fn windows_registry_steam_path() -> Option<PathBuf> {
     let val: String = key.get_value("SteamPath").ok()?;
     Some(PathBuf::from(val))
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted and implemented.
+**Superseded by [ADR-0009](0009-instant-first-paint-hydration.md)** (the
+lazy network fetch half — on a real 865-game library it blocked first paint
+for ~86 minutes). The graceful-degradation contract ("always produce a
+result; missing data just means fewer reason codes") survives unchanged in
+ADR-0009.
 
 ## Decision
 

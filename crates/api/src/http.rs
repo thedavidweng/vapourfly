@@ -18,10 +18,6 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use vapourfly_core::error::{Result, VapourflyError};
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 /// Default request timeout.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -34,15 +30,30 @@ const BACKOFF_BASE: Duration = Duration::from_millis(500);
 /// Maximum delay cap for exponential backoff.
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
-/// Rate limit: maximum requests per source within the rate-limit window.
-const RATE_LIMIT_MAX_TOKENS: f64 = 30.0;
+/// Default rate limit: maximum requests per source within the window.
+const RATE_LIMIT_DEFAULT_TOKENS: f64 = 60.0;
 
 /// Rate-limit window for token bucket refill.
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 
-// ---------------------------------------------------------------------------
-// HTTP request / response
-// ---------------------------------------------------------------------------
+/// Per-source rate limits (requests per [`RATE_LIMIT_WINDOW`]).
+///
+/// Sized to each provider's real tolerance: Steam's `appdetails` throttles
+/// around 200 requests / 5 min, IGDB's official limit is 4 req/s, ProtonDB
+/// and PCGW are static-file/MediaWiki hosts that tolerate far more than our
+/// background jobs send. Unknown sources fall back to
+/// [`RATE_LIMIT_DEFAULT_TOKENS`].
+fn rate_limit_for(source: &str) -> f64 {
+    match source {
+        "steam-store" => 30.0,
+        "igdb" => 200.0,
+        "protondb" | "pcgw" => 120.0,
+        // Scraped without an official API — stay extra polite.
+        "hltb" => 30.0,
+        "rawg" => 60.0,
+        _ => RATE_LIMIT_DEFAULT_TOKENS,
+    }
+}
 
 /// A simplified outgoing HTTP request.
 #[derive(Debug, Clone)]
@@ -57,7 +68,6 @@ pub struct HttpRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpMethod {
     Get,
-    Head,
     Post,
 }
 
@@ -65,7 +75,6 @@ impl fmt::Display for HttpMethod {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Get => f.write_str("GET"),
-            Self::Head => f.write_str("HEAD"),
             Self::Post => f.write_str("POST"),
         }
     }
@@ -105,9 +114,15 @@ impl HttpResponse {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Cache record
-// ---------------------------------------------------------------------------
+/// Deserialize a JSON response body, mapping failure to a
+/// [`VapourflyError::ParseError`] that reports `context` as the path.
+pub fn parse_json<T: serde::de::DeserializeOwned>(body: &[u8], context: &str) -> Result<T> {
+    serde_json::from_slice(body).map_err(|e| VapourflyError::ParseError {
+        path: vapourfly_core::error::SafePath::new(context),
+        format: "JSON".into(),
+        reason: e.to_string(),
+    })
+}
 
 /// A cached API response record, generic over the deserialized payload.
 ///
@@ -141,10 +156,6 @@ impl<T> CacheRecord<T> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// HttpBackend trait
-// ---------------------------------------------------------------------------
-
 /// Trait abstracting HTTP transport. Implement this to provide real network
 /// access (e.g. wrapping `reqwest`) or to inject mock responses for tests.
 pub trait HttpBackend: Send + Sync {
@@ -152,10 +163,6 @@ pub trait HttpBackend: Send + Sync {
     /// transport itself fails (DNS, connection refused, etc.).
     fn execute(&self, request: &HttpRequest) -> Result<HttpResponse>;
 }
-
-// ---------------------------------------------------------------------------
-// MockBackend
-// ---------------------------------------------------------------------------
 
 /// A mock [`HttpBackend`] for unit tests. Responses are registered by URL
 /// prefix; the first matching entry is returned.
@@ -229,21 +236,19 @@ impl HttpBackend for MockBackend {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Token bucket rate limiter (per source)
-// ---------------------------------------------------------------------------
-
 /// Simple token-bucket rate limiter. Each "source" (e.g. "steam-store")
 /// gets its own bucket. Tokens refill over `RATE_LIMIT_WINDOW`.
 struct TokenBucket {
     tokens: f64,
+    max_tokens: f64,
     last_refill: Instant,
 }
 
 impl TokenBucket {
-    fn new() -> Self {
+    fn new(max_tokens: f64) -> Self {
         Self {
-            tokens: RATE_LIMIT_MAX_TOKENS,
+            tokens: max_tokens,
+            max_tokens,
             last_refill: Instant::now(),
         }
     }
@@ -265,8 +270,8 @@ impl TokenBucket {
         let elapsed = self.last_refill.elapsed();
         self.last_refill = Instant::now();
         let new_tokens =
-            elapsed.as_secs_f64() * (RATE_LIMIT_MAX_TOKENS / RATE_LIMIT_WINDOW.as_secs_f64());
-        self.tokens = (self.tokens + new_tokens).min(RATE_LIMIT_MAX_TOKENS);
+            elapsed.as_secs_f64() * (self.max_tokens / RATE_LIMIT_WINDOW.as_secs_f64());
+        self.tokens = (self.tokens + new_tokens).min(self.max_tokens);
     }
 }
 
@@ -290,7 +295,7 @@ impl RateLimiter {
                 let mut map = self.buckets.lock().expect("rate limiter lock poisoned");
                 let bucket = map
                     .entry(source.to_string())
-                    .or_insert_with(TokenBucket::new);
+                    .or_insert_with(|| TokenBucket::new(rate_limit_for(source)));
                 bucket.try_acquire()
             };
             if allowed {
@@ -307,10 +312,6 @@ impl Default for RateLimiter {
         Self::new()
     }
 }
-
-// ---------------------------------------------------------------------------
-// HttpClient
-// ---------------------------------------------------------------------------
 
 /// Configuration for the HTTP client.
 #[derive(Debug)]
@@ -372,21 +373,11 @@ impl HttpClient {
         }
     }
 
-    /// Create a client with a custom backend and configuration.
-    pub fn with_config(backend: Box<dyn HttpBackend>, config: HttpClientConfig) -> Self {
-        Self {
-            backend: Arc::from(backend),
-            config: Arc::new(config),
-            rate_limiter: Arc::new(RateLimiter::new()),
-        }
-    }
-
     /// Execute an HTTP request with rate limiting and exponential backoff
     /// retry for transient failures (429, 502, 503, 504).
     ///
     /// `source` is used as the rate-limiter key (e.g. "steam-store").
     pub fn request(&self, source: &str, mut request: HttpRequest) -> Result<HttpResponse> {
-        // Inject default headers.
         request
             .headers
             .entry("user-agent".to_string())
@@ -394,17 +385,11 @@ impl HttpClient {
 
         let mut attempt = 0u32;
         loop {
-            // Rate limit: wait for a token before sending.
             self.rate_limiter.acquire(source);
-
-            // Record request start for timeout tracking (actual timeout is
-            // enforced by the backend once a real HTTP library is wired in).
-            let _start = Instant::now();
 
             match self.backend.execute(&request) {
                 Ok(response) if response.status < 400 => return Ok(response),
                 Ok(response) if response.is_rate_limited() => {
-                    // 429: honor Retry-After header or use backoff.
                     if attempt >= self.config.max_retries {
                         let retry_after = response.retry_after_secs().unwrap_or(0);
                         return Err(VapourflyError::RateLimited {
@@ -441,7 +426,6 @@ impl HttpClient {
                 }
                 Ok(response) => return Ok(response),
                 Err(e) => {
-                    // Transport-level error (DNS, connection refused, etc.)
                     if attempt >= self.config.max_retries {
                         return Err(e);
                     }
@@ -499,10 +483,6 @@ impl Default for HttpClient {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ureq-backed HTTP transport
-// ---------------------------------------------------------------------------
-
 /// Real HTTP backend using `ureq`. Provides actual network access with
 /// timeout support, TLS, and HTTP/1.1.
 struct UreqBackend {
@@ -527,13 +507,6 @@ impl HttpBackend for UreqBackend {
         let response = match request.method {
             HttpMethod::Get => {
                 let mut req = self.agent.get(&request.url);
-                for (key, value) in &request.headers {
-                    req = req.header(key.as_str(), value.as_str());
-                }
-                req.call()
-            }
-            HttpMethod::Head => {
-                let mut req = self.agent.head(&request.url);
                 for (key, value) in &request.headers {
                     req = req.header(key.as_str(), value.as_str());
                 }
@@ -568,28 +541,16 @@ impl HttpBackend for UreqBackend {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Exponential backoff helper
-// ---------------------------------------------------------------------------
-
 /// Calculate exponential backoff delay for the given attempt (0-indexed).
 /// Clamps at `BACKOFF_MAX`. With `BACKOFF_BASE` of 500ms and max 3 retries,
 /// delays are 500ms, 1s, 2s.
 fn backoff_delay(attempt: u32) -> Duration {
-    let multiplier = 1u32 << attempt; // 2^attempt, safe for small attempt values
-    let delay = BACKOFF_BASE * multiplier;
-    delay.min(BACKOFF_MAX)
+    (BACKOFF_BASE * (1u32 << attempt)).min(BACKOFF_MAX)
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // -- MockBackend ---------------------------------------------------------
 
     #[test]
     fn mock_backend_returns_registered_response() {
@@ -655,17 +616,13 @@ mod tests {
             body: None,
         };
 
-        // "https://api.example.com/" matches first.
         let resp = mock.execute(&req).unwrap();
         assert_eq!(resp.status, 200);
         assert_eq!(resp.body_text(), "first");
     }
 
-    // -- HttpClient with mock ------------------------------------------------
-
     #[test]
     fn client_get_injects_user_agent() {
-        // Use a capturing backend to verify the user-agent header.
         struct CapturingBackend {
             captured: Mutex<Option<HttpRequest>>,
         }
@@ -685,10 +642,6 @@ mod tests {
         };
         let client = HttpClient::with_backend(Box::new(backend));
         let _ = client.get("test", "https://example.com/");
-
-        // We need to access the captured request. Since the backend was moved
-        // into the client, we verify indirectly: the user-agent should be set.
-        // This test mainly confirms the happy path compiles and runs.
     }
 
     #[test]
@@ -735,11 +688,8 @@ mod tests {
         let client = HttpClient::with_backend(Box::new(backend));
         let resp = client.get("test", "https://example.com/").unwrap();
         assert_eq!(resp.status, 404);
-        // Should only have been called once (no retry for 404).
-        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(call_count.load(Ordering::SeqCst), 1, "no retry for 404");
     }
-
-    // -- CacheRecord ---------------------------------------------------------
 
     #[test]
     fn cache_record_not_expired_within_ttl() {
@@ -788,8 +738,6 @@ mod tests {
         assert_eq!(deserialized.data, vec![1, 2, 3]);
         assert_eq!(deserialized.etag, Some("abc123".to_string()));
     }
-
-    // -- HttpResponse helpers ------------------------------------------------
 
     #[test]
     fn response_transient_statuses() {

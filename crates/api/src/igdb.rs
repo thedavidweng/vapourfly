@@ -1,7 +1,8 @@
 //! IGDB API client.
 //!
-//! Uses Twitch OAuth for authentication. Requires `VAPOURFLY_IGDB_CLIENT_ID`
-//! and `VAPOURFLY_IGDB_CLIENT_SECRET` environment variables.
+//! Uses Twitch OAuth for authentication with credentials supplied by the
+//! caller (resolved from `VAPOURFLY_IGDB_CLIENT_ID` /
+//! `VAPOURFLY_IGDB_CLIENT_SECRET` at the enrichment seam).
 //!
 //! The client acquires an OAuth token on first request and caches it in memory
 //! for subsequent calls.
@@ -14,7 +15,7 @@ use serde::Deserialize;
 use vapourfly_core::error::{Result, VapourflyError};
 use vapourfly_core::models::{IgdbData, IgdbTimeToBeat};
 
-use crate::http::HttpClient;
+use crate::http::{HttpClient, parse_json};
 
 const IGDB_API_BASE: &str = "https://api.igdb.com/v4";
 const TWITCH_TOKEN_URL: &str = "https://id.twitch.tv/oauth2/token";
@@ -33,47 +34,6 @@ struct CachedToken {
 }
 
 impl IgdbClient {
-    /// Create a new IGDB client from environment variables.
-    ///
-    /// Returns [`CredentialsMissing`](VapourflyError::CredentialsMissing) if
-    /// `VAPOURFLY_IGDB_CLIENT_ID` or `VAPOURFLY_IGDB_CLIENT_SECRET` are not set.
-    pub fn from_env() -> Result<Self> {
-        Self::from_env_with_http(HttpClient::new())
-    }
-
-    /// Create a new IGDB client from environment variables with a custom
-    /// [`HttpClient`] (e.g. one backed by a [`MockBackend`](crate::http::MockBackend)).
-    pub fn from_env_with_http(http: HttpClient) -> Result<Self> {
-        let client_id = std::env::var("VAPOURFLY_IGDB_CLIENT_ID")
-            .map_err(|_| VapourflyError::CredentialsMissing {
-                provider: "IGDB".into(),
-            })?
-            .trim()
-            .to_string();
-        if client_id.is_empty() {
-            return Err(VapourflyError::CredentialsMissing {
-                provider: "IGDB".into(),
-            });
-        }
-        let client_secret = std::env::var("VAPOURFLY_IGDB_CLIENT_SECRET")
-            .map_err(|_| VapourflyError::CredentialsMissing {
-                provider: "IGDB".into(),
-            })?
-            .trim()
-            .to_string();
-        if client_secret.is_empty() {
-            return Err(VapourflyError::CredentialsMissing {
-                provider: "IGDB".into(),
-            });
-        }
-        Ok(Self {
-            client_id,
-            client_secret,
-            http,
-            token: Mutex::new(None),
-        })
-    }
-
     /// Create an IGDB client with explicit credentials and HTTP client.
     pub fn new(client_id: String, client_secret: String, http: HttpClient) -> Self {
         Self {
@@ -84,21 +44,18 @@ impl IgdbClient {
         }
     }
 
-    /// Get a valid access token, refreshing if needed.
+    /// Get a valid access token, refreshing when less than an hour remains.
     fn get_token(&self) -> Result<String> {
-        // Check cached token.
         {
             let guard = self.token.lock().unwrap();
             if let Some(ref cached) = *guard {
                 let now = chrono::Utc::now().timestamp();
-                // Refresh if less than 3600 seconds remain.
                 if cached.expires_at_unix - now > 3600 {
                     return Ok(cached.access_token.clone());
                 }
             }
         }
 
-        // Fetch new token.
         let url = format!(
             "{TWITCH_TOKEN_URL}?client_id={}&client_secret={}&grant_type=client_credentials",
             self.client_id, self.client_secret
@@ -115,12 +72,7 @@ impl IgdbClient {
             )));
         }
 
-        let token_resp: TwitchTokenResponse =
-            serde_json::from_slice(&response.body).map_err(|e| VapourflyError::ParseError {
-                path: vapourfly_core::error::SafePath::new("igdb/token.json"),
-                format: "JSON".into(),
-                reason: e.to_string(),
-            })?;
+        let token_resp: TwitchTokenResponse = parse_json(&response.body, "igdb/token.json")?;
 
         let expires_at_unix = chrono::Utc::now().timestamp() + token_resp.expires_in;
 
@@ -152,8 +104,7 @@ impl IgdbClient {
     /// Uses the `external_games` endpoint to find the IGDB game ID, then
     /// fetches full game details. Returns `Ok(None)` when no match is found.
     pub fn resolve_by_steam_appid(&self, app_id: u32) -> Result<Option<IgdbData>> {
-        // Step 1: Find the IGDB external_game_source ID for Steam.
-        // We use a known source ID (Steam = 1) and also try by name as fallback.
+        // external_game_source 1 is IGDB's ID for the Steam store.
         let query = format!(
             "fields game,name,uid,external_game_source,url; where uid = \"{app_id}\" & external_game_source = 1; limit 10;",
         );
@@ -165,35 +116,24 @@ impl IgdbClient {
         }
 
         let entries: Vec<ExternalGameEntry> =
-            serde_json::from_slice(&response.body).map_err(|e| VapourflyError::ParseError {
-                path: vapourfly_core::error::SafePath::new(format!(
-                    "igdb/external_games/{app_id}.json"
-                )),
-                format: "JSON".into(),
-                reason: e.to_string(),
-            })?;
+            parse_json(&response.body, &format!("igdb/external_games/{app_id}.json"))?;
 
-        let entry = match entries.into_iter().next() {
-            Some(e) => e,
-            None => return Ok(None),
+        let Some(entry) = entries.into_iter().next() else {
+            return Ok(None);
+        };
+        let Some(igdb_id) = entry.game else {
+            return Ok(None);
         };
 
-        let igdb_id = match entry.game {
-            Some(id) => id,
-            None => return Ok(None),
-        };
-
-        // Step 2: Fetch full game details.
         let mut data = self.fetch_game_details(igdb_id)?;
 
-        // Step 3: Fetch time-to-beat (non-critical; log on error).
+        // Time-to-beat is non-critical; log and continue on error.
         match self.fetch_time_to_beat(igdb_id) {
             Ok(Some(ttb)) => data.time_to_beat = Some(ttb),
             Ok(None) => {}
             Err(e) => tracing::warn!(error = %e, igdb_id, "failed to fetch time-to-beat"),
         }
 
-        // Mark as confirmed if we found it via external_games with Steam source.
         if entry.external_game_source == Some(1) {
             data.steam_app_id_confirmed = true;
         }
@@ -218,11 +158,7 @@ impl IgdbClient {
         }
 
         let entries: Vec<IgdbGameEntry> =
-            serde_json::from_slice(&response.body).map_err(|e| VapourflyError::ParseError {
-                path: vapourfly_core::error::SafePath::new(format!("igdb/games/{igdb_id}.json")),
-                format: "JSON".into(),
-                reason: e.to_string(),
-            })?;
+            parse_json(&response.body, &format!("igdb/games/{igdb_id}.json"))?;
 
         let game = entries
             .into_iter()
@@ -265,17 +201,10 @@ impl IgdbClient {
         }
 
         let entries: Vec<GameTimeToBeatEntry> =
-            serde_json::from_slice(&response.body).map_err(|e| VapourflyError::ParseError {
-                path: vapourfly_core::error::SafePath::new(format!(
-                    "igdb/time_to_beat/{igdb_id}.json"
-                )),
-                format: "JSON".into(),
-                reason: e.to_string(),
-            })?;
+            parse_json(&response.body, &format!("igdb/time_to_beat/{igdb_id}.json"))?;
 
-        let entry = match entries.into_iter().next() {
-            Some(e) => e,
-            None => return Ok(None),
+        let Some(entry) = entries.into_iter().next() else {
+            return Ok(None);
         };
 
         Ok(Some(IgdbTimeToBeat {
@@ -287,25 +216,18 @@ impl IgdbClient {
     }
 }
 
-// ---------------------------------------------------------------------------
-// IGDB JSON response types
-// ---------------------------------------------------------------------------
+// IGDB JSON response types. Unconsumed response fields are omitted — serde
+// ignores unknown keys, so the queries can keep requesting them unchanged.
 
 #[derive(Debug, Deserialize)]
 struct TwitchTokenResponse {
     access_token: String,
-    #[allow(dead_code)]
-    token_type: String,
     expires_in: i64,
 }
 
 #[derive(Debug, Deserialize)]
 struct ExternalGameEntry {
     game: Option<u64>,
-    #[allow(dead_code)]
-    name: Option<String>,
-    #[allow(dead_code)]
-    uid: Option<String>,
     external_game_source: Option<u64>,
 }
 
@@ -320,12 +242,6 @@ struct IgdbGameEntry {
     themes: Option<Vec<IgdbNameEntry>>,
     keywords: Option<Vec<IgdbNameEntry>>,
     similar_games: Option<Vec<u64>>,
-    #[allow(dead_code)]
-    external_games: Option<Vec<serde_json::Value>>,
-    #[allow(dead_code)]
-    first_release_date: Option<i64>,
-    #[allow(dead_code)]
-    url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -335,64 +251,16 @@ struct IgdbNameEntry {
 
 #[derive(Debug, Deserialize)]
 struct GameTimeToBeatEntry {
-    #[allow(dead_code)]
-    game_id: Option<u64>,
     hastily: Option<u32>,
     normally: Option<u32>,
     completely: Option<u32>,
     comp_count: Option<u32>,
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::http::{HttpResponse, MockBackend};
-
-    #[test]
-    fn missing_client_id_returns_credentials_missing() {
-        unsafe {
-            std::env::remove_var("VAPOURFLY_IGDB_CLIENT_ID");
-            std::env::remove_var("VAPOURFLY_IGDB_CLIENT_SECRET");
-        }
-
-        let err = match IgdbClient::from_env() {
-            Ok(_) => panic!("expected error"),
-            Err(e) => e,
-        };
-        match err {
-            VapourflyError::CredentialsMissing { provider } => {
-                assert_eq!(provider, "IGDB");
-            }
-            other => panic!("expected CredentialsMissing, got: {other}"),
-        }
-    }
-
-    #[test]
-    fn missing_secret_returns_credentials_missing() {
-        unsafe {
-            std::env::set_var("VAPOURFLY_IGDB_CLIENT_ID", "test_id");
-            std::env::remove_var("VAPOURFLY_IGDB_CLIENT_SECRET");
-        }
-
-        let err = match IgdbClient::from_env() {
-            Ok(_) => panic!("expected error"),
-            Err(e) => e,
-        };
-        match err {
-            VapourflyError::CredentialsMissing { provider } => {
-                assert_eq!(provider, "IGDB");
-            }
-            other => panic!("expected CredentialsMissing, got: {other}"),
-        }
-
-        unsafe {
-            std::env::remove_var("VAPOURFLY_IGDB_CLIENT_ID");
-        }
-    }
 
     #[test]
     fn resolve_returns_none_on_empty_response() {
@@ -519,47 +387,6 @@ mod tests {
 
         let result = client.fetch_time_to_beat(1234).unwrap();
         assert!(result.is_none());
-    }
-
-    #[test]
-    fn resolve_full_flow_external_games_then_details() {
-        // This test uses a single mock that returns external_games data.
-        // Since all endpoints hit the same mock prefix, the games and
-        // time_to_beats calls will fail to parse, but resolve_by_steam_appid
-        // handles those errors gracefully and still returns Some.
-        let mut mock = MockBackend::new();
-        // Token endpoint
-        mock.register(
-            "https://id.twitch.tv/",
-            HttpResponse {
-                status: 200,
-                headers: HashMap::new(),
-                body: br#"{"access_token":"test_token","token_type":"bearer","expires_in":36000}"#
-                    .to_vec(),
-            },
-        );
-        // External games response (valid for the first call)
-        mock.register(
-            "https://api.igdb.com/",
-            HttpResponse {
-                status: 200,
-                headers: HashMap::new(),
-                body: br#"[{"game":1942,"uid":"292030","external_game_source":1}]"#.to_vec(),
-            },
-        );
-
-        let http = HttpClient::with_backend(Box::new(mock));
-        let client = IgdbClient::new("id".into(), "secret".into(), http);
-
-        // The external_games call succeeds, finding game=1942.
-        // The games call gets the same mock response which won't parse as
-        // IgdbGameEntry, so fetch_game_details returns Err.
-        // resolve_by_steam_appid treats this as "no details found" and
-        // returns None (since the ? operator on fetch_game_details fails).
-        let result = client.resolve_by_steam_appid(292030);
-        // The result is Err because fetch_game_details fails on the mock data.
-        // This is expected behavior with a single-endpoint mock.
-        assert!(result.is_err() || result.unwrap().is_some());
     }
 
     #[test]

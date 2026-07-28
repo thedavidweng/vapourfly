@@ -22,10 +22,6 @@ use crate::error::{Result, VapourflyError};
 use crate::models::{CloudStorageFile, WritePlan};
 use crate::steam::write_plan::compute_sha256;
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
 /// Metadata for a discovered backup file.
 #[derive(Clone, Debug)]
 pub struct BackupInfo {
@@ -33,10 +29,6 @@ pub struct BackupInfo {
     pub created_at: DateTime<Utc>,
     pub sha256: String,
 }
-
-// ---------------------------------------------------------------------------
-// Naming helpers
-// ---------------------------------------------------------------------------
 
 /// The tag inserted into backup filenames.
 const BACKUP_TAG: &str = "vapourfly-backup";
@@ -81,10 +73,6 @@ fn parse_backup_timestamp(target_name: &str, filename: &str) -> Option<DateTime<
         .single()
 }
 
-// ---------------------------------------------------------------------------
-// 1. create_backup
-// ---------------------------------------------------------------------------
-
 /// Create a backup of the file at `target_path`.
 ///
 /// The backup is placed in the same directory as the target with a name
@@ -125,10 +113,6 @@ pub fn create_backup(target_path: &Path, _retention_count: u32) -> Result<PathBu
 
     Ok(backup_path)
 }
-
-// ---------------------------------------------------------------------------
-// 2. execute_write_plan
-// ---------------------------------------------------------------------------
 
 /// Execute an atomic write described by a [`WritePlan`].
 ///
@@ -296,10 +280,6 @@ fn fsync_parent(parent: &Path) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// 3. restore_backup
-// ---------------------------------------------------------------------------
-
 /// Restore a file at `target_path` from `backup_path`.
 ///
 /// As a safety measure, the *current* target is backed up before the restore
@@ -360,10 +340,6 @@ pub fn restore_backup(backup_path: &Path, target_path: &Path) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// 4. list_backups
-// ---------------------------------------------------------------------------
-
 /// List all backups for the file at `target_path`, sorted by creation time
 /// descending (most recent first).
 #[allow(clippy::case_sensitive_file_extension_comparisons)]
@@ -421,10 +397,6 @@ pub fn list_backups(target_path: &Path) -> Result<Vec<BackupInfo>> {
     Ok(backups)
 }
 
-// ---------------------------------------------------------------------------
-// 5. prune_old_backups
-// ---------------------------------------------------------------------------
-
 /// Delete all but the `keep_count` most recent backups for `target_path`.
 ///
 /// Backups are identified by the naming convention used in [`create_backup`].
@@ -465,10 +437,6 @@ pub fn prune_old_backups(target_path: &Path, keep_count: u32) -> Result<()> {
 
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[allow(clippy::case_sensitive_file_extension_comparisons)]

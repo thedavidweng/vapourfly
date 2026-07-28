@@ -6,27 +6,8 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
-
 use crate::models::{Game, ProtonTier, RecommendReason, RecommendRequest, Recommendation};
 use crate::scoring;
-
-// ---------------------------------------------------------------------------
-// Public result type
-// ---------------------------------------------------------------------------
-
-/// The full result of a recommendation evaluation, including schema version
-/// for forward compatibility.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RecommendResult {
-    pub schema: String,
-    pub recommendations: Vec<Recommendation>,
-    pub request: RecommendRequest,
-}
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
 
 const LOW_PLAYTIME_THRESHOLD_MINUTES: u32 = 120;
 const RECENTLY_PLAYED_DAYS: i64 = 14;
@@ -42,10 +23,6 @@ const W_HIGH_RATING: f32 = 1.0;
 const W_TASTE_SIMILARITY: f32 = 1.0;
 const W_RECENTLY_PLAYED: f32 = -1.0;
 const W_LIKELY_FINISHED: f32 = -0.5;
-
-// ---------------------------------------------------------------------------
-// Deterministic PRNG (SplitMix64)
-// ---------------------------------------------------------------------------
 
 /// Minimal SplitMix64 PRNG for deterministic perturbation.
 struct SplitMix64 {
@@ -71,10 +48,6 @@ impl SplitMix64 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Scoring
-// ---------------------------------------------------------------------------
-
 /// Score a single candidate game and produce reasons.
 fn score_game(
     game: &Game,
@@ -85,7 +58,6 @@ fn score_game(
     let mut score: f32 = 0.0;
     let mut reasons: Vec<RecommendReason> = Vec::new();
 
-    // -- low_playtime --------------------------------------------------------
     let playtime = game.playtime_minutes.unwrap_or(0);
     if playtime < LOW_PLAYTIME_THRESHOLD_MINUTES {
         let desc = if playtime == 0 {
@@ -101,17 +73,13 @@ fn score_game(
         });
     }
 
-    // -- deck_compatible (only when --deck) -----------------------------------
     if request.deck_mode {
-        let deck_score = match &game.protondb {
-            Some(pdb) => match pdb.tier {
-                ProtonTier::Native => Some((W_DECK_NATIVE, "Native Steam Deck support")),
-                ProtonTier::Platinum => Some((W_DECK_PLATINUM, "Platinum on Steam Deck")),
-                ProtonTier::Gold => Some((W_DECK_GOLD, "Gold on Steam Deck")),
-                _ => None,
-            },
-            None => None,
-        };
+        let deck_score = game.protondb.as_ref().and_then(|pdb| match pdb.tier {
+            ProtonTier::Native => Some((W_DECK_NATIVE, "Native Steam Deck support")),
+            ProtonTier::Platinum => Some((W_DECK_PLATINUM, "Platinum on Steam Deck")),
+            ProtonTier::Gold => Some((W_DECK_GOLD, "Gold on Steam Deck")),
+            _ => None,
+        });
         if let Some((w, desc)) = deck_score {
             score += w;
             reasons.push(RecommendReason {
@@ -122,7 +90,6 @@ fn score_game(
         }
     }
 
-    // -- time_match -----------------------------------------------------------
     if request.available_minutes > 0 {
         // A game is a time match when its known main-story completion time
         // fits inside the available window (PRD: "HLTB 主线 ≤ 可用时长").
@@ -146,9 +113,7 @@ fn score_game(
         }
     }
 
-    // -- high_rating ----------------------------------------------------------
-    let is_high_rating = scoring::is_high_rating(game);
-    if is_high_rating {
+    if scoring::is_high_rating(game) {
         score += W_HIGH_RATING;
         reasons.push(RecommendReason {
             code: "high_rating".into(),
@@ -157,7 +122,6 @@ fn score_game(
         });
     }
 
-    // -- taste_similarity -----------------------------------------------------
     if !taste_vector.is_empty() {
         let similarity = scoring::taste_overlap(game, taste_vector);
         if similarity > 0.05 {
@@ -170,7 +134,6 @@ fn score_game(
         }
     }
 
-    // -- recently_played_penalty ----------------------------------------------
     if let Some(last_played) = game.last_played_unix {
         let days_since = (now_unix - last_played) / 86400;
         if days_since < RECENTLY_PLAYED_DAYS {
@@ -188,7 +151,6 @@ fn score_game(
         }
     }
 
-    // -- likely_finished_penalty ----------------------------------------------
     if let Some(main_secs) = game.hltb.as_ref().and_then(|h| h.main_story_seconds) {
         let main_mins = main_secs as f32 / 60.0;
         if main_mins > 0.0 && playtime as f32 > main_mins * LIKELY_FINISHED_MULTIPLIER {
@@ -203,14 +165,6 @@ fn score_game(
 
     (score, reasons)
 }
-
-// ---------------------------------------------------------------------------
-// Filtering helpers
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Main entry point
-// ---------------------------------------------------------------------------
 
 /// Recommend games from a library.
 ///
@@ -228,40 +182,25 @@ pub fn recommend(games: &[Game], request: &RecommendRequest) -> Vec<Recommendati
     use crate::eligibility::{EligibilityOptions, is_eligible};
 
     let taste_vector = scoring::build_taste_vector(games);
-
-    // "now" — derive from chrono for testability; in production this is wall clock.
     let now_unix = chrono::Utc::now().timestamp();
-
     let mut rng = request.seed.map(SplitMix64::new);
 
     let mut candidates: Vec<Recommendation> = games
         .iter()
         .filter(|g| {
-            if !is_eligible(
+            is_eligible(
                 g,
                 EligibilityOptions {
                     unplayed_only: false,
                     installed_only: request.include_installed_only,
                 },
-            ) {
-                return false;
-            }
-            // Exclude games belonging to any excluded collection.
-            if !request.exclude_collections.is_empty() {
-                let excluded = g
-                    .steam_collections
-                    .iter()
-                    .any(|c| request.exclude_collections.iter().any(|ec| ec == c));
-                if excluded {
-                    return false;
-                }
-            }
-            true
+            ) && !g
+                .steam_collections
+                .iter()
+                .any(|c| request.exclude_collections.contains(c))
         })
         .map(|game| {
             let (base_score, reasons) = score_game(game, request, &taste_vector, now_unix);
-
-            // Deterministic (or random) perturbation in [0.0, 0.25).
             let perturbation: f32 = match &mut rng {
                 Some(r) => (r.next_f64() as f32) * 0.25,
                 None => 0.0, // no seed => no perturbation (purely score-based)
@@ -276,7 +215,6 @@ pub fn recommend(games: &[Game], request: &RecommendRequest) -> Vec<Recommendati
         })
         .collect();
 
-    // Sort descending by score; for equal scores, lower app_id wins (stable).
     candidates.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
@@ -288,17 +226,10 @@ pub fn recommend(games: &[Game], request: &RecommendRequest) -> Vec<Recommendati
     candidates
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{
-        HltbData, HltbSource, IgdbData, ProtonDbData, RawgData, SteamAppType,
-        VAPOURFLY_RECOMMENDATIONS_SCHEMA,
-    };
+    use crate::models::{HltbData, HltbSource, IgdbData, ProtonDbData, RawgData, SteamAppType};
 
     fn make_game(app_id: u32, name: &str) -> Game {
         Game {
@@ -335,8 +266,6 @@ mod tests {
         }
     }
 
-    // Test 1: Hidden games are excluded.
-
     #[test]
     fn hidden_games_excluded() {
         let mut game = make_game(1, "Hidden Game");
@@ -347,8 +276,6 @@ mod tests {
         assert!(result.is_empty(), "hidden games should be excluded");
     }
 
-    // Test 2: Junk games are excluded.
-
     #[test]
     fn junk_games_excluded() {
         let mut game = make_game(2, "Junk Game");
@@ -358,8 +285,6 @@ mod tests {
         let result = recommend(&games, &req);
         assert!(result.is_empty(), "junk games should be excluded");
     }
-
-    // Test 3: Deterministic with seed.
 
     #[test]
     fn deterministic_with_seed() {
@@ -381,8 +306,6 @@ mod tests {
         }
     }
 
-    // Test 4: Without seed, perturbation is zero (still deterministic).
-
     #[test]
     fn no_seed_no_perturbation() {
         let games = vec![make_game(10, "Game A")];
@@ -398,8 +321,6 @@ mod tests {
             result[0].score
         );
     }
-
-    // Test 5: Low playtime gets a higher score than high playtime.
 
     #[test]
     fn low_playtime_higher_score() {
@@ -426,8 +347,6 @@ mod tests {
         );
         assert!(result[0].reasons.iter().any(|r| r.code == "low_playtime"));
     }
-
-    // Test 6: Time matching works.
 
     #[test]
     fn time_matching_works() {
@@ -550,8 +469,6 @@ mod tests {
             .expect("recently played game should carry the penalty");
         assert_eq!(reason.description, "Played 3 days ago");
     }
-
-    // Test 7: Empty library returns empty.
 
     #[test]
     fn empty_library_returns_empty() {
@@ -871,19 +788,6 @@ mod tests {
         let games = vec![game];
         let vector = scoring::build_taste_vector(&games);
         assert!(vector.is_empty());
-    }
-
-    #[test]
-    fn result_schema_is_correct() {
-        let games: Vec<Game> = vec![];
-        let req = default_request();
-        let recommendations = recommend(&games, &req);
-        let result = RecommendResult {
-            schema: VAPOURFLY_RECOMMENDATIONS_SCHEMA.into(),
-            recommendations,
-            request: req.clone(),
-        };
-        assert_eq!(result.schema, "vapourfly.recommendations.v1");
     }
 
     #[test]

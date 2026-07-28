@@ -17,10 +17,6 @@ use std::collections::HashMap;
 use crate::models::Game;
 use crate::signal;
 
-// ---------------------------------------------------------------------------
-// Taste vector
-// ---------------------------------------------------------------------------
-
 /// Build a taste vector from the user's library.
 ///
 /// Each entry maps a keyword (genre, theme, or tag) to a weight derived from
@@ -32,7 +28,6 @@ pub fn build_taste_vector(games: &[Game]) -> HashMap<String, f32> {
     let mut vector: HashMap<String, f32> = HashMap::new();
 
     for game in games {
-        // Skip hidden and junk
         if game.is_hidden || game.is_junk {
             continue;
         }
@@ -52,10 +47,6 @@ pub fn build_taste_vector(games: &[Game]) -> HashMap<String, f32> {
 
     vector
 }
-
-// ---------------------------------------------------------------------------
-// Taste overlap
-// ---------------------------------------------------------------------------
 
 /// Compute the normalized taste overlap between a game and a taste vector.
 ///
@@ -78,10 +69,6 @@ pub fn taste_overlap(game: &Game, taste_vector: &HashMap<String, f32>) -> f32 {
     overlap / total_taste
 }
 
-// ---------------------------------------------------------------------------
-// High rating
-// ---------------------------------------------------------------------------
-
 /// Check whether a game is highly rated: RAWG ≥ 4.0 **or** IGDB ≥ 80.
 ///
 /// The two sources are evaluated independently (PRD: "RAWG ≥4.0 或 IGDB ≥80"),
@@ -101,10 +88,6 @@ pub fn is_high_rating(game: &Game) -> bool {
         .is_some_and(|r| r >= 80.0);
     rawg_high || igdb_high
 }
-
-// ---------------------------------------------------------------------------
-// Session length
-// ---------------------------------------------------------------------------
 
 /// A "short game" fits a single short session: HLTB main story ≤ 4 hours.
 pub const SHORT_GAME_MAX_SECONDS: u32 = 4 * 3600;

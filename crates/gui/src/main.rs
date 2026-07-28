@@ -32,9 +32,6 @@ mod theme;
 use jobs::{JobRunner, JobSlot, JobTicket, WorkflowKind, fingerprint_u64};
 use theme::*;
 
-// ---------------------------------------------------------------------------
-// View enum
-// ---------------------------------------------------------------------------
 
 /// Top-level destinations shown in the sidebar (ADR-0006).
 /// Junk and Backups are intentionally absent — they live under Library and
@@ -75,9 +72,6 @@ impl View {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Quick view (Library)
-// ---------------------------------------------------------------------------
 
 /// Quick filter preset for the Library grid. Selecting one sets the
 /// appropriate filter toggles and clears the others.
@@ -126,21 +120,8 @@ impl QuickView {
             Self::ShortSessions => "Short sessions",
         }
     }
-
-    fn all() -> [Self; 5] {
-        [
-            Self::All,
-            Self::Cozy,
-            Self::StoryRich,
-            Self::GreatOnDeck,
-            Self::ShortSessions,
-        ]
-    }
 }
 
-// ---------------------------------------------------------------------------
-// Generator playlist slots (ADR-0007)
-// ---------------------------------------------------------------------------
 
 /// GUI-owned generator identity for playlist-store slots.
 ///
@@ -193,11 +174,7 @@ struct GeneratorJobResult {
     playlist: PlaylistFile,
 }
 
-// fingerprint_u64 lives in crate::jobs and is imported above.
 
-// ---------------------------------------------------------------------------
-// Playlists generator choosers (ticket 06)
-// ---------------------------------------------------------------------------
 
 /// Lightweight modal chooser opened from Playlists action bar.
 ///
@@ -235,9 +212,6 @@ enum PlaylistMatchTab {
     Missing,
 }
 
-// ---------------------------------------------------------------------------
-// Pending action for confirmation dialog
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug)]
 enum PendingAction {
@@ -248,9 +222,6 @@ enum PendingAction {
     BackupRestore(PathBuf),
 }
 
-// ---------------------------------------------------------------------------
-// Junk mode
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum JunkModeChoice {
@@ -267,11 +238,16 @@ impl JunkModeChoice {
             Self::Aggressive => "Aggressive",
         }
     }
+
+    fn mode(self) -> JunkMode {
+        match self {
+            Self::Default => JunkMode::Default,
+            Self::Strict => JunkMode::Strict,
+            Self::Aggressive => JunkMode::Aggressive,
+        }
+    }
 }
 
-// ---------------------------------------------------------------------------
-// Background result channels (typed job slots with request IDs)
-// ---------------------------------------------------------------------------
 
 static SCAN_RESULT: JobSlot<ScanResult> = JobSlot::new();
 static WRITE_RESULT: JobSlot<String> = JobSlot::new();
@@ -305,9 +281,6 @@ struct PreparedLibrarySnapshot {
     overrides: ManualOverrides,
 }
 
-// ---------------------------------------------------------------------------
-// App state
-// ---------------------------------------------------------------------------
 
 struct VapourflyApp {
     // Core state
@@ -320,6 +293,10 @@ struct VapourflyApp {
 
     /// Demo mode (`--ui-demo`): deterministic fixture data, no real Steam writes.
     ui_demo: bool,
+
+    /// Whether the once-per-launch automatic background populate (ADR-0009)
+    /// has been kicked off after the first successful scan.
+    auto_populate_started: bool,
 
     /// Light or dark visual system (ADR-0006).
     theme_mode: ThemeMode,
@@ -502,6 +479,9 @@ struct VapourflyApp {
     cc_edit: String,
     lang_edit: String,
     backup_retention_edit: String,
+    /// Steam Web API key input (plain text — the key is shown in plaintext
+    /// on Steam's own creation page; only *echoes* elsewhere are masked).
+    steam_api_key_edit: String,
     allow_steam_running: bool,
     settings_save_msg: Option<String>,
 
@@ -563,10 +543,6 @@ struct VapourflyApp {
     dynamic_loading: bool,
     mood_loading: bool,
     playlist_match_loading: bool,
-}
-
-fn mask_steam_id(id: &str) -> String {
-    display::mask_id(id)
 }
 
 fn proton_tier_label(tier: ProtonTier) -> &'static str {
@@ -634,9 +610,6 @@ fn game_metadata_summary(game: &Game) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Library filter / projection (pure helpers — ticket 03)
-// ---------------------------------------------------------------------------
 
 /// Library grid filters. Quick-view presets set the three toggles; advanced
 /// filters add genre, ProtonDB tier, deck compatibility, and unplayed.
@@ -743,23 +716,13 @@ fn game_matches_library_filters(game: &Game, filters: &LibraryFilters) -> bool {
             return false;
         }
     }
-    if filters.deck_compatible {
-        let has_deck = game
+    if (filters.deck_compatible || filters.controller_full)
+        && !game
             .pcgw
             .as_ref()
-            .is_some_and(|p| p.controller_support == ControllerSupport::Full);
-        if !has_deck {
-            return false;
-        }
-    }
-    if filters.controller_full {
-        let has_controller = game
-            .pcgw
-            .as_ref()
-            .is_some_and(|p| p.controller_support == ControllerSupport::Full);
-        if !has_controller {
-            return false;
-        }
+            .is_some_and(|p| p.controller_support == ControllerSupport::Full)
+    {
+        return false;
     }
     if !filters.tag.is_empty() {
         let t = filters.tag.to_lowercase();
@@ -775,11 +738,10 @@ fn game_matches_library_filters(game: &Game, filters: &LibraryFilters) -> bool {
             return false;
         }
     }
-    if let Some(max_minutes) = filters.hltb_max_minutes {
-        // Prefer the canonical, normalized HLTB main_story_seconds; fall back
-        // to the raw IGDB time_to_beat.normally_seconds for games without HLTB.
-        let completion_seconds = game
-            .hltb
+    // Prefer the canonical, normalized HLTB main_story_seconds; fall back
+    // to the raw IGDB time_to_beat.normally_seconds for games without HLTB.
+    let completion_minutes = || {
+        game.hltb
             .as_ref()
             .and_then(|h| h.main_story_seconds)
             .or_else(|| {
@@ -787,27 +749,18 @@ fn game_matches_library_filters(game: &Game, filters: &LibraryFilters) -> bool {
                     .as_ref()
                     .and_then(|i| i.time_to_beat.as_ref())
                     .and_then(|t| t.normally_seconds)
-            });
-        let fits = completion_seconds.is_some_and(|secs| secs / 60 <= max_minutes);
-        if !fits {
-            return false;
-        }
+            })
+            .map(|secs| secs / 60)
+    };
+    if let Some(max_minutes) = filters.hltb_max_minutes
+        && completion_minutes().is_none_or(|m| m > max_minutes)
+    {
+        return false;
     }
-    if let Some(min_minutes) = filters.hltb_min_minutes {
-        let completion_seconds = game
-            .hltb
-            .as_ref()
-            .and_then(|h| h.main_story_seconds)
-            .or_else(|| {
-                game.igdb
-                    .as_ref()
-                    .and_then(|i| i.time_to_beat.as_ref())
-                    .and_then(|t| t.normally_seconds)
-            });
-        let fits = completion_seconds.is_some_and(|secs| secs / 60 >= min_minutes);
-        if !fits {
-            return false;
-        }
+    if let Some(min_minutes) = filters.hltb_min_minutes
+        && completion_minutes().is_none_or(|m| m < min_minutes)
+    {
+        return false;
     }
     if let Some(min_pt) = filters.playtime_min_minutes {
         let pt = game.playtime_minutes.unwrap_or(0);
@@ -1051,9 +1004,6 @@ fn dry_run_fingerprint(
     format!("dry_run:{action:?}:apps={app_ids:?}:lib={scan_generation}")
 }
 
-// ---------------------------------------------------------------------------
-// Data Sources presentation helpers (ticket 08)
-// ---------------------------------------------------------------------------
 
 /// Human-facing label for an enrichment source id (`igdb` → `IGDB`).
 fn source_display_name(source_id: &str) -> &'static str {
@@ -1135,9 +1085,6 @@ fn source_refresh_enabled(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Reusable UI helpers (design-token based)
-// ---------------------------------------------------------------------------
 
 fn view_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
     ui.vertical(|ui| {
@@ -1294,6 +1241,7 @@ fn filter_toggle(ui: &mut egui::Ui, state: &mut bool, label: &str) {
 /// caret. Clicking opens a popup with the filter's controls.
 fn filter_dropdown(
     ui: &mut egui::Ui,
+    icon: &str,
     label: &str,
     value: &str,
     min_width: f32,
@@ -1311,7 +1259,9 @@ fn filter_dropdown(
                 .width(),
         )
     });
-    let width = (label_w.max(value_w) + 52.0).max(min_width);
+    // Leading icon column (like the reference filters) + caret column.
+    let text_left = SP_3 + 20.0;
+    let width = (label_w.max(value_w) + text_left + 34.0).max(min_width);
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 52.0), egui::Sense::click());
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered();
@@ -1324,14 +1274,21 @@ fn filter_dropdown(
             egui::StrokeKind::Inside,
         );
         painter.text(
-            rect.left_top() + egui::vec2(SP_3, 9.0),
+            egui::pos2(rect.left() + SP_3, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            icon,
+            egui::FontId::proportional(15.0),
+            t().text_secondary,
+        );
+        painter.text(
+            rect.left_top() + egui::vec2(text_left, 9.0),
             egui::Align2::LEFT_TOP,
             label,
             label_font,
             t().text_muted,
         );
         painter.text(
-            egui::pos2(rect.left() + SP_3, rect.bottom() - 9.0),
+            egui::pos2(rect.left() + text_left, rect.bottom() - 9.0),
             egui::Align2::LEFT_BOTTOM,
             value,
             value_font,
@@ -1382,6 +1339,25 @@ fn icon_button(ui: &mut egui::Ui, icon: &str, size: f32) -> egui::Response {
             .min_size(egui::vec2(size, size)),
     )
 }
+
+/// Two-column view layout: side-by-side, or stacked when the responsive
+/// breakpoint moves rails below the main content.
+fn two_column_layout(rails_below: bool) -> egui::Layout {
+    if rails_below {
+        egui::Layout::top_down(egui::Align::LEFT)
+    } else {
+        egui::Layout::left_to_right(egui::Align::Min)
+    }
+}
+
+/// ProtonDB tiers offered by filter dropdowns, best first.
+const PROTON_TIER_CHOICES: [ProtonTier; 5] = [
+    ProtonTier::Native,
+    ProtonTier::Platinum,
+    ProtonTier::Gold,
+    ProtonTier::Silver,
+    ProtonTier::Bronze,
+];
 
 fn empty_state(ui: &mut egui::Ui, icon: &str, title: &str, subtitle: &str) {
     ui.add_space(SP_6);
@@ -1661,13 +1637,13 @@ fn game_artwork(
 
 /// Library card artwork (landscape capsule). Uses the shared `game_artwork`
 /// component with the Steam header capsule URL.
-fn game_image(ui: &mut egui::Ui, app_id: u32, name: &str, demo_or_offline: bool) {
+fn game_image(ui: &mut egui::Ui, app_id: u32, name: &str, demo_or_offline: bool, width: f32) {
     game_artwork(
         ui,
         app_id,
         name,
-        POSTER_W,
-        POSTER_H,
+        width,
+        theme::card_art_height(width),
         demo_or_offline,
         &steam_capsule_uri(app_id),
     );
@@ -1745,9 +1721,6 @@ fn credential_badge(ui: &mut egui::Ui, signal: CredentialSignal) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Shared chrome primitives (primary / secondary / ghost buttons)
-// ---------------------------------------------------------------------------
 
 fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ui.add(primary_button_widget(label))
@@ -1781,9 +1754,6 @@ fn ghost_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     )
 }
 
-// ---------------------------------------------------------------------------
-// Monochrome line icons for sidebar navigation (Phosphor glyphs)
-// ---------------------------------------------------------------------------
 
 const NAV_ICON_SIZE: f32 = 21.0;
 
@@ -1941,6 +1911,9 @@ fn library_insight_tile(
         });
 }
 
+/// Render the library insights rail. Returns `true` when "View full
+/// history" was clicked (the caller switches the grid to recently-played
+/// sort).
 #[allow(clippy::too_many_arguments)]
 fn library_insights_rail(
     ui: &mut egui::Ui,
@@ -1951,9 +1924,11 @@ fn library_insights_rail(
     total_playtime: u32,
     matching_count: usize,
     backlog_count: usize,
-    recent_games: &[(String, i64, u32)],
+    recent_games: &[(u32, String, i64, u32)],
     avg_hltb_minutes: u32,
-) {
+    demo_or_offline: bool,
+) -> bool {
+    let mut view_history_clicked = false;
     ui.set_width(214.0);
     egui::Frame::NONE
         .fill(t().surface_raised)
@@ -2028,12 +2003,22 @@ fn library_insights_rail(
             } else {
                 backlog_count as f32 / matching_count as f32
             };
-            ui.add(
-                egui::ProgressBar::new(backlog_fraction)
-                    .desired_width(186.0)
-                    .fill(t().accent)
-                    .show_percentage(),
-            );
+            // Thin track with the percentage as quiet text beside it, not
+            // painted over the bar.
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::ProgressBar::new(backlog_fraction)
+                        .desired_width(150.0)
+                        .desired_height(6.0)
+                        .corner_radius(3.0)
+                        .fill(t().accent),
+                );
+                ui.label(
+                    RichText::new(format!("{:.0}%", backlog_fraction * 100.0))
+                        .size(TS_XS)
+                        .color(t().text_muted),
+                );
+            });
             ui.add_space(SP_3);
             ui.label(
                 RichText::new("Recent activity")
@@ -2049,22 +2034,22 @@ fn library_insights_rail(
                         .color(t().text_muted),
                 );
             } else {
-                for (name, unix, playtime) in recent_games {
+                for (app_id, name, unix, playtime) in recent_games {
                     ui.horizontal(|ui| {
-                        egui::Frame::NONE
-                            .fill(t().accent_soft)
-                            .inner_margin(egui::Margin::same(m(SP_2)))
-                            .corner_radius(CORNER_SM)
-                            .show(ui, |ui| {
-                                ui.label(
-                                    RichText::new(name.chars().next().unwrap_or('•').to_string())
-                                        .size(TS_SM)
-                                        .strong()
-                                        .color(t().accent_text),
-                                );
-                            });
+                        // Cover thumbnail like the reference rail; falls back
+                        // to the deterministic placeholder offline.
+                        game_artwork(
+                            ui,
+                            *app_id,
+                            name,
+                            32.0,
+                            32.0,
+                            demo_or_offline,
+                            &steam_capsule_uri(*app_id),
+                        );
                         ui.vertical(|ui| {
-                            ui.set_width(145.0);
+                            ui.set_width(140.0);
+                            ui.spacing_mut().item_spacing.y = 1.0;
                             ui.add(
                                 egui::Label::new(
                                     RichText::new(name)
@@ -2087,6 +2072,19 @@ fn library_insights_rail(
                     });
                     ui.add_space(SP_1);
                 }
+                ui.add_space(SP_1);
+                let history = egui::Button::new(
+                    RichText::new(format!("{}  View full history", icons::CLOCK))
+                        .size(TS_XS)
+                        .color(t().text_secondary),
+                )
+                .fill(t().surface)
+                .stroke(egui::Stroke::new(1.0, t().border_soft))
+                .corner_radius(CORNER_SM)
+                .min_size(egui::vec2(186.0, 26.0));
+                if ui.add(history).clicked() {
+                    view_history_clicked = true;
+                }
             }
             ui.add_space(SP_2);
             insight_metric(ui, "Hidden", hidden_count.to_string());
@@ -2094,6 +2092,7 @@ fn library_insights_rail(
                 insight_metric(ui, "Avg HLTB", format!("{}h", avg_hltb_minutes / 60));
             }
         });
+    view_history_clicked
 }
 
 /// Build a unique per-launch temp root for --ui-demo mode.
@@ -2112,7 +2111,6 @@ fn unique_demo_root() -> PathBuf {
 
 impl VapourflyApp {
     fn new(fixtures_path: Option<PathBuf>, ui_demo: bool) -> Self {
-        // -- Configuration ---------------------------------------------------
         // In --ui-demo mode, build an isolated in-memory config rooted at a
         // unique temp directory. The real Vapourfly config file, Steam paths,
         // account directories, and API credentials are NEVER read.
@@ -2137,6 +2135,7 @@ impl VapourflyApp {
                 cc: "US".into(),
                 lang: "english".into(),
                 backup_retention_count: 5,
+                steam_api_key: None,
             };
             (
                 Some(demo_config),
@@ -2170,6 +2169,11 @@ impl VapourflyApp {
             .and_then(|c| c.account.clone())
             .unwrap_or_default();
 
+        let steam_api_key_edit = config
+            .as_ref()
+            .and_then(|c| c.steam_api_key.clone())
+            .unwrap_or_default();
+
         let cc_edit = config
             .as_ref()
             .map_or_else(|| "US".into(), |c| c.cc.clone());
@@ -2186,7 +2190,6 @@ impl VapourflyApp {
 
         let has_rawg = config.as_ref().is_some_and(|c| c.has_rawg_credentials);
 
-        // Load source cache statuses
         let source_statuses = vapourfly_api::enrichment::source_status(&cache_root);
 
         Self {
@@ -2197,6 +2200,7 @@ impl VapourflyApp {
             success_msg: None,
             fixtures_path,
             ui_demo,
+            auto_populate_started: false,
             theme_mode: ThemeMode::Light,
 
             config,
@@ -2305,6 +2309,7 @@ impl VapourflyApp {
             cc_edit,
             lang_edit,
             backup_retention_edit,
+            steam_api_key_edit,
             allow_steam_running: false,
             settings_save_msg: None,
 
@@ -2359,7 +2364,6 @@ impl VapourflyApp {
             SteamStoreDetails, SteamStorePlatforms,
         };
 
-        // -- 24 games with varied metadata -----------------------------------
         const DEMO_GAME_NAMES: [&str; 24] = [
             "Fields of Luma",
             "Neon Harbor",
@@ -2589,7 +2593,6 @@ impl VapourflyApp {
         self.scan_generation = self.scan_generation.wrapping_add(1);
         self.prepared_snapshot = None;
 
-        // -- 4 Steam Collections ---------------------------------------------
         self.collections = vec![
             SteamCollection {
                 id: "favorite".into(),
@@ -2621,7 +2624,6 @@ impl VapourflyApp {
             },
         ];
 
-        // -- Junk decisions (mixed confidence) --------------------------------
         self.junk_results = vec![
             JunkDecision {
                 app_id: 1011,
@@ -2653,7 +2655,6 @@ impl VapourflyApp {
         ];
         self.junk_selected = [1011, 1017].into_iter().collect();
 
-        // -- Recommendation results -------------------------------------------
         self.recommend_results = vec![
             Recommendation {
                 app_id: 1003,
@@ -2713,7 +2714,6 @@ impl VapourflyApp {
             },
         ];
 
-        // -- Discover results -------------------------------------------------
         self.discover_results = vec![
             DiscoverPick {
                 app_id: 1003,
@@ -2737,10 +2737,8 @@ impl VapourflyApp {
             },
         ];
 
-        // -- Source statuses --------------------------------------------------
         self.source_statuses = vapourfly_api::enrichment::source_status(&self.cache_dir);
 
-        // -- Detected accounts ------------------------------------------------
         self.detected_accounts = vec![SteamAccount {
             steam_id64: "76561198000000000".into(),
             account_name: "demo_user".into(),
@@ -2748,7 +2746,6 @@ impl VapourflyApp {
             most_recent: true,
         }];
 
-        // -- Backups ----------------------------------------------------------
         self.backups = vec![BackupInfo {
             path: PathBuf::from(
                 "/demo/backups/cloud-storage-namespace-1.vapourfly-backup-20260101T120000Z-abc12345.json",
@@ -2757,7 +2754,6 @@ impl VapourflyApp {
             sha256: "abc12345def67890".into(),
         }];
 
-        // -- Playlist store ids -----------------------------------------------
         // In --ui-demo mode, write real loadable demo Playlist files to the
         // temp playlist store so "Load existing" and generator slots work.
         // All demo playlists use the canonical schema so playlist_store::put
@@ -2833,7 +2829,6 @@ impl VapourflyApp {
                     return;
                 }
             }
-            // Build rail entries from the demo playlists.
             self.playlist_rail_entries = demo_playlists
                 .iter()
                 .map(|pf| (pf.playlist.id.clone(), Ok(pf.clone())))
@@ -2864,7 +2859,9 @@ impl VapourflyApp {
 
     /// Current scan fingerprint — used at poll time to detect scan-config
     /// drift (steam_dir, account, fixtures, offline changed mid-scan).
-    fn current_scan_fingerprint(&self) -> String {
+    /// Steam dir + account used for a scan (config, else detection, else the
+    /// conventional `~/.steam/steam` fallback).
+    fn scan_inputs(&self) -> (PathBuf, Option<String>) {
         let steam_dir = self
             .config
             .as_ref()
@@ -2876,7 +2873,14 @@ impl VapourflyApp {
                     .join(".steam")
                     .join("steam")
             });
-        let account = self.config.as_ref().and_then(|c| c.account.clone());
+        (
+            steam_dir,
+            self.config.as_ref().and_then(|c| c.account.clone()),
+        )
+    }
+
+    fn current_scan_fingerprint(&self) -> String {
+        let (steam_dir, account) = self.scan_inputs();
         format!(
             "scan:dir={}:acct={}:fix={}:offline={}",
             steam_dir.display(),
@@ -2906,32 +2910,11 @@ impl VapourflyApp {
         self.error = None;
         self.success_msg = None;
 
-        // Allocate a request ID for stale-result protection.
         // Fingerprint includes steam_dir, account, fixtures, and offline so
         // changing the scan config invalidates an in-flight scan.
-        let steam_dir = self
-            .config
-            .as_ref()
-            .map(|c| c.steam_dir.clone())
-            .or_else(vapourfly_core::config::VapourflyConfig::detect_steam_dir)
-            .unwrap_or_else(|| {
-                dirs::home_dir()
-                    .unwrap_or_default()
-                    .join(".steam")
-                    .join("steam")
-            });
-        let account = self.config.as_ref().and_then(|c| c.account.clone());
+        let (steam_dir, account) = self.scan_inputs();
         let offline = self.offline_mode;
-        let scan_fp = format!(
-            "scan:dir={}:acct={}:fix={}:offline={}",
-            steam_dir.display(),
-            account.as_deref().unwrap_or(""),
-            self.fixtures_path
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default(),
-            offline
-        );
+        let scan_fp = self.current_scan_fingerprint();
         let job_id = self.job_runner.next_ticket(WorkflowKind::Scan, &scan_fp);
         self.scan_job_id = Some(job_id);
         SCAN_RESULT.clear();
@@ -2964,9 +2947,8 @@ impl VapourflyApp {
     /// exactly the diff the user confirmed. Backup restore is the only action
     /// without a plan (it has no diff to preview).
     fn execute_pending_action(&mut self) {
-        let action = match self.pending_action.take() {
-            Some(a) => a,
-            None => return,
+        let Some(action) = self.pending_action.take() else {
+            return;
         };
 
         self.show_confirm_dialog = false;
@@ -2977,9 +2959,6 @@ impl VapourflyApp {
             self.dry_run_plan = None;
         }
 
-        // If we have a pre-computed plan from the dry-run step, execute it
-        // directly.  Otherwise fall through to the legacy path (backup
-        // restore).
         if let Some(plan) = self.dry_run_plan.take() {
             self.write_loading = true;
             self.write_result = None;
@@ -3010,12 +2989,8 @@ impl VapourflyApp {
         // Legacy path for BackupRestore (no dry-run diff). Every other
         // action commits only a stored PreviewedPlan — a Steam write whose
         // diff was never shown must not happen (confirmation gate).
-        let cloud_path = match self.cloud_storage_path() {
-            Ok(p) => p,
-            Err(e) => {
-                self.error = Some(e);
-                return;
-            }
+        let Some(cloud_path) = self.ok_or_err(self.cloud_storage_path()) else {
+            return;
         };
 
         self.write_loading = true;
@@ -3067,21 +3042,13 @@ impl VapourflyApp {
         // job (see `generate_dry_run_plan`), so `resolve_dry_run_action` no
         // longer matches rules on the egui frame. Capture the prepared library
         // so the background job can resolve rules there.
-        let action = match self.resolve_dry_run_action(action) {
-            Ok(action) => action,
-            Err(e) => {
-                self.error = Some(e);
-                return;
-            }
+        let Some(action) = self.ok_or_err(self.resolve_dry_run_action(action)) else {
+            return;
         };
         let games = self.prepared_games(JunkMode::Default).unwrap_or_default();
 
-        let cloud_path = match self.cloud_storage_path() {
-            Ok(p) => p,
-            Err(e) => {
-                self.error = Some(e);
-                return;
-            }
+        let Some(cloud_path) = self.ok_or_err(self.cloud_storage_path()) else {
+            return;
         };
 
         self.dry_run_loading = true;
@@ -3089,10 +3056,6 @@ impl VapourflyApp {
         self.dry_run_plan = None;
         self.pending_action = Some(action.clone());
 
-        // Fingerprint covers the target action + all input AppIDs (junk
-        // selection, recommend results, or playlist AppIDs) + library
-        // generation, so a dry-run is invalidated if the inputs change before
-        // the background job completes.
         let dry_run_fp = dry_run_fingerprint(
             &action,
             &self.junk_selected,
@@ -3124,8 +3087,32 @@ impl VapourflyApp {
         });
     }
 
-    /// Start a cache refresh for the given source (or all sources).
+    /// Start an explicit cache refresh for the given source (or all
+    /// sources). Forced: re-fetches even fresh entries.
     fn start_cache_refresh(&mut self, source: Option<String>, ctx: &egui::Context) {
+        self.start_enrich_job(source, true, ctx);
+    }
+
+    /// Start the automatic background populate after a scan (ADR-0009):
+    /// fetch missing/stale entries only, once per launch. Silent no-op in
+    /// demo/offline mode or when a job is already running — the library is
+    /// already rendered; this only warms the cache behind it.
+    fn start_background_populate(&mut self, ctx: &egui::Context) {
+        if self.auto_populate_started
+            || self.ui_demo
+            || self.offline_mode
+            || self.cache_refresh_loading
+        {
+            return;
+        }
+        self.auto_populate_started = true;
+        self.start_enrich_job(None, false, ctx);
+    }
+
+    /// Shared enrichment job body: `force` distinguishes an explicit
+    /// refresh (re-fetch everything) from the background populate
+    /// (missing/stale only).
+    fn start_enrich_job(&mut self, source: Option<String>, force: bool, ctx: &egui::Context) {
         if self.cache_refresh_loading {
             return;
         }
@@ -3156,7 +3143,7 @@ impl VapourflyApp {
         self.cache_refresh_msg = None;
         self.success_msg = None;
 
-        let fingerprint = format!("cache_refresh:{source:?}");
+        let fingerprint = format!("cache_refresh:{source:?}:{force}");
         let job_id = self
             .job_runner
             .next_ticket(WorkflowKind::CacheRefresh, &fingerprint);
@@ -3180,7 +3167,7 @@ impl VapourflyApp {
             let options = vapourfly_api::enrichment::EnrichmentOptions {
                 sources,
                 offline: false,
-                force: true,
+                force,
             };
 
             let mut games = games;
@@ -3191,24 +3178,76 @@ impl VapourflyApp {
         });
     }
 
+    /// Unwrap a result, routing the error message to the UI error banner.
+    fn ok_or_err<T>(&mut self, result: Result<T, String>) -> Option<T> {
+        match result {
+            Ok(v) => Some(v),
+            Err(e) => {
+                self.error = Some(e);
+                None
+            }
+        }
+    }
+
+    // Job-input fingerprints, built identically at job start and at poll time
+    // so any input change mid-job invalidates the in-flight result.
+
+    fn junk_preview_fp(&self, mode: &JunkMode) -> String {
+        // Covers mode + library generation + override/cache generation so a
+        // rescan or cache refresh invalidates an in-flight preview.
+        format!(
+            "junk_preview:{mode:?}:lib={}:ovr={}",
+            self.scan_generation, self.cache_refresh_generation
+        )
+    }
+
+    fn recommend_fp(&self, request: &RecommendRequest) -> String {
+        format!("recommend:{request:?}:lib={}", self.scan_generation)
+    }
+
+    fn discover_fp(&self, options: &DiscoverOptions) -> String {
+        format!("discover:{options:?}:lib={}", self.scan_generation)
+    }
+
+    fn dynamic_fp(&self, template: DynamicTemplate, session_minutes: u32, count: usize) -> String {
+        format!(
+            "dynamic:{}:{session_minutes}:{count}:lib={}",
+            template.id(),
+            self.scan_generation
+        )
+    }
+
+    fn mood_fp(&self, mood: EditorialMood) -> String {
+        format!("mood:{}:lib={}", mood.id(), self.scan_generation)
+    }
+
+    fn playlist_match_fp(&self, pf: &PlaylistFile) -> String {
+        // Covers the playlist id + a hash of the full content (manual AppIDs
+        // or rules) + library generation + price-cache generation, so editing
+        // the playlist, rescanning, or refreshing the cache invalidates an
+        // in-flight match.
+        format!(
+            "playlist_match:{}:content={:x}:lib={}:price={}",
+            pf.playlist.id,
+            playlist_content_hash(pf),
+            self.scan_generation,
+            self.cache_refresh_generation
+        )
+    }
+
     /// Start Junk Preview in a background thread.
     fn start_junk_preview(&mut self, ctx: &egui::Context) {
         if self.junk_preview_loading {
             return;
         }
-        let mode = match self.junk_mode {
-            JunkModeChoice::Default => JunkMode::Default,
-            JunkModeChoice::Strict => JunkMode::Strict,
-            JunkModeChoice::Aggressive => JunkMode::Aggressive,
-        };
+        let mode = self.junk_mode.mode();
         // Always use the Default snapshot (pre-classified, Arc clone is
         // cheap). The non-Default classification happens inside
         // evaluate_junk which reads signals directly — it does NOT read
         // game.is_junk — so we don't need apply_junk_flags at all for the
         // preview. This keeps all heavy work off the UI thread.
-        let games = match self.prepared_games(JunkMode::Default) {
-            Some(g) => g,
-            None => return,
+        let Some(games) = self.prepared_games(JunkMode::Default) else {
+            return;
         };
         let overrides = self
             .prepared_snapshot
@@ -3217,13 +3256,7 @@ impl VapourflyApp {
             .unwrap_or_default();
 
         self.junk_preview_loading = true;
-        // Fingerprint covers mode + library generation + override/cache
-        // generation so a rescan or cache refresh invalidates an in-flight
-        // preview (the result would be computed against a stale library).
-        let fingerprint = format!(
-            "junk_preview:{mode:?}:lib={}:ovr={}",
-            self.scan_generation, self.cache_refresh_generation
-        );
+        let fingerprint = self.junk_preview_fp(&mode);
         let job_id = self
             .job_runner
             .next_ticket(WorkflowKind::JunkPreview, &fingerprint);
@@ -3245,30 +3278,22 @@ impl VapourflyApp {
         if self.recommend_loading {
             return;
         }
-        let request = match self.recommend_request_from_inputs() {
-            Ok(r) => r,
-            Err(e) => {
-                self.error = Some(e);
-                return;
-            }
+        let Some(request) = self.ok_or_err(self.recommend_request_from_inputs()) else {
+            return;
         };
-        let games = match self.prepared_games(JunkMode::Default) {
-            Some(g) => g,
-            None => return,
+        let Some(games) = self.prepared_games(JunkMode::Default) else {
+            return;
         };
 
         self.recommend_loading = true;
-        // Fingerprint covers the full request (minutes, count, deck,
-        // installed-only, seed) + library generation. The request is also
-        // captured at start time (recommend_request) so Match % is computed
-        // against the request the user actually submitted, not the current
-        // inputs (e.g. if Deck mode changes mid-job).
-        let fingerprint = format!("recommend:{request:?}:lib={}", self.scan_generation);
+        // The request is captured at start time (recommend_request_at_start)
+        // so Match % is computed against the request the user actually
+        // submitted, not the current inputs (e.g. if Deck mode changes mid-job).
+        let fingerprint = self.recommend_fp(&request);
         let job_id = self
             .job_runner
             .next_ticket(WorkflowKind::RecommendPreview, &fingerprint);
         self.recommend_job_id = Some(job_id);
-        // Keep the start-time request so Match % uses the submitted inputs.
         self.recommend_request_at_start = Some(request.clone());
         RECOMMEND_RESULT.clear();
 
@@ -3285,21 +3310,15 @@ impl VapourflyApp {
         if self.discover_loading {
             return;
         }
-        let options = match self.discover_options_from_inputs() {
-            Ok(o) => o,
-            Err(e) => {
-                self.error = Some(e);
-                return;
-            }
+        let Some(options) = self.ok_or_err(self.discover_options_from_inputs()) else {
+            return;
         };
-        let games = match self.prepared_games(JunkMode::Default) {
-            Some(g) => g,
-            None => return,
+        let Some(games) = self.prepared_games(JunkMode::Default) else {
+            return;
         };
 
         self.discover_loading = true;
-        // Fingerprint covers the full options + library generation.
-        let fingerprint = format!("discover:{options:?}:lib={}", self.scan_generation);
+        let fingerprint = self.discover_fp(&options);
         let job_id = self
             .job_runner
             .next_ticket(WorkflowKind::Discover, &fingerprint);
@@ -3320,40 +3339,24 @@ impl VapourflyApp {
         if self.dynamic_loading {
             return;
         }
-        let template = match DynamicTemplate::parse(&self.dynamic_template) {
-            Some(t) => t,
-            None => {
-                self.error = Some("Unknown template. Use deck-session or finish-it.".into());
-                return;
-            }
+        let Some(template) = DynamicTemplate::parse(&self.dynamic_template) else {
+            self.error = Some("Unknown template. Use deck-session or finish-it.".into());
+            return;
         };
-        let session_minutes = match parse_required_u32("Session minutes", &self.dynamic_minutes) {
-            Ok(v) => v,
-            Err(e) => {
-                self.error = Some(e);
-                return;
-            }
+        let Some(session_minutes) =
+            self.ok_or_err(parse_required("Session minutes", &self.dynamic_minutes))
+        else {
+            return;
         };
-        let count = match parse_required_usize("Count", &self.dynamic_count) {
-            Ok(v) => v,
-            Err(e) => {
-                self.error = Some(e);
-                return;
-            }
+        let Some(count) = self.ok_or_err(parse_required("Count", &self.dynamic_count)) else {
+            return;
         };
-        let games = match self.prepared_games(JunkMode::Default) {
-            Some(g) => g,
-            None => return,
+        let Some(games) = self.prepared_games(JunkMode::Default) else {
+            return;
         };
 
         self.dynamic_loading = true;
-        let fingerprint = format!(
-            "dynamic:{}:{}:{}:lib={}",
-            template.id(),
-            session_minutes,
-            count,
-            self.scan_generation
-        );
+        let fingerprint = self.dynamic_fp(template, session_minutes, count);
         let job_id = self
             .job_runner
             .next_ticket(WorkflowKind::Dynamic, &fingerprint);
@@ -3391,20 +3394,16 @@ impl VapourflyApp {
         if self.mood_loading {
             return;
         }
-        let mood = match EditorialMood::parse(&self.editorial_mood) {
-            Some(m) => m,
-            None => {
-                self.error = Some("Unknown mood. Pick one from the list.".into());
-                return;
-            }
+        let Some(mood) = EditorialMood::parse(&self.editorial_mood) else {
+            self.error = Some("Unknown mood. Pick one from the list.".into());
+            return;
         };
-        let games = match self.prepared_games(JunkMode::Default) {
-            Some(g) => g,
-            None => return,
+        let Some(games) = self.prepared_games(JunkMode::Default) else {
+            return;
         };
 
         self.mood_loading = true;
-        let fingerprint = format!("mood:{}:lib={}", mood.id(), self.scan_generation);
+        let fingerprint = self.mood_fp(mood);
         let job_id = self
             .job_runner
             .next_ticket(WorkflowKind::Mood, &fingerprint);
@@ -3438,84 +3437,59 @@ impl VapourflyApp {
     /// [`JobSlot::take_if`]: a result computed for different inputs is discarded
     /// before reaching here.
     fn poll_generator_results(&mut self) {
-        // -- Dynamic ---------------------------------------------------------
-        // Validate fingerprint against current template + params + library
+        // Validate fingerprints against the current chooser inputs + library
         // generation so a rescan or chooser change invalidates an in-flight job.
         if self.dynamic_loading
             && let Some(expected) = self.dynamic_job_id
         {
-            // Recompute fingerprint from current inputs.
             let template = DynamicTemplate::parse(&self.dynamic_template);
-            let session_minutes = parse_required_u32("Session minutes", &self.dynamic_minutes).ok();
-            let count = parse_required_usize("Count", &self.dynamic_count).ok();
+            let session_minutes = parse_required("Session minutes", &self.dynamic_minutes).ok();
+            let count = parse_required("Count", &self.dynamic_count).ok();
             let current_fp = match (template, session_minutes, count) {
-                (Some(t), Some(sm), Some(c)) => {
-                    format!(
-                        "dynamic:{}:{}:{}:lib={}",
-                        t.id(),
-                        sm,
-                        c,
-                        self.scan_generation
-                    )
-                }
+                (Some(t), Some(sm), Some(c)) => self.dynamic_fp(t, sm, c),
                 _ => String::new(),
             };
-            // Discard result when current fingerprint is empty (invalid
-            // input) OR when it doesn't match the expected fingerprint.
             if current_fp.is_empty() || expected.fingerprint != fingerprint_u64(&current_fp) {
                 self.dynamic_loading = false;
                 self.dynamic_job_id = None;
             } else if let Some(result) = DYNAMIC_RESULT.take_if(expected) {
                 self.dynamic_loading = false;
                 self.dynamic_job_id = None;
-                match result {
-                    Ok(job_result) => {
-                        match self
-                            .store_generator_playlist(job_result.identity, job_result.playlist)
-                        {
-                            Ok(stored) => {
-                                self.adopt_playlist_for_edit(&stored);
-                                self.refresh_playlist_store_ids();
-                            }
-                            Err(e) => self.error = Some(e),
-                        }
-                    }
-                    Err(e) => self.error = Some(e),
-                }
+                self.apply_generator_result(result);
             }
         }
 
-        // -- Mood ------------------------------------------------------------
-        // Validate fingerprint against current mood + library generation.
         if self.mood_loading
             && let Some(expected) = self.mood_job_id
         {
             let current_fp = EditorialMood::parse(&self.editorial_mood)
-                .map(|m| format!("mood:{}:lib={}", m.id(), self.scan_generation))
+                .map(|m| self.mood_fp(m))
                 .unwrap_or_default();
-            // Discard result when current fingerprint is empty (invalid
-            // mood) OR when it doesn't match the expected fingerprint.
             if current_fp.is_empty() || expected.fingerprint != fingerprint_u64(&current_fp) {
                 self.mood_loading = false;
                 self.mood_job_id = None;
             } else if let Some(result) = MOOD_RESULT.take_if(expected) {
                 self.mood_loading = false;
                 self.mood_job_id = None;
-                match result {
-                    Ok(job_result) => {
-                        match self
-                            .store_generator_playlist(job_result.identity, job_result.playlist)
-                        {
-                            Ok(stored) => {
-                                self.adopt_playlist_for_edit(&stored);
-                                self.refresh_playlist_store_ids();
-                            }
-                            Err(e) => self.error = Some(e),
-                        }
+                self.apply_generator_result(result);
+            }
+        }
+    }
+
+    /// Store a finished generator playlist in its stable slot and adopt it
+    /// into the Playlists edit surface.
+    fn apply_generator_result(&mut self, result: Result<GeneratorJobResult, String>) {
+        match result {
+            Ok(job_result) => {
+                match self.store_generator_playlist(job_result.identity, job_result.playlist) {
+                    Ok(stored) => {
+                        self.adopt_playlist_for_edit(&stored);
+                        self.refresh_playlist_store_ids();
                     }
                     Err(e) => self.error = Some(e),
                 }
             }
+            Err(e) => self.error = Some(e),
         }
     }
 
@@ -3524,21 +3498,12 @@ impl VapourflyApp {
         if self.playlist_match_loading {
             return;
         }
-        let games = match self.prepared_games(JunkMode::Default) {
-            Some(g) => g,
-            None => return,
+        let Some(games) = self.prepared_games(JunkMode::Default) else {
+            return;
         };
 
         self.playlist_match_loading = true;
-        // Fingerprint covers the playlist id + a hash of the full content
-        // (manual AppIDs or rules) + library generation + price-cache
-        // generation, so editing the playlist, rescanning, or refreshing the
-        // cache invalidates an in-flight match.
-        let content_hash = playlist_content_hash(&pf);
-        let fingerprint = format!(
-            "playlist_match:{}:content={:x}:lib={}:price={}",
-            pf.playlist.id, content_hash, self.scan_generation, self.cache_refresh_generation
-        );
+        let fingerprint = self.playlist_match_fp(&pf);
         let job_id = self
             .job_runner
             .next_ticket(WorkflowKind::PlaylistMatch, &fingerprint);
@@ -3566,10 +3531,14 @@ impl VapourflyApp {
         });
     }
 
+    /// True when CDN fetches are banned (demo mode or offline mode).
+    fn demo_or_offline(&self) -> bool {
+        self.ui_demo || self.offline_mode
+    }
+
     fn filtered_games(&self) -> Vec<Game> {
-        let games = match self.prepared_games(JunkMode::Default) {
-            Some(games) => games,
-            None => return Vec::new(),
+        let Some(games) = self.prepared_games(JunkMode::Default) else {
+            return Vec::new();
         };
         let games: &[Game] = &games;
 
@@ -3577,26 +3546,11 @@ impl VapourflyApp {
         let hltb_max = if self.library_quick_view == QuickView::ShortSessions {
             Some(120)
         } else {
-            self.filter_hltb_max
-                .parse::<u32>()
-                .ok()
-                .filter(|_| !self.filter_hltb_max.is_empty())
+            self.filter_hltb_max.parse::<u32>().ok()
         };
-        let hltb_min = self
-            .filter_hltb_min
-            .parse::<u32>()
-            .ok()
-            .filter(|_| !self.filter_hltb_min.is_empty());
-        let playtime_min = self
-            .filter_playtime_min
-            .parse::<u32>()
-            .ok()
-            .filter(|_| !self.filter_playtime_min.is_empty());
-        let playtime_max = self
-            .filter_playtime_max
-            .parse::<u32>()
-            .ok()
-            .filter(|_| !self.filter_playtime_max.is_empty());
+        let hltb_min = self.filter_hltb_min.parse::<u32>().ok();
+        let playtime_min = self.filter_playtime_min.parse::<u32>().ok();
+        let playtime_max = self.filter_playtime_max.parse::<u32>().ok();
 
         let filters = LibraryFilters {
             installed_only: self.filter_installed_only
@@ -3628,7 +3582,6 @@ impl VapourflyApp {
         self.source_statuses = vapourfly_api::enrichment::source_status(&self.cache_dir);
     }
 
-    /// Hydrate cached external metadata and annotate junk flags for workflows.
     fn load_collections_from_cloud(&self) -> Result<Vec<SteamCollection>, String> {
         let cloud_path = self.cloud_storage_path()?;
         if !cloud_path.exists() {
@@ -3652,16 +3605,19 @@ impl VapourflyApp {
             .map_err(|e| format!("Failed to write collections export: {e}"))
     }
 
-    fn run_setup_diagnostics(&mut self) {
-        // Demo mode: use the demo config's steam_dir; never auto-detect real Steam.
-        let steam_dir = if self.ui_demo {
-            self.config.as_ref().map(|c| c.steam_dir.clone())
+    /// Steam dir from config, falling back to auto-detection — except in
+    /// --ui-demo mode, which must never detect the real Steam install.
+    fn detected_steam_dir(&self) -> Option<PathBuf> {
+        let configured = self.config.as_ref().map(|c| c.steam_dir.clone());
+        if self.ui_demo {
+            configured
         } else {
-            self.config
-                .as_ref()
-                .map(|c| c.steam_dir.clone())
-                .or_else(VapourflyConfig::detect_steam_dir)
-        };
+            configured.or_else(VapourflyConfig::detect_steam_dir)
+        }
+    }
+
+    fn run_setup_diagnostics(&mut self) {
+        let steam_dir = self.detected_steam_dir();
 
         let mut lines = vec!["Vapourfly Setup Diagnostics".to_string()];
 
@@ -3680,7 +3636,7 @@ impl VapourflyApp {
                     lines.push(format!(
                         "Selected: {} (***) [{}]",
                         acc.persona_name,
-                        mask_steam_id(&acc.steam_id64)
+                        display::mask_id(&acc.steam_id64)
                     ));
 
                     let cloud_path =
@@ -3742,14 +3698,7 @@ impl VapourflyApp {
         // Sanitized environment summary (PRIVACY.md "Diagnostics Export"):
         // paths are always redacted in the GUI; accounts and library folders
         // are counts only. Demo mode never touches the real Steam install.
-        let steam_dir = if self.ui_demo {
-            self.config.as_ref().map(|c| c.steam_dir.clone())
-        } else {
-            self.config
-                .as_ref()
-                .map(|c| c.steam_dir.clone())
-                .or_else(VapourflyConfig::detect_steam_dir)
-        };
+        let steam_dir = self.detected_steam_dir();
         let mut warnings: Vec<String> = Vec::new();
         let (steam_dir_str, account_count, library_folder_count) = match &steam_dir {
             Some(dir) => {
@@ -3852,22 +3801,18 @@ impl VapourflyApp {
     /// stale. Called once per frame from the UI update. The result is polled
     /// in [`poll_library_prepare`].
     fn ensure_library_prepared(&mut self, ctx: &egui::Context) {
-        // No scan result yet — nothing to prepare.
         if self.scan_result.is_none() {
             return;
         }
-        // Already have a fresh snapshot — no work needed.
         let fp = self.library_prepare_fingerprint();
         if let Some(snap) = &self.prepared_snapshot {
             if snap.fingerprint == fp {
                 return;
             }
         }
-        // A prepare is already in flight for this fingerprint — wait for it.
         if self.prepare_job_id.is_some() && self.prepare_fingerprint == Some(fp) {
             return;
         }
-        // Start a new background prepare.
         let job_id = self
             .job_runner
             .next_ticket(WorkflowKind::Prepare, &format!("prepare:{fp}"));
@@ -3946,14 +3891,12 @@ impl VapourflyApp {
     /// Tests inject a snapshot via [`VapourflyApp::inject_prepared_snapshot`]
     /// rather than relying on a production fallback.
     fn prepared_games(&self, junk_mode: JunkMode) -> Option<Arc<[Game]>> {
-        // Only the snapshot path remains: no on-frame hydration fallback.
         let current_fp = self.library_prepare_fingerprint();
         let snap = self.prepared_snapshot.as_ref()?;
         if snap.fingerprint != current_fp {
             return None;
         }
         if junk_mode == JunkMode::Default {
-            // Pre-classified in the background job — zero per-frame work.
             return Some(Arc::clone(&snap.games));
         }
         // Non-Default mode: clone + reclassify. This path is only for
@@ -3995,7 +3938,6 @@ impl VapourflyApp {
         let cache = vapourfly_api::cache::DiskCache::new(self.cache_dir.clone());
         vapourfly_api::enrichment::hydrate_from_cache(&mut games, &cache);
         let overrides = self.manual_overrides();
-        // Pre-classify with Default mode (same as the background job).
         apply_junk_flags(
             &mut games,
             &JunkRules::default(),
@@ -4012,36 +3954,29 @@ impl VapourflyApp {
 
     fn recommend_request_from_inputs(&self) -> Result<RecommendRequest, String> {
         Ok(RecommendRequest {
-            available_minutes: parse_required_u32("Available minutes", &self.recommend_minutes)?,
-            count: parse_required_usize("Count", &self.recommend_count)?,
+            available_minutes: parse_required("Available minutes", &self.recommend_minutes)?,
+            count: parse_required("Count", &self.recommend_count)?,
             deck_mode: self.recommend_deck,
             include_installed_only: self.recommend_installed_only,
-            seed: parse_optional_u64("Seed", &self.recommend_seed)?,
+            seed: parse_optional("Seed", &self.recommend_seed)?,
             exclude_collections: self.recommend_exclude_collections.clone(),
         })
     }
 
     fn discover_options_from_inputs(&self) -> Result<DiscoverOptions, String> {
         Ok(DiscoverOptions {
-            seed_app_id: parse_optional_u32("Discover seed AppID", &self.discover_seed)?,
-            count: parse_required_usize("Discover count", &self.discover_count)?,
+            seed_app_id: parse_optional("Discover seed AppID", &self.discover_seed)?,
+            count: parse_required("Discover count", &self.discover_count)?,
         })
     }
 
     fn refresh_detected_accounts(&mut self) {
-        // Demo mode: do not scan the real Steam account directories.
         if self.ui_demo {
             self.account_list_msg =
                 Some("Account detection is disabled in demo mode (--ui-demo).".into());
             return;
         }
-        let steam_dir = self
-            .config
-            .as_ref()
-            .map(|c| c.steam_dir.clone())
-            .or_else(VapourflyConfig::detect_steam_dir);
-
-        let Some(steam_dir) = steam_dir else {
+        let Some(steam_dir) = self.detected_steam_dir() else {
             self.error = Some("Steam directory not detected. Set it in Settings first.".into());
             return;
         };
@@ -4065,8 +4000,9 @@ impl VapourflyApp {
     }
 
     fn store_playlist(&self, pf: &PlaylistFile) -> Result<(), String> {
-        playlist_store::put(&self.playlist_store_path(), pf).map_err(|e| e.to_string())?;
-        Ok(())
+        playlist_store::put(&self.playlist_store_path(), pf)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 
     /// Write a generator result to its stable playlist slot (ADR-0007).
@@ -4093,11 +4029,21 @@ impl VapourflyApp {
         self.start_playlist_match_from_stored_ctx(pf);
     }
 
-    /// Build a `PlaylistFile` from the current edit fields.
-    ///
-    /// When `playlist_edit_rules` is non-empty, it is parsed as a JSON rules
-    /// array and a rule-based playlist is produced (App IDs are ignored).
-    /// Otherwise the App IDs field is parsed into a manual playlist.
+    /// Store an imported playlist (file or share code) and adopt it, routing
+    /// duplicate ids through the Replace confirm dialog.
+    fn adopt_imported_playlist(&mut self, pf: PlaylistFile, success_msg: String) {
+        if self.playlist_store_ids.contains(&pf.playlist.id) {
+            self.playlist_dup_id_confirm = Some((pf.playlist.id.clone(), pf));
+        } else if let Err(e) = self.store_playlist(&pf) {
+            self.error = Some(e);
+        } else {
+            self.adopt_playlist_for_edit(&pf);
+            self.refresh_playlist_store_ids();
+            self.playlist_load_selected = pf.playlist.id.clone();
+            self.success_msg = Some(success_msg);
+        }
+    }
+
     /// Parse the current rules JSON field into a Vec<PlaylistRule>.
     ///
     /// Returns an error if the JSON is invalid — never falls back to an
@@ -4251,7 +4197,6 @@ impl VapourflyApp {
             Ok(ids) => self.playlist_store_ids = ids,
             Err(e) => self.error = Some(format!("Failed to list playlists: {e}")),
         }
-        // Load rail entries with per-file error handling.
         match playlist_store::list_all(&self.playlist_store_path()) {
             Ok(entries) => self.playlist_rail_entries = entries,
             Err(e) => {
@@ -4271,47 +4216,8 @@ impl VapourflyApp {
         Ok(())
     }
 
-    /// Compile the Dynamic template chosen in the chooser into its stable slot.
-    #[allow(dead_code)]
-    fn run_dynamic_generate(&mut self) -> Result<PlaylistFile, String> {
-        let template = DynamicTemplate::parse(&self.dynamic_template)
-            .ok_or_else(|| "Unknown template. Use deck-session or finish-it.".to_string())?;
-        let session_minutes = parse_required_u32("Session minutes", &self.dynamic_minutes)?;
-        let count = parse_required_usize("Count", &self.dynamic_count)?;
-        let games = self
-            .prepared_games(JunkMode::Default)
-            .ok_or_else(|| "Scan your library before generating.".to_string())?;
-        let pf = dynamic::compile_dynamic_template(
-            template,
-            &games,
-            &DynamicTemplateOptions {
-                session_minutes,
-                count,
-            },
-        );
-        let stored = self.store_generator_playlist(GeneratorIdentity::Dynamic(template), pf)?;
-        self.adopt_playlist_for_edit(&stored);
-        self.refresh_playlist_store_ids();
-        Ok(stored)
-    }
-
-    /// Compile the Editorial Mood chosen in the chooser into its stable slot.
-    #[allow(dead_code)]
-    fn run_mood_generate(&mut self) -> Result<PlaylistFile, String> {
-        let mood = EditorialMood::parse(&self.editorial_mood)
-            .ok_or_else(|| "Unknown mood. Pick one from the list.".to_string())?;
-        let games = self
-            .prepared_games(JunkMode::Default)
-            .ok_or_else(|| "Scan your library before generating.".to_string())?;
-        let pf = mood::compile_editorial_mood(mood, &games, 25);
-        let stored = self.store_generator_playlist(GeneratorIdentity::Mood(mood), pf)?;
-        self.adopt_playlist_for_edit(&stored);
-        self.refresh_playlist_store_ids();
-        Ok(stored)
-    }
-
     /// Generate Discover playlist into the stable slot and populate on-page results.
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn run_discover_generate(&mut self) -> Result<PlaylistFile, String> {
         let options = self.discover_options_from_inputs()?;
         let games = self
@@ -4329,9 +4235,6 @@ impl VapourflyApp {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Write operation helpers (run in background threads)
-// ---------------------------------------------------------------------------
 
 /// Generate a [`WritePlan`] without executing it, so the GUI can display a
 /// dry-run diff before the user confirms.
@@ -4411,9 +4314,6 @@ fn execute_backup_restore(
     Ok(format!("Restored backup '{filename}'"))
 }
 
-// ---------------------------------------------------------------------------
-// eframe::App implementation
-// ---------------------------------------------------------------------------
 
 impl eframe::App for VapourflyApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -4424,15 +4324,12 @@ impl eframe::App for VapourflyApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        // Capture ctx so non-UI methods (e.g. playlist adoption) can spawn
-        // background work and request repaints without a ctx parameter.
         self.ctx = Some(ctx.clone());
 
         // Keep free-function tokens and egui visuals aligned with the selected theme.
         set_active_theme(self.theme_mode);
         configure_ui(&ctx, self.theme_mode);
 
-        // Poll background scan result.
         // Validate the ticket fingerprint against the current scan config so
         // a config change (steam_dir, account, offline) invalidates an
         // in-flight scan.
@@ -4441,7 +4338,6 @@ impl eframe::App for VapourflyApp {
         {
             let current_scan_fp = self.current_scan_fingerprint();
             if expected.fingerprint != fingerprint_u64(&current_scan_fp) {
-                // Scan config changed mid-job — discard the stale job.
                 self.loading = false;
                 self.scan_job_id = None;
             } else if let Some(result) = SCAN_RESULT.take_if(expected) {
@@ -4459,13 +4355,16 @@ impl eframe::App for VapourflyApp {
                             Ok(collections) => self.collections = collections,
                             Err(e) => self.error = Some(e),
                         }
+                        // The library is rendered — warm the cache behind it
+                        // (missing/stale entries only, once per launch).
+                        // ADR-0009: population never blocks first paint.
+                        self.start_background_populate(&ctx);
                     }
                     Err(e) => self.error = Some(e),
                 }
             }
         }
 
-        // Poll background write result.
         if self.write_loading
             && let Some(expected) = self.write_job_id
             && let Some(result) = WRITE_RESULT.take_if(expected)
@@ -4482,7 +4381,6 @@ impl eframe::App for VapourflyApp {
             }
         }
 
-        // Poll background cache refresh result.
         if self.cache_refresh_loading
             && let Some(expected) = self.enrich_job_id
             && let Some(result) = ENRICH_RESULT.take_if(expected)
@@ -4507,11 +4405,8 @@ impl eframe::App for VapourflyApp {
             }
         }
 
-        // -- Generator choosers (Playlists Dynamic / Mood) ---------------------
         self.render_playlist_choosers(&ctx);
 
-        // -- Confirmation dialog -----------------------------------------------
-        // Poll background dry-run result.
         // Validate fingerprint against current inputs (action + selection +
         // library generation) so a rescan or selection change invalidates
         // an in-flight dry-run.
@@ -4549,20 +4444,10 @@ impl eframe::App for VapourflyApp {
             }
         }
 
-        // Poll background junk preview result.
-        // Validate fingerprint against current mode + library generation.
         if self.junk_preview_loading
             && let Some(expected) = self.junk_preview_job_id
         {
-            let mode = match self.junk_mode {
-                JunkModeChoice::Default => JunkMode::Default,
-                JunkModeChoice::Strict => JunkMode::Strict,
-                JunkModeChoice::Aggressive => JunkMode::Aggressive,
-            };
-            let current_fp = format!(
-                "junk_preview:{mode:?}:lib={}:ovr={}",
-                self.scan_generation, self.cache_refresh_generation
-            );
+            let current_fp = self.junk_preview_fp(&self.junk_mode.mode());
             if expected.fingerprint != fingerprint_u64(&current_fp) {
                 self.junk_preview_loading = false;
                 self.junk_preview_job_id = None;
@@ -4584,15 +4469,13 @@ impl eframe::App for VapourflyApp {
             }
         }
 
-        // Poll background recommend preview result.
-        // Validate fingerprint against current request + library generation.
         if self.recommend_loading
             && let Some(expected) = self.recommend_job_id
         {
-            let current_fp = match self.recommend_request_from_inputs() {
-                Ok(req) => format!("recommend:{req:?}:lib={}", self.scan_generation),
-                Err(_) => String::new(),
-            };
+            let current_fp = self
+                .recommend_request_from_inputs()
+                .map(|req| self.recommend_fp(&req))
+                .unwrap_or_default();
             if !current_fp.is_empty() && expected.fingerprint != fingerprint_u64(&current_fp) {
                 self.recommend_loading = false;
                 self.recommend_job_id = None;
@@ -4609,15 +4492,13 @@ impl eframe::App for VapourflyApp {
             }
         }
 
-        // Poll background discover result.
-        // Validate fingerprint against current options + library generation.
         if self.discover_loading
             && let Some(expected) = self.discover_job_id
         {
-            let current_fp = match self.discover_options_from_inputs() {
-                Ok(opts) => format!("discover:{opts:?}:lib={}", self.scan_generation),
-                Err(_) => String::new(),
-            };
+            let current_fp = self
+                .discover_options_from_inputs()
+                .map(|opts| self.discover_fp(&opts))
+                .unwrap_or_default();
             if !current_fp.is_empty() && expected.fingerprint != fingerprint_u64(&current_fp) {
                 self.discover_loading = false;
                 self.discover_job_id = None;
@@ -4653,25 +4534,13 @@ impl eframe::App for VapourflyApp {
         self.poll_library_prepare();
         self.ensure_library_prepared(&ctx);
 
-        // Poll background playlist match result.
-        // Validate fingerprint against current playlist content + library
-        // generation + price-cache generation.
         if self.playlist_match_loading
             && let Some(expected) = self.playlist_match_job_id
         {
             let current_fp = self
                 .playlist_last_import
                 .as_ref()
-                .map(|pf| {
-                    let content_hash = playlist_content_hash(pf);
-                    format!(
-                        "playlist_match:{}:content={:x}:lib={}:price={}",
-                        pf.playlist.id,
-                        content_hash,
-                        self.scan_generation,
-                        self.cache_refresh_generation
-                    )
-                })
+                .map(|pf| self.playlist_match_fp(pf))
                 .unwrap_or_default();
             if !current_fp.is_empty() && expected.fingerprint != fingerprint_u64(&current_fp) {
                 self.playlist_match_loading = false;
@@ -4699,7 +4568,6 @@ impl eframe::App for VapourflyApp {
                 .sum::<u32>()
         });
         let shell_playtime = format_playtime(shell_playtime);
-        // Responsive layout: compute breakpoints from the current window width.
         let window_width = ctx.input(|i| i.viewport_rect().width());
         let compact_sidebar = is_compact_sidebar(window_width);
         let compact_padding = is_compact_padding(window_width);
@@ -4711,7 +4579,6 @@ impl eframe::App for VapourflyApp {
             SIDEBAR_WIDTH
         };
 
-        // -- Top chrome ------------------------------------------------------
         egui::Panel::top("top_chrome")
             .exact_size(TOPBAR_HEIGHT)
             .frame(
@@ -4721,35 +4588,28 @@ impl eframe::App for VapourflyApp {
                     .inner_margin(egui::Margin::symmetric(m(SP_3), m(SP_2))),
             )
             .show(ui, |ui| {
-                let available = ui.available_width();
                 let compact_topbar = window_width < BP_COMPACT_SIDEBAR;
-                let metrics_width = if compact_topbar { 290.0 } else { 560.0 };
-                let breadcrumb_width = (available - metrics_width - SP_2).max(220.0);
-                ui.horizontal(|ui| {
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(breadcrumb_width, 38.0),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            ui.add_space(SP_2);
-                            ui.label(
-                                RichText::new("Vapourfly")
-                                    .size(TS_MD)
-                                    .strong()
-                                    .color(t().text_primary),
-                            );
-                            ui.label(RichText::new("›").size(TS_LG).color(t().text_muted));
-                            ui.label(
-                                RichText::new(self.current_view.label())
-                                    .size(TS_MD)
-                                    .strong()
-                                    .color(t().text_primary),
-                            );
-                        },
-                    );
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(metrics_width, 38.0),
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 38.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.add_space(SP_2);
+                        ui.label(
+                            RichText::new("Vapourfly")
+                                .size(TS_MD)
+                                .strong()
+                                .color(t().text_primary),
+                        );
+                        ui.label(RichText::new("›").size(TS_LG).color(t().text_muted));
+                        ui.label(
+                            RichText::new(self.current_view.label())
+                                .size(TS_MD)
+                                .strong()
+                                .color(t().text_primary),
+                        );
+                        // Metrics + theme toggle sit flush right, mirroring
+                        // the reference chrome.
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let theme_label = if self.theme_mode.is_dark() {
                                 format!("{} Light", icons::SUN)
                             } else {
@@ -4760,7 +4620,8 @@ impl eframe::App for VapourflyApp {
                                 set_active_theme(self.theme_mode);
                                 configure_ui(&ctx, self.theme_mode);
                             }
-                            top_bar_metric(ui, icons::CLOUD_CHECK, "Ready", "Synced");
+                            ui.add_space(SP_2);
+                            top_bar_metric(ui, icons::CLOUD_CHECK, "Synced", "Cloud");
                             if !compact_topbar {
                                 top_bar_metric(
                                     ui,
@@ -4776,12 +4637,11 @@ impl eframe::App for VapourflyApp {
                                 shell_games.to_string(),
                                 "Games",
                             );
-                        },
-                    );
-                });
+                        });
+                    },
+                );
             });
 
-        // -- Left panel: navigation -----------------------------------------
         egui::Panel::left("nav_panel")
             .resizable(false)
             .exact_size(sidebar_w)
@@ -4831,7 +4691,6 @@ impl eframe::App for VapourflyApp {
                 });
             });
 
-        // -- Central panel: current view ------------------------------------
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::NONE
@@ -4892,16 +4751,12 @@ impl eframe::App for VapourflyApp {
                     });
             });
 
-        // Kick off initial scan on first frame.
         if self.scan_result.is_none() && !self.loading && self.error.is_none() {
             self.start_scan(&ctx);
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Confirmation dialog
-// ---------------------------------------------------------------------------
 
 impl VapourflyApp {
     fn render_confirm_dialog(&mut self, ctx: &egui::Context) {
@@ -4935,7 +4790,6 @@ impl VapourflyApp {
                 );
                 ui.add_space(SP_3);
 
-                // -- Dry-run diff (junk apply / hide) --------------------------
                 if let Some(plan) = &self.dry_run_plan {
                     let diff = &plan.diff;
 
@@ -5054,7 +4908,6 @@ impl VapourflyApp {
                             .color(t().warning),
                     );
                 }
-                // -- Backup restore (no dry-run diff) --------------------------
                 else if let Some(PendingAction::BackupRestore(path)) = &self.pending_action {
                     let filename = path
                         .file_name()
@@ -5132,9 +4985,6 @@ impl VapourflyApp {
     }
 }
 
-// ---------------------------------------------------------------------------
-// View renderers
-// ---------------------------------------------------------------------------
 
 /// Lightweight metadata extracted from a Game for rendering recommendation
 /// cards without keeping a borrow on the scan result.
@@ -5219,7 +5069,6 @@ fn playlist_avg_hltb(
 }
 
 impl VapourflyApp {
-    // -- Library view -------------------------------------------------------
 
     fn render_library(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let total_games = self.scan_result.as_ref().map_or(0, |scan| scan.games.len());
@@ -5230,7 +5079,6 @@ impl VapourflyApp {
             .map(|s| s.games.as_slice())
             .unwrap_or(&[]);
 
-        // Compute extended summary metrics for the insights rail.
         let installed_count = all_games.iter().filter(|g| g.installed).count();
         let hidden_count = all_games.iter().filter(|g| g.is_hidden).count();
         let junk_count = all_games.iter().filter(|g| g.is_junk).count();
@@ -5244,9 +5092,8 @@ impl VapourflyApp {
             .iter()
             .filter(|g| g.playtime_minutes.unwrap_or(0) == 0)
             .count();
-        // Recent activity: top 3 games by last_played_unix (descending).
         // Clone the data to avoid holding a borrow on self.scan_result.
-        let recent_games: Vec<(String, i64, u32)> = {
+        let recent_games: Vec<(u32, String, i64, u32)> = {
             let mut with_time: Vec<&Game> = all_games
                 .iter()
                 .filter(|g| g.last_played_unix.is_some())
@@ -5261,6 +5108,7 @@ impl VapourflyApp {
                 .take(3)
                 .map(|g| {
                     (
+                        g.app_id,
                         g.name.clone(),
                         g.last_played_unix.unwrap_or(0),
                         g.playtime_minutes.unwrap_or(0),
@@ -5268,7 +5116,6 @@ impl VapourflyApp {
                 })
                 .collect()
         };
-        // Average HLTB across games with known completion time.
         let avg_hltb_minutes: u32 = {
             let hltb_games: Vec<u32> = all_games
                 .iter()
@@ -5387,17 +5234,31 @@ impl VapourflyApp {
             } else {
                 "All"
             };
-            filter_dropdown(ui, "Steam Deck", deck_value, 150.0, |ui| {
-                filter_toggle(ui, &mut self.filter_deck_compatible, "Verified, Playable");
-            });
+            filter_dropdown(
+                ui,
+                icons::DEVICE_MOBILE,
+                "Steam Deck",
+                deck_value,
+                158.0,
+                |ui| {
+                    filter_toggle(ui, &mut self.filter_deck_compatible, "Verified, Playable");
+                },
+            );
             let controller_value = if self.filter_controller_full {
                 "Full"
             } else {
                 "Any"
             };
-            filter_dropdown(ui, "Controller", controller_value, 130.0, |ui| {
-                filter_toggle(ui, &mut self.filter_controller_full, "Full support");
-            });
+            filter_dropdown(
+                ui,
+                icons::GAME_CONTROLLER,
+                "Controller",
+                controller_value,
+                138.0,
+                |ui| {
+                    filter_toggle(ui, &mut self.filter_controller_full, "Full support");
+                },
+            );
             let playtime_value = match (
                 self.filter_playtime_min.trim().is_empty(),
                 self.filter_playtime_max.trim().is_empty(),
@@ -5411,30 +5272,39 @@ impl VapourflyApp {
                     self.filter_playtime_max.trim()
                 ),
             };
-            filter_dropdown(ui, "Play time", &playtime_value, 120.0, |ui| {
-                ui.label(
-                    RichText::new("Minutes played")
-                        .size(TS_XS)
-                        .color(t().text_muted),
-                );
-                ui.horizontal(|ui| {
-                    ui.add_sized(
-                        [88.0, 24.0],
-                        egui::TextEdit::singleline(&mut self.filter_playtime_min).hint_text("min"),
+            filter_dropdown(
+                ui,
+                icons::CLOCK,
+                "Play time",
+                &playtime_value,
+                128.0,
+                |ui| {
+                    ui.label(
+                        RichText::new("Minutes played")
+                            .size(TS_XS)
+                            .color(t().text_muted),
                     );
-                    ui.add_sized(
-                        [88.0, 24.0],
-                        egui::TextEdit::singleline(&mut self.filter_playtime_max).hint_text("max"),
-                    );
-                });
-            });
+                    ui.horizontal(|ui| {
+                        ui.add_sized(
+                            [88.0, 24.0],
+                            egui::TextEdit::singleline(&mut self.filter_playtime_min)
+                                .hint_text("min"),
+                        );
+                        ui.add_sized(
+                            [88.0, 24.0],
+                            egui::TextEdit::singleline(&mut self.filter_playtime_max)
+                                .hint_text("max"),
+                        );
+                    });
+                },
+            );
             let genre_value = if self.filter_genre.trim().is_empty() {
                 "All"
             } else {
                 self.filter_genre.trim()
             };
             let genre_value = genre_value.to_owned();
-            filter_dropdown(ui, "Genre", &genre_value, 110.0, |ui| {
+            filter_dropdown(ui, icons::SPARKLE, "Genre", &genre_value, 118.0, |ui| {
                 ui.add_sized(
                     [180.0, 24.0],
                     egui::TextEdit::singleline(&mut self.filter_genre).hint_text("Any genre"),
@@ -5446,7 +5316,7 @@ impl VapourflyApp {
                 self.filter_tag.trim()
             };
             let tag_value = tag_value.to_owned();
-            filter_dropdown(ui, "Tags", &tag_value, 100.0, |ui| {
+            filter_dropdown(ui, icons::TAG, "Tags", &tag_value, 108.0, |ui| {
                 ui.add_sized(
                     [180.0, 24.0],
                     egui::TextEdit::singleline(&mut self.filter_tag).hint_text("Any tag"),
@@ -5454,6 +5324,7 @@ impl VapourflyApp {
             });
             filter_dropdown(
                 ui,
+                icons::SORT_ASCENDING,
                 "Sort by",
                 sort_label(self.library_sort_by),
                 150.0,
@@ -5498,13 +5369,7 @@ impl VapourflyApp {
                         {
                             self.filter_proton_tier = None;
                         }
-                        for tier in [
-                            ProtonTier::Native,
-                            ProtonTier::Platinum,
-                            ProtonTier::Gold,
-                            ProtonTier::Silver,
-                            ProtonTier::Bronze,
-                        ] {
+                        for tier in PROTON_TIER_CHOICES {
                             if ui
                                 .selectable_label(
                                     self.filter_proton_tier == Some(tier),
@@ -5536,23 +5401,31 @@ impl VapourflyApp {
 
         ui.add_space(SP_3);
 
-        // Editorial category chips live below the functional filters.
+        // Editorial category chips live below the functional filters. Each
+        // chip carries its own icon and hue tint like the reference design
+        // (Cozy pink, Story-rich blue, Great on Deck green, Short sessions
+        // orange); the active chip deepens its tint with a matching border.
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
-            for qv in QuickView::all()
-                .into_iter()
-                .filter(|qv| *qv != QuickView::All)
-            {
+            for (qv, icon, tint_index) in [
+                (QuickView::Cozy, icons::HEART, 0),
+                (QuickView::StoryRich, icons::BOOK_OPEN, 1),
+                (QuickView::GreatOnDeck, icons::GAME_CONTROLLER, 2),
+                (QuickView::ShortSessions, icons::CLOCK, 3),
+            ] {
                 let active = self.library_quick_view == qv;
-                let button =
-                    egui::Button::new(RichText::new(qv.label()).size(TS_SM).color(if active {
-                        t().accent_text
-                    } else {
-                        t().text_secondary
-                    }))
-                    .fill(if active { t().accent_soft } else { t().surface })
-                    .stroke(egui::Stroke::new(1.0, t().border_soft))
-                    .corner_radius(CORNER_PILL);
+                let (bg, fg) = theme::tint(tint_index);
+                let button = egui::Button::new(
+                    RichText::new(format!("{icon}  {}", qv.label()))
+                        .size(TS_SM)
+                        .color(fg),
+                )
+                .fill(bg)
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    if active { fg } else { t().border_soft },
+                ))
+                .corner_radius(CORNER_PILL);
                 if ui.add(button).clicked() {
                     self.apply_quick_view(if active { QuickView::All } else { qv });
                 }
@@ -5608,29 +5481,31 @@ impl VapourflyApp {
             // Skeleton placeholder cards mirroring the real grid geometry.
             let skeleton_width = library_main_width(ui.available_width(), self.rails_below);
             let columns = library_grid_columns(skeleton_width).max(1);
+            let card_w = theme::library_card_width(skeleton_width, columns);
+            let card_h = theme::game_card_height(card_w);
+            let art_w = card_w - 12.0;
+            let art_h = theme::card_art_height(art_w);
             for _row in 0..2 {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_3);
                     for _col in 0..columns {
-                        let (rect, _) = ui.allocate_exact_size(
-                            egui::vec2(GAME_CARD_W, GAME_CARD_H),
-                            egui::Sense::hover(),
-                        );
+                        let (rect, _) = ui
+                            .allocate_exact_size(egui::vec2(card_w, card_h), egui::Sense::hover());
                         let painter = ui.painter();
                         painter.rect_filled(rect, CORNER_MD, t().surface);
                         let poster = egui::Rect::from_min_size(
                             rect.min + egui::vec2(6.0, 6.0),
-                            egui::vec2(POSTER_W, POSTER_H),
+                            egui::vec2(art_w, art_h),
                         );
                         painter.rect_filled(poster, CORNER_SM, t().border_soft);
                         let line1 = egui::Rect::from_min_size(
                             poster.left_bottom() + egui::vec2(0.0, SP_2),
-                            egui::vec2(POSTER_W * 0.7, 10.0),
+                            egui::vec2(art_w * 0.7, 10.0),
                         );
                         painter.rect_filled(line1, CORNER_SM, t().border_soft);
                         let line2 = egui::Rect::from_min_size(
                             line1.left_bottom() + egui::vec2(0.0, 6.0),
-                            egui::vec2(POSTER_W * 0.45, 10.0),
+                            egui::vec2(art_w * 0.45, 10.0),
                         );
                         painter.rect_filled(line2, CORNER_SM, t().border_soft);
                     }
@@ -5661,13 +5536,17 @@ impl VapourflyApp {
             const LOAD_INCREMENT: usize = 48;
             let visible = app.library_visible_count.min(games.len());
             let page_games = &games[..visible];
+            // Cards stretch to fill the row: fixed column count from the
+            // minimum card width, then divide the remaining width evenly.
+            let columns = library_grid_columns(main_width).max(1);
+            let card_w = theme::library_card_width(main_width, columns);
             ui.with_layout(
                 egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),
                 |ui| {
                     ui.set_width(main_width);
                     ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_3);
                     for game in page_games {
-                        app.render_game_card(ui, game);
+                        app.render_game_card(ui, game, card_w);
                     }
                 },
             );
@@ -5695,7 +5574,9 @@ impl VapourflyApp {
                     .color(t().text_muted),
             );
         };
-        let render_insights = |ui: &mut egui::Ui| {
+        let demo_or_offline = self.demo_or_offline();
+        let matching_count = games.len();
+        let render_insights = |ui: &mut egui::Ui| -> bool {
             library_insights_rail(
                 ui,
                 total_games,
@@ -5703,17 +5584,19 @@ impl VapourflyApp {
                 hidden_count,
                 junk_count,
                 total_playtime,
-                games.len(),
+                matching_count,
                 backlog_count,
                 &recent_games,
                 avg_hltb_minutes,
-            );
+                demo_or_offline,
+            )
         };
 
+        let mut view_history = false;
         if self.rails_below {
             render_grid(self, ui);
             ui.add_space(SP_4);
-            render_insights(ui);
+            view_history = render_insights(ui);
         } else {
             // horizontal_top keeps the rail pinned to the top of the row; the
             // default centered cross-alignment pushed it halfway down the
@@ -5728,9 +5611,13 @@ impl VapourflyApp {
                 ui.allocate_ui_with_layout(
                     egui::vec2(rail_width, 0.0),
                     egui::Layout::top_down(egui::Align::LEFT),
-                    render_insights,
+                    |ui| view_history = render_insights(ui),
                 );
             });
+        }
+        if view_history {
+            self.library_sort_by = LibrarySort::InstalledThenPlaytime;
+            self.library_sort_desc = true;
         }
     }
 
@@ -5745,73 +5632,32 @@ impl VapourflyApp {
         self.library_visible_count = 48;
         // Core filters are always shown and user-controllable; quick views
         // set the advanced filters on top of whatever core filters are active.
+        self.filter_genre.clear();
+        self.filter_tag.clear();
+        self.filter_proton_tier = None;
+        self.filter_deck_compatible = false;
+        self.filter_controller_full = false;
+        self.filter_unplayed_only = false;
+        self.filter_hltb_min.clear();
+        self.filter_hltb_max.clear();
+        self.filter_playtime_min.clear();
+        self.filter_playtime_max.clear();
         match qv {
-            QuickView::All => {
-                self.filter_genre.clear();
-                self.filter_tag.clear();
-                self.filter_proton_tier = None;
-                self.filter_deck_compatible = false;
-                self.filter_controller_full = false;
-                self.filter_unplayed_only = false;
-                self.filter_hltb_min.clear();
-                self.filter_hltb_max.clear();
-                self.filter_playtime_min.clear();
-                self.filter_playtime_max.clear();
-            }
-            QuickView::Cozy => {
-                self.filter_genre = "Cozy".into();
-                self.filter_tag.clear();
-                self.filter_proton_tier = None;
-                self.filter_deck_compatible = false;
-                self.filter_controller_full = false;
-                self.filter_unplayed_only = false;
-                self.filter_hltb_min.clear();
-                self.filter_hltb_max.clear();
-                self.filter_playtime_min.clear();
-                self.filter_playtime_max.clear();
-            }
-            QuickView::StoryRich => {
-                self.filter_genre = "Story Rich".into();
-                self.filter_tag.clear();
-                self.filter_proton_tier = None;
-                self.filter_deck_compatible = false;
-                self.filter_controller_full = false;
-                self.filter_unplayed_only = false;
-                self.filter_hltb_min.clear();
-                self.filter_hltb_max.clear();
-                self.filter_playtime_min.clear();
-                self.filter_playtime_max.clear();
-            }
+            QuickView::Cozy => self.filter_genre = "Cozy".into(),
+            QuickView::StoryRich => self.filter_genre = "Story Rich".into(),
             QuickView::GreatOnDeck => {
-                self.filter_genre.clear();
-                self.filter_tag.clear();
                 self.filter_proton_tier = Some(ProtonTier::Gold);
                 self.filter_deck_compatible = true;
-                self.filter_controller_full = false;
-                self.filter_unplayed_only = false;
-                self.filter_hltb_min.clear();
-                self.filter_hltb_max.clear();
-                self.filter_playtime_min.clear();
-                self.filter_playtime_max.clear();
             }
-            QuickView::ShortSessions => {
-                self.filter_genre.clear();
-                self.filter_tag.clear();
-                self.filter_proton_tier = None;
-                self.filter_deck_compatible = false;
-                self.filter_controller_full = false;
-                self.filter_unplayed_only = false;
-                self.filter_hltb_min.clear();
-                self.filter_hltb_max.clear();
-                self.filter_playtime_min.clear();
-                self.filter_playtime_max.clear();
-                // Short sessions: HLTB normally <= 120 minutes.
-                // Stored via hltb_max_minutes in LibraryFilters.
-            }
+            // ShortSessions (HLTB <= 120 min) is applied via hltb_max_minutes
+            // in `filtered_games`, not stored in a filter field.
+            QuickView::All | QuickView::ShortSessions => {}
         }
     }
 
-    fn render_game_card(&mut self, ui: &mut egui::Ui, game: &Game) {
+    fn render_game_card(&mut self, ui: &mut egui::Ui, game: &Game, card_w: f32) {
+        let card_h = theme::game_card_height(card_w);
+        let inner_w = card_w - 12.0;
         let is_selected = self.library_selected_app_id == Some(game.app_id);
         let border = if is_selected {
             egui::Stroke::new(1.5, t().accent)
@@ -5821,11 +5667,11 @@ impl VapourflyApp {
 
         let response = ui
             .allocate_ui_with_layout(
-                egui::vec2(GAME_CARD_W, GAME_CARD_H),
+                egui::vec2(card_w, card_h),
                 egui::Layout::top_down(egui::Align::LEFT),
                 |ui| {
-                    ui.set_width(GAME_CARD_W);
-                    ui.set_height(GAME_CARD_H);
+                    ui.set_width(card_w);
+                    ui.set_height(card_h);
 
                     egui::Frame::NONE
                         .fill(t().surface_raised)
@@ -5833,8 +5679,8 @@ impl VapourflyApp {
                         .inner_margin(egui::Margin::same(6))
                         .corner_radius(CORNER_MD)
                         .show(ui, |ui| {
-                            ui.set_width(GAME_CARD_W - 12.0);
-                            ui.set_height(GAME_CARD_H - 12.0);
+                            ui.set_width(inner_w);
+                            ui.set_height(card_h - 12.0);
                             ui.spacing_mut().item_spacing.y = 6.0;
 
                             // Artwork with the status chip and overflow menu
@@ -5845,7 +5691,8 @@ impl VapourflyApp {
                                         ui,
                                         game.app_id,
                                         &game.name,
-                                        self.ui_demo || self.offline_mode,
+                                        self.demo_or_offline(),
+                                        inner_w,
                                     );
                                 })
                                 .response
@@ -5929,7 +5776,7 @@ impl VapourflyApp {
                             });
 
                             ui.add_sized(
-                                [GAME_CARD_W - 12.0, 20.0],
+                                [inner_w, 20.0],
                                 egui::Label::new(
                                     RichText::new(&game.name)
                                         .size(TS_BODY)
@@ -5939,15 +5786,24 @@ impl VapourflyApp {
                                 .truncate(),
                             );
 
-                            // Compact genre chips mirror the reference card density.
+                            // Genre chips with per-tag hue tints, mirroring the
+                            // reference cards. IGDB genres first, Steam Store
+                            // genres as fallback (the common case without IGDB
+                            // credentials), then deck tier / detail text.
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing = egui::vec2(SP_1, SP_1);
-                                if let Some(igdb) = &game.igdb {
-                                    for genre in igdb.genres.iter().take(2) {
-                                        status_badge(ui, genre, t().accent_soft, t().accent_text);
-                                    }
-                                }
-                                if game.igdb.as_ref().is_none_or(|data| data.genres.is_empty()) {
+                                let genres: Vec<&str> = game
+                                    .igdb
+                                    .as_ref()
+                                    .map(|d| d.genres.iter().map(String::as_str).collect())
+                                    .filter(|g: &Vec<&str>| !g.is_empty())
+                                    .or_else(|| {
+                                        game.steam_store
+                                            .as_ref()
+                                            .map(|s| s.genres.iter().map(String::as_str).collect())
+                                    })
+                                    .unwrap_or_default();
+                                if genres.is_empty() {
                                     if let Some(proton) = &game.protondb {
                                         status_badge(
                                             ui,
@@ -5962,6 +5818,11 @@ impl VapourflyApp {
                                             t().surface_sunken,
                                             t().text_secondary,
                                         );
+                                    }
+                                } else {
+                                    for genre in genres.iter().take(2) {
+                                        let (bg, fg) = theme::tag_tint(genre);
+                                        status_badge(ui, genre, bg, fg);
                                     }
                                 }
                             });
@@ -5993,17 +5854,16 @@ impl VapourflyApp {
 
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = SP_1;
-                                let action = |icon: &str| {
-                                    egui::Button::new(
-                                        RichText::new(icon).size(TS_MD).color(t().text_secondary),
-                                    )
-                                    .fill(t().surface)
-                                    .stroke(egui::Stroke::new(1.0, t().border_soft))
-                                    .corner_radius(CORNER_SM)
-                                    .min_size(egui::vec2(61.0, 28.0))
+                                let btn_w = ((inner_w - 2.0 * SP_1) / 3.0).floor();
+                                let action = move |icon: &str, color: Color32| {
+                                    egui::Button::new(RichText::new(icon).size(TS_MD).color(color))
+                                        .fill(t().surface)
+                                        .stroke(egui::Stroke::new(1.0, t().border_soft))
+                                        .corner_radius(CORNER_SM)
+                                        .min_size(egui::vec2(btn_w, 28.0))
                                 };
                                 if ui
-                                    .add(action(icons::HEART))
+                                    .add(action(icons::HEART, t().accent))
                                     .on_hover_text("Discover games like this")
                                     .clicked()
                                 {
@@ -6011,14 +5871,14 @@ impl VapourflyApp {
                                     self.current_view = View::Discover;
                                 }
                                 if ui
-                                    .add(action(icons::COPY))
+                                    .add(action(icons::COPY, t().text_secondary))
                                     .on_hover_text("Copy AppID")
                                     .clicked()
                                 {
                                     ui.ctx().copy_text(game.app_id.to_string());
                                 }
                                 if ui
-                                    .add(action(icons::ARROW_SQUARE_OUT))
+                                    .add(action(icons::ARROW_SQUARE_OUT, t().text_secondary))
                                     .on_hover_text("Open Steam Store")
                                     .clicked()
                                 {
@@ -6038,7 +5898,6 @@ impl VapourflyApp {
         }
     }
 
-    // -- Junk panel (opened from Library toolbar) ---------------------------
 
     fn render_junk(&mut self, ui: &mut egui::Ui) {
         view_header_with_actions(
@@ -6153,8 +6012,6 @@ impl VapourflyApp {
             .filter(|d| self.junk_selected.contains(&d.app_id) && d.is_junk)
             .count();
 
-        // Build a Game lookup for enriched table columns (playtime, HLTB,
-        // rating, Proton/Deck, hidden, library share).
         let game_lookup: HashMap<u32, &Game> = self
             .scan_result
             .as_ref()
@@ -6167,11 +6024,7 @@ impl VapourflyApp {
 
         // Two-column layout: table (left) + summary rail (right).
         // At compact widths the rail moves below the table.
-        let layout = if self.rails_below {
-            egui::Layout::top_down(egui::Align::LEFT)
-        } else {
-            egui::Layout::left_to_right(egui::Align::Min)
-        };
+        let layout = two_column_layout(self.rails_below);
         // Constrain the table column so the summary rail stays on-screen.
         // Budget 264px for the rail: 200px content + group-frame margins and
         // the small overshoot egui_extras tables add over their parent width.
@@ -6186,7 +6039,6 @@ impl VapourflyApp {
                 egui::Layout::top_down(egui::Align::LEFT),
                 |ui| {
                     ui.set_width(table_width);
-                    // Bulk selection bar + show-all toggle.
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
                         if ui
@@ -6212,8 +6064,6 @@ impl VapourflyApp {
                     });
                     ui.add_space(SP_2);
 
-                    // Preview: candidate table with selection checkboxes.
-                    // Default: only show junk. Toggle to show all evaluated.
                     let visible_decisions: Vec<&JunkDecision> = if self.junk_show_all_evaluated {
                         self.junk_results.iter().collect()
                     } else {
@@ -6222,6 +6072,9 @@ impl VapourflyApp {
 
                     section_card(ui, "Preview", |ui| {
                         let text_height = TS_BODY;
+                        // Field reads, not the method: a `self` method call here
+                        // would capture `*self` and conflict with the closure's
+                        // other borrows.
                         let demo_or_offline = self.ui_demo || self.offline_mode;
                         egui_extras::TableBuilder::new(ui)
                             .striped(true)
@@ -6266,94 +6119,19 @@ impl VapourflyApp {
                                 header.col(|ui| {
                                     ui.label(RichText::new("").size(TS_SM));
                                 });
-                                header.col(|ui| {
-                                    ui.label(
-                                        RichText::new("Name")
-                                            .size(TS_SM)
-                                            .strong()
-                                            .color(t().text_secondary),
-                                    );
-                                });
-                                header.col(|ui| {
-                                    ui.label(
-                                        RichText::new("Playtime")
-                                            .size(TS_SM)
-                                            .strong()
-                                            .color(t().text_secondary),
-                                    );
-                                });
-                                header.col(|ui| {
-                                    ui.label(
-                                        RichText::new("HLTB")
-                                            .size(TS_SM)
-                                            .strong()
-                                            .color(t().text_secondary),
-                                    );
-                                });
-                                header.col(|ui| {
-                                    ui.label(
-                                        RichText::new("Rating")
-                                            .size(TS_SM)
-                                            .strong()
-                                            .color(t().text_secondary),
-                                    );
-                                });
-                                header.col(|ui| {
-                                    ui.label(
-                                        RichText::new("Proton")
-                                            .size(TS_SM)
-                                            .strong()
-                                            .color(t().text_secondary),
-                                    );
-                                });
-                                header.col(|ui| {
-                                    ui.label(
-                                        RichText::new("Junk?")
-                                            .size(TS_SM)
-                                            .strong()
-                                            .color(t().text_secondary),
-                                    );
-                                });
-                                header.col(|ui| {
-                                    ui.label(
-                                        RichText::new("Conf.")
-                                            .size(TS_SM)
-                                            .strong()
-                                            .color(t().text_secondary),
-                                    );
-                                });
-                                header.col(|ui| {
-                                    ui.label(
-                                        RichText::new("Signals")
-                                            .size(TS_SM)
-                                            .strong()
-                                            .color(t().text_secondary),
-                                    );
-                                });
-                                header.col(|ui| {
-                                    ui.label(
-                                        RichText::new("Missing")
-                                            .size(TS_SM)
-                                            .strong()
-                                            .color(t().text_secondary),
-                                    );
-                                });
-                                header.col(|ui| {
-                                    ui.label(
-                                        RichText::new("Hidden")
-                                            .size(TS_SM)
-                                            .strong()
-                                            .color(t().text_secondary),
-                                    );
-                                });
-                                header.col(|ui| {
-                                    ui.label(
-                                        RichText::new("Lib %")
-                                            .size(TS_SM)
-                                            .strong()
-                                            .color(t().text_secondary),
-                                    );
-                                });
+                                for title in [
+                                    "Name", "Playtime", "HLTB", "Rating", "Proton", "Junk?",
+                                    "Conf.", "Signals", "Missing", "Hidden", "Lib %",
+                                ] {
+                                    header.col(|ui| {
+                                        ui.label(
+                                            RichText::new(title)
+                                                .size(TS_SM)
+                                                .strong()
+                                                .color(t().text_secondary),
+                                        );
+                                    });
+                                }
                             })
                             .body(|mut body| {
                                 for decision in visible_decisions {
@@ -6489,7 +6267,7 @@ impl VapourflyApp {
                                             let signals: Vec<String> = decision
                                                 .matched
                                                 .iter()
-                                                .map(format_junk_signal)
+                                                .map(display::format_junk_signal)
                                                 .collect();
                                             ui.label(
                                                 RichText::new(if signals.is_empty() {
@@ -6559,7 +6337,6 @@ impl VapourflyApp {
                 },
             );
 
-            // Summary rail.
             ui.add_space(SP_4);
             ui.allocate_ui_with_layout(
                 egui::vec2(200.0, ui.available_height()),
@@ -6722,7 +6499,6 @@ impl VapourflyApp {
         });
     }
 
-    // -- Recommend view -----------------------------------------------------
 
     fn render_recommend(&mut self, ui: &mut egui::Ui) {
         view_header(
@@ -6734,14 +6510,13 @@ impl VapourflyApp {
         // Collect lightweight metadata for recommendation cards up-front so
         // the render closures can mutate self without borrowing from it.
         let mut rec_metadata: HashMap<u32, GameSummary> = HashMap::new();
-        let demo_or_offline = self.ui_demo || self.offline_mode;
+        let demo_or_offline = self.demo_or_offline();
         if let Some(scan) = self.scan_result.as_ref() {
             for g in &scan.games {
                 rec_metadata.insert(g.app_id, GameSummary::from(g));
             }
         }
 
-        // Session planner card.
         section_card(ui, "Session Planner", |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_2);
@@ -6751,7 +6526,6 @@ impl VapourflyApp {
                         egui::TextEdit::singleline(&mut self.recommend_minutes).hint_text("120"),
                     );
                 });
-                // Quick duration buttons.
                 for &mins in [30u32, 60, 120, 240].iter() {
                     let label = if mins < 60 {
                         format!("{mins}m")
@@ -6782,7 +6556,6 @@ impl VapourflyApp {
                         egui::TextEdit::singleline(&mut self.recommend_count).hint_text("5"),
                     );
                 });
-                // Quick count buttons.
                 for &n in [3u32, 5, 10].iter() {
                     if ui
                         .add(
@@ -6884,7 +6657,6 @@ impl VapourflyApp {
             pct.clamp(0, 100) as u32
         };
 
-        // Top-3 highlight cards.
         let top3: Vec<&Recommendation> = self.recommend_results.iter().take(3).collect();
         if !top3.is_empty() {
             ui.add_space(SP_3);
@@ -6924,7 +6696,6 @@ impl VapourflyApp {
                         .show(ui, |ui| {
                             ui.set_width(RECOMMEND_CARD_IMG_W + f32::from(m(SP_3)) * 2.0);
                             ui.vertical(|ui| {
-                                // 220x124 hero image for the recommendation.
                                 game_artwork(
                                     ui,
                                     rec.app_id,
@@ -6955,7 +6726,6 @@ impl VapourflyApp {
                                     );
                                 });
                                 ui.add_space(SP_1);
-                                // Compact metadata row.
                                 let pt = meta.playtime_minutes;
                                 let hltb = meta
                                     .hltb_minutes
@@ -7001,14 +6771,9 @@ impl VapourflyApp {
 
         // Two-column: compact results list (left) + explanation rail (right).
         // At compact widths the rail moves below the results list.
-        let layout = if self.rails_below {
-            egui::Layout::top_down(egui::Align::LEFT)
-        } else {
-            egui::Layout::left_to_right(egui::Align::Min)
-        };
+        let layout = two_column_layout(self.rails_below);
         ui.with_layout(layout, |ui| {
             ui.vertical(|ui| {
-                // Write action bar.
                 let busy = self.write_loading || self.dry_run_loading;
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
@@ -7050,7 +6815,6 @@ impl VapourflyApp {
                 );
                 ui.add_space(SP_3);
 
-                // Compact results list (after top 3): selectable rows.
                 for rec in self.recommend_results.iter().skip(3) {
                     let is_selected = self.recommend_selected == Some(rec.app_id);
                     egui::Frame::group(ui.style())
@@ -7094,7 +6858,6 @@ impl VapourflyApp {
                 }
             });
 
-            // Explanation rail: "Why this pick?" for selected, or general scoring.
             ui.add_space(SP_4);
             ui.allocate_ui_with_layout(
                 egui::vec2(220.0, ui.available_height()),
@@ -7168,7 +6931,6 @@ impl VapourflyApp {
                                             );
                                         });
                                     }
-                                    // Game metadata: cover, HLTB, playtime, Deck.
                                     if let Some(scan) = &self.scan_result {
                                         if let Some(game) =
                                             scan.games.iter().find(|g| g.app_id == rec.app_id)
@@ -7215,7 +6977,6 @@ impl VapourflyApp {
                                 });
                         }
                     } else {
-                        // General scoring explanation.
                         egui::Frame::group(ui.style())
                             .fill(t().surface)
                             .stroke(egui::Stroke::new(1.0, t().border_soft))
@@ -7274,7 +7035,6 @@ impl VapourflyApp {
         });
     }
 
-    // -- Playlists view -----------------------------------------------------
 
     fn render_playlists(&mut self, ui: &mut egui::Ui) {
         // Refresh store list once when first entering Playlists (or after generate/save).
@@ -7302,7 +7062,6 @@ impl VapourflyApp {
             },
         );
 
-        // -- Duplicate ID Replace confirm dialog ------------------------------
         if let Some((existing_id, pending_pf)) = self.playlist_dup_id_confirm.clone() {
             egui::Window::new("Duplicate Playlist ID")
                 .fixed_size([360.0, 160.0])
@@ -7354,7 +7113,6 @@ impl VapourflyApp {
                 });
         }
 
-        // -- Import sub-route panel ------------------------------------------
         if self.playlist_show_import {
             section_card(ui, "Import", |ui| {
                 form_field(ui, "File path", |ui| {
@@ -7368,19 +7126,8 @@ impl VapourflyApp {
                     {
                         match playlist::import_playlist(Path::new(&self.playlist_import_path)) {
                             Ok(pf) => {
-                                // Check for duplicate ID.
-                                if self.playlist_store_ids.contains(&pf.playlist.id) {
-                                    self.playlist_dup_id_confirm =
-                                        Some((pf.playlist.id.clone(), pf));
-                                } else if let Err(e) = self.store_playlist(&pf) {
-                                    self.error = Some(e);
-                                } else {
-                                    self.adopt_playlist_for_edit(&pf);
-                                    self.refresh_playlist_store_ids();
-                                    self.playlist_load_selected = pf.playlist.id.clone();
-                                    self.success_msg =
-                                        Some(format!("Imported playlist '{}'", pf.playlist.name));
-                                }
+                                let msg = format!("Imported playlist '{}'", pf.playlist.name);
+                                self.adopt_imported_playlist(pf, msg);
                             }
                             Err(e) => self.error = Some(format!("Import failed: {e}")),
                         }
@@ -7398,20 +7145,9 @@ impl VapourflyApp {
                     {
                         match share_code::decode_share_code(&self.playlist_share_code_input) {
                             Ok(pf) => {
-                                if self.playlist_store_ids.contains(&pf.playlist.id) {
-                                    self.playlist_dup_id_confirm =
-                                        Some((pf.playlist.id.clone(), pf));
-                                } else if let Err(e) = self.store_playlist(&pf) {
-                                    self.error = Some(e);
-                                } else {
-                                    self.adopt_playlist_for_edit(&pf);
-                                    self.refresh_playlist_store_ids();
-                                    self.playlist_load_selected = pf.playlist.id.clone();
-                                    self.success_msg = Some(format!(
-                                        "Imported share code as '{}'",
-                                        pf.playlist.name
-                                    ));
-                                }
+                                let msg =
+                                    format!("Imported share code as '{}'", pf.playlist.name);
+                                self.adopt_imported_playlist(pf, msg);
                             }
                             Err(e) => self.error = Some(format!("Share code import failed: {e}")),
                         }
@@ -7424,10 +7160,8 @@ impl VapourflyApp {
             });
         }
 
-        // -- Master-detail layout --------------------------------------------
-        let demo_or_offline = self.ui_demo || self.offline_mode;
+        let demo_or_offline = self.demo_or_offline();
         ui.horizontal(|ui| {
-            // Left rail: playlist list.
             ui.vertical(|ui| {
                 ui.set_min_width(220.0);
                 ui.set_max_width(260.0);
@@ -7449,7 +7183,6 @@ impl VapourflyApp {
                         self.refresh_playlist_store_ids();
                     }
                 } else {
-                    // "+ New" entry.
                     let is_new_selected = self.playlist_load_selected.is_empty()
                         && self.playlist_last_import.is_none();
                     if ui
@@ -7474,10 +7207,8 @@ impl VapourflyApp {
                     let rail_entries = self.playlist_rail_entries.clone();
                     for id in &ids {
                         let is_selected = self.playlist_load_selected == *id;
-                        // Look up rail metadata for this id.
                         let rail_entry = rail_entries.iter().find(|(eid, _)| eid == id);
                         let clicked = if let Some((_, Ok(pf))) = rail_entry {
-                            // Rich card: cover, name, type badge, count, description snippet.
                             let card = egui::Frame::group(ui.style())
                                 .fill(if is_selected {
                                     t().accent_soft
@@ -7495,7 +7226,6 @@ impl VapourflyApp {
                                 ui.set_width(ui.available_width());
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_1);
-                                    // Deterministic cover thumbnail (44x44).
                                     let cover_app_id = playlist_cover_app_id(&pf.playlist.content);
                                     let cover_name = &pf.playlist.name;
                                     game_artwork(
@@ -7507,12 +7237,10 @@ impl VapourflyApp {
                                         demo_or_offline,
                                         &steam_capsule_uri(cover_app_id),
                                     );
-                                    // Text column.
                                     ui.vertical(|ui| {
                                         ui.set_min_width(120.0);
                                         ui.horizontal(|ui| {
                                             ui.spacing_mut().item_spacing = egui::vec2(SP_1, SP_1);
-                                            // Content type badge.
                                             let type_label =
                                                 playlist_content_type_label(&pf.playlist.content);
                                             status_badge(
@@ -7521,7 +7249,6 @@ impl VapourflyApp {
                                                 t().surface_muted,
                                                 t().text_secondary,
                                             );
-                                            // Generator badge for known slot ids.
                                             let gen_badge = if id == "discover" {
                                                 Some("Discover")
                                             } else if id.starts_with("dynamic-") {
@@ -7588,7 +7315,6 @@ impl VapourflyApp {
                             )
                             .clicked()
                         } else if let Some((_, Err(err))) = rail_entry {
-                            // Error state for corrupt file.
                             let card = egui::Frame::group(ui.style())
                                 .fill(t().surface)
                                 .stroke(egui::Stroke::new(1.0, t().error))
@@ -7636,7 +7362,6 @@ impl VapourflyApp {
 
             ui.separator();
 
-            // Right workspace.
             ui.vertical(|ui| {
                 self.render_playlist_workspace(ui);
             });
@@ -7665,13 +7390,11 @@ impl VapourflyApp {
                 )
             })
         };
-        let demo_or_offline = self.ui_demo || self.offline_mode;
+        let demo_or_offline = self.demo_or_offline();
 
-        // Hero: cover + editable name/description + content type + creator + stats.
         section_card(ui, "Playlist", |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_3);
-                // Cover image (220x124 landscape capsule or deterministic placeholder).
                 let cover_app_id = current_pf
                     .as_ref()
                     .map_or(0, |pf| playlist_cover_app_id(&pf.playlist.content));
@@ -7688,7 +7411,6 @@ impl VapourflyApp {
                     demo_or_offline,
                     &steam_capsule_uri(cover_app_id),
                 );
-                // Text column.
                 ui.vertical(|ui| {
                     ui.set_min_width(300.0);
                     ui.horizontal_wrapped(|ui| {
@@ -7704,7 +7426,6 @@ impl VapourflyApp {
                                 self.playlist_id_auto = false;
                             }
                         });
-                        // Real-time ID validation feedback.
                         let id_trimmed = self.playlist_edit_id.trim();
                         if !id_trimmed.is_empty() {
                             if let Err(msg) = playlist_store::validate_playlist_id(id_trimmed) {
@@ -7834,11 +7555,7 @@ impl VapourflyApp {
         // At compact widths the rail moves below the tabs.
         ui.add_space(SP_3);
         let rails_below = self.rails_below;
-        let layout = if rails_below {
-            egui::Layout::top_down(egui::Align::LEFT)
-        } else {
-            egui::Layout::left_to_right(egui::Align::Min)
-        };
+        let layout = two_column_layout(rails_below);
         // Constrain the tab column so the details rail stays on-screen; an
         // unconstrained vertical child consumes the full row width.
         let tab_column_width = if rails_below {
@@ -7847,7 +7564,6 @@ impl VapourflyApp {
             (ui.available_width() - 200.0 - SP_4).max(320.0)
         };
         ui.with_layout(layout, |ui| {
-            // Left column: tab selector + content.
             ui.allocate_ui_with_layout(
                 egui::vec2(tab_column_width, 0.0),
                 egui::Layout::top_down(egui::Align::LEFT),
@@ -7871,7 +7587,6 @@ impl VapourflyApp {
                 },
             );
 
-            // Right rail: metadata, share, sync.
             ui.add_space(SP_4);
             ui.allocate_ui_with_layout(
                 egui::vec2(200.0, ui.available_height()),
@@ -7921,7 +7636,6 @@ impl VapourflyApp {
                                 );
                                 insight_metric(ui, "Creator", pf.created_by.clone());
                                 insight_metric(ui, "Store", "Local".to_string());
-                                // Generator / content badge.
                                 let badge = match &pf.playlist.content {
                                     PlaylistContent::Manual { .. } => "Manual curation",
                                     PlaylistContent::Rules { .. } => "Rule generator",
@@ -7929,7 +7643,6 @@ impl VapourflyApp {
                                 status_badge(ui, badge, t().accent_soft, t().accent_text);
                                 ui.separator();
 
-                                // Share code / JSON tabs.
                                 let share_tab = &mut self.playlist_share_tab;
                                 ui.horizontal(|ui| {
                                     ui.selectable_value(
@@ -7993,7 +7706,6 @@ impl VapourflyApp {
                                         }
                                     }
                                 }
-                                // Sync button.
                                 ui.add_space(SP_2);
                                 let busy = self.write_loading || self.dry_run_loading;
                                 if ui
@@ -8038,7 +7750,7 @@ impl VapourflyApp {
             .filter_map(|s| s.trim().parse::<u32>().ok())
             .collect();
         if !table_ids.is_empty() {
-            let demo_or_offline = self.ui_demo || self.offline_mode;
+            let demo_or_offline = self.demo_or_offline();
             let lookup: HashMap<u32, Game> = self
                 .scan_result
                 .as_ref()
@@ -8170,7 +7882,6 @@ impl VapourflyApp {
             }
         }
 
-        // Primary: Search & Add/Remove from library.
         section_card(ui, "Search & Add Games", |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
@@ -8187,14 +7898,12 @@ impl VapourflyApp {
             });
             ui.add_space(SP_2);
 
-            // Parse current App IDs into a set.
             let mut current_ids: std::collections::HashSet<u32> = self
                 .playlist_edit_app_ids
                 .split(',')
                 .filter_map(|s| s.trim().parse::<u32>().ok())
                 .collect();
 
-            // Show matching games from library.
             if let Some(scan) = &self.scan_result {
                 let q = self.playlist_game_search.to_lowercase();
                 let matches: Vec<&Game> = scan
@@ -8224,18 +7933,16 @@ impl VapourflyApp {
                                 .size(TS_SM)
                                 .color(t().text_primary),
                         );
+                        let mut changed = false;
                         if already {
                             if ghost_button(ui, "Remove").clicked() {
-                                current_ids.remove(&game.app_id);
-                                self.playlist_edit_app_ids = current_ids
-                                    .iter()
-                                    .map(|id| id.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(", ");
+                                changed = current_ids.remove(&game.app_id);
                             }
                             status_badge(ui, "added", t().accent_soft, t().accent_text);
                         } else if secondary_button(ui, "Add").clicked() {
-                            current_ids.insert(game.app_id);
+                            changed = current_ids.insert(game.app_id);
+                        }
+                        if changed {
                             self.playlist_edit_app_ids = current_ids
                                 .iter()
                                 .map(|id| id.to_string())
@@ -8253,7 +7960,6 @@ impl VapourflyApp {
             }
         });
 
-        // Advanced: raw CSV editor (collapsed by default).
         ui.add_space(SP_3);
         let header_resp = ui.add(
             egui::Button::new(
@@ -8315,7 +8021,6 @@ impl VapourflyApp {
             ui.add_space(SP_2);
 
             if self.playlist_show_advanced_json {
-                // Advanced JSON editor.
                 form_field(ui, "Rules JSON", |ui| {
                     ui.add_sized(
                         [360.0, 120.0],
@@ -8333,8 +8038,6 @@ impl VapourflyApp {
                     .color(t().text_muted),
                 );
             } else {
-                // Visual rule editor: show current rules as a tree with
-                // per-rule remove buttons + parameterized quick-add.
                 if self.playlist_edit_rules.is_empty() {
                     ui.label(
                         RichText::new("No rules yet. Add rules below or toggle Advanced JSON.")
@@ -8342,7 +8045,6 @@ impl VapourflyApp {
                             .color(t().text_muted),
                     );
                 } else {
-                    // Parse and display rules as a tree.
                     match serde_json::from_str::<Vec<PlaylistRule>>(&self.playlist_edit_rules) {
                         Ok(rules) => {
                             let mut rules_mut = rules.clone();
@@ -8363,7 +8065,6 @@ impl VapourflyApp {
                         }
                     }
                 }
-                // Quick-add rule buttons.
                 ui.add_space(SP_2);
                 ui.label(
                     RichText::new("Quick add:")
@@ -8395,7 +8096,6 @@ impl VapourflyApp {
                     }
                 });
 
-                // Parameterized rule adders.
                 ui.add_space(SP_2);
                 ui.label(
                     RichText::new("Parameterized rules:")
@@ -8403,7 +8103,6 @@ impl VapourflyApp {
                         .color(t().text_secondary),
                 );
 
-                // Genre input + add.
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
                     ui.label(RichText::new("Genre").size(TS_XS).color(t().text_muted));
@@ -8428,7 +8127,6 @@ impl VapourflyApp {
                     }
                 });
 
-                // Tag input + add.
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
                     ui.label(RichText::new("Tag").size(TS_XS).color(t().text_muted));
@@ -8453,7 +8151,6 @@ impl VapourflyApp {
                     }
                 });
 
-                // HLTB max minutes input + add.
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
                     ui.label(RichText::new("HLTB max").size(TS_XS).color(t().text_muted));
@@ -8487,7 +8184,6 @@ impl VapourflyApp {
                     }
                 });
 
-                // ProtonDB tier dropdown + add.
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
                     ui.label(RichText::new("ProtonDB").size(TS_XS).color(t().text_muted));
@@ -8503,13 +8199,7 @@ impl VapourflyApp {
                             if ui.selectable_label(current.is_none(), "Any").clicked() {
                                 self.playlist_rule_proton_tier = None;
                             }
-                            for tier in [
-                                ProtonTier::Native,
-                                ProtonTier::Platinum,
-                                ProtonTier::Gold,
-                                ProtonTier::Silver,
-                                ProtonTier::Bronze,
-                            ] {
+                            for tier in PROTON_TIER_CHOICES {
                                 if ui
                                     .selectable_label(
                                         current == Some(tier),
@@ -8537,7 +8227,6 @@ impl VapourflyApp {
                     }
                 });
 
-                // PlaytimeBetween: min + max inputs.
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
                     ui.label(RichText::new("Playtime").size(TS_XS).color(t().text_muted));
@@ -8554,14 +8243,12 @@ impl VapourflyApp {
                     );
                     let min_ok = self.playlist_rule_playtime_min.trim().parse::<u32>().ok();
                     let max_ok = self.playlist_rule_playtime_max.trim().parse::<u32>().ok();
-                    // Validate min <= max when both are parseable.
                     let range_valid = match (min_ok, max_ok) {
                         (Some(min), Some(max)) => min <= max,
                         _ => false,
                     };
                     let min_nonempty = !self.playlist_rule_playtime_min.trim().is_empty();
                     let max_nonempty = !self.playlist_rule_playtime_max.trim().is_empty();
-                    // Show inline error for parse or range issues.
                     if min_nonempty && min_ok.is_none() {
                         ui.label(
                             RichText::new(format!(
@@ -8606,7 +8293,6 @@ impl VapourflyApp {
                     }
                 });
 
-                // RatingAtLeast: minimum rating input (0.0–5.0).
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
                     ui.label(
@@ -8680,7 +8366,6 @@ impl VapourflyApp {
             return;
         };
 
-        // Match summary metrics.
         section_card(ui, "Match summary", |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
@@ -8692,7 +8377,6 @@ impl VapourflyApp {
                 metric_pill(ui, "Junk", report.junk.len().to_string());
             });
 
-            // Completion price.
             if let Some(price) = &report.completion_price {
                 ui.add_space(SP_2);
                 ui.label(
@@ -8735,7 +8419,6 @@ impl VapourflyApp {
             }
         });
 
-        // Owned / Missing sub-tabs.
         ui.add_space(SP_3);
         let owned_ids = report.owned.clone();
         let missing_ids = report.missing.clone();
@@ -8800,7 +8483,6 @@ impl VapourflyApp {
             .collect()
     }
 
-    // -- Discover view (top-level; ADR-0005 / ADR-0006) ----------------------
 
     fn render_discover(&mut self, ui: &mut egui::Ui) {
         // Reference layout: conversational headline, compact control row,
@@ -8821,7 +8503,6 @@ impl VapourflyApp {
         );
         ui.add_space(SP_4);
 
-        // Control row: seed input, pick-count chips, generate.
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_2);
             egui::Frame::NONE
@@ -8915,7 +8596,7 @@ impl VapourflyApp {
             return;
         }
 
-        let demo_or_offline = self.ui_demo || self.offline_mode;
+        let demo_or_offline = self.demo_or_offline();
         let find_game = |app_id: u32| -> Option<Game> {
             self.scan_result
                 .as_ref()
@@ -8965,7 +8646,6 @@ impl VapourflyApp {
                                 );
                             }
                             ui.add_space(SP_1);
-                            // Meta chips: playtime / HLTB / Deck / score.
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
                                 if let Some(g) = &game {
@@ -9005,7 +8685,6 @@ impl VapourflyApp {
                                     t().accent_text,
                                 );
                             });
-                            // Reason pills.
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing = egui::vec2(SP_1, SP_1);
                                 for reason in &top.reasons {
@@ -9059,7 +8738,6 @@ impl VapourflyApp {
             ui.add_space(SP_4);
         }
 
-        // "Picked for you": remaining picks as compact cards.
         if self.discover_results.len() > 1 {
             ui.horizontal(|ui| {
                 ui.label(
@@ -9159,7 +8837,6 @@ impl VapourflyApp {
         );
     }
 
-    // -- Playlist generator chooser modals ----------------------------------
 
     fn render_playlist_choosers(&mut self, ctx: &egui::Context) {
         match self.playlist_chooser {
@@ -9380,7 +9057,6 @@ impl VapourflyApp {
         }
     }
 
-    // -- Collections view ---------------------------------------------------
 
     fn render_collections(&mut self, ui: &mut egui::Ui) {
         view_header_with_actions(
@@ -9419,7 +9095,7 @@ impl VapourflyApp {
             |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_3);
                 for coll in &self.collections {
-                    render_collection_card(ui, coll, self.ui_demo || self.offline_mode);
+                    render_collection_card(ui, coll, self.demo_or_offline());
                 }
             },
         );
@@ -9451,7 +9127,6 @@ impl VapourflyApp {
         }
     }
 
-    // -- Data Sources view (ticket 08) --------------------------------------
 
     fn render_data_sources(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let refresh_all_enabled = !self.cache_refresh_loading && !self.offline_mode;
@@ -9459,7 +9134,7 @@ impl VapourflyApp {
         view_header_with_actions(
             ui,
             "Data Sources",
-            "Credential, cache, and refresh status for enrichment APIs. Offline uses cache-only hydration (ADR-0002).",
+            "Credential, cache, and refresh status for enrichment APIs. Offline uses cache-only hydration (ADR-0009).",
             |ui| {
                 if ui
                     .add_enabled(refresh_all_enabled, {
@@ -9488,6 +9163,45 @@ impl VapourflyApp {
             self.start_cache_refresh(None, ctx);
         }
 
+        // Steam Web API key status — the one credential every user should
+        // create themselves (per-user key, never distributed with the app).
+        section_card(ui, "Steam Web API", |ui| {
+            let has_key = self
+                .config
+                .as_ref()
+                .is_some_and(|c| c.steam_api_key.is_some())
+                || std::env::var("VAPOURFLY_STEAM_API_KEY").is_ok_and(|v| !v.is_empty());
+            ui.horizontal(|ui| {
+                if has_key {
+                    status_badge(ui, "Configured", t().success_soft, t().success);
+                    ui.label(
+                        RichText::new("All game names resolve in one request on every scan.")
+                            .size(TS_SM)
+                            .color(t().text_secondary),
+                    );
+                } else {
+                    status_badge(ui, "Not configured", t().warning_soft, t().warning);
+                    ui.label(
+                        RichText::new(
+                            "Names backfill gradually from the Steam Store instead. \
+                             Create your own free key (takes a minute; any domain works)",
+                        )
+                        .size(TS_SM)
+                        .color(t().text_secondary),
+                    );
+                    ui.hyperlink_to(
+                        RichText::new("steamcommunity.com/dev/apikey").size(TS_SM),
+                        "https://steamcommunity.com/dev/apikey",
+                    );
+                    ui.label(
+                        RichText::new("then paste it under Settings → Steam Web API key.")
+                            .size(TS_SM)
+                            .color(t().text_secondary),
+                    );
+                }
+            });
+        });
+
         // Offline control — primary home for cache-only mode (issue 08).
         section_card(ui, "Offline mode", |ui| {
             ui.horizontal(|ui| {
@@ -9510,7 +9224,6 @@ impl VapourflyApp {
             );
         });
 
-        // Unified source table: credential + entries + stale + last success + refresh.
         let has_igdb = self.has_igdb;
         let has_rawg = self.has_rawg;
         let offline = self.offline_mode;
@@ -9666,7 +9379,6 @@ impl VapourflyApp {
             self.start_cache_refresh(Some(source), ctx);
         }
 
-        // Cache health summary rail.
         ui.add_space(SP_3);
         let total_entries: usize = self.source_statuses.iter().map(|s| s.cache_entries).sum();
         let total_stale: usize = self.source_statuses.iter().map(|s| s.stale_entries).sum();
@@ -9687,7 +9399,6 @@ impl VapourflyApp {
                 section_card(ui, "Cache Health", |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing = egui::vec2(SP_3, SP_2);
-                        // Health gauge.
                         let health_color = if health_pct >= 80 {
                             t().success
                         } else if health_pct >= 50 {
@@ -9726,7 +9437,6 @@ impl VapourflyApp {
         });
     }
 
-    // -- Backups section (embedded under Settings; ADR-0006 / ticket 09) ----
 
     fn render_backups_section(&mut self, ui: &mut egui::Ui) {
         let mut refresh = false;
@@ -9880,7 +9590,6 @@ impl VapourflyApp {
         }
     }
 
-    // -- Settings view (ticket 09) ------------------------------------------
 
     fn render_settings(&mut self, ui: &mut egui::Ui) {
         view_header(
@@ -9891,11 +9600,7 @@ impl VapourflyApp {
 
         // Two-column layout: settings cards (left) + summary rail (right).
         // At compact widths the rail moves below the settings cards.
-        let layout = if self.rails_below {
-            egui::Layout::top_down(egui::Align::LEFT)
-        } else {
-            egui::Layout::left_to_right(egui::Align::Min)
-        };
+        let layout = two_column_layout(self.rails_below);
         // Constrain the cards column so the summary rail stays on-screen.
         let cards_width = if self.rails_below {
             ui.available_width()
@@ -9908,7 +9613,6 @@ impl VapourflyApp {
                 egui::Layout::top_down(egui::Align::LEFT),
                 |ui| {
                     ui.set_width(cards_width);
-                // Appearance: theme toggle.
                 section_card(ui, "Appearance", |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing = egui::vec2(SP_2, SP_2);
@@ -9944,7 +9648,6 @@ impl VapourflyApp {
                     });
                 });
 
-                // Configuration group: directory, account, locale, retention.
                 section_card(ui, "Configuration", |ui| {
                     labeled_field(
                         ui,
@@ -10002,6 +9705,33 @@ impl VapourflyApp {
                         );
                     });
                     ui.add_space(SP_3);
+                    labeled_field(
+                        ui,
+                        "Steam Web API key",
+                        Some(
+                            "Resolves all game names in one request. Create your own free \
+                             key (any domain works, e.g. \"localhost\") — it stays on this \
+                             machine and is never shared.",
+                        ),
+                        |ui| {
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.steam_api_key_edit)
+                                        .desired_width(300.0)
+                                        .hint_text("paste your key (leave empty to remove)"),
+                                );
+                                ui.hyperlink_to(
+                                    RichText::new(format!(
+                                        "{} Get a free key",
+                                        icons::ARROW_SQUARE_OUT
+                                    ))
+                                    .size(TS_SM),
+                                    "https://steamcommunity.com/dev/apikey",
+                                );
+                            });
+                        },
+                    );
+                    ui.add_space(SP_3);
                     ui.horizontal(|ui| {
                         if primary_button(ui, "Save Settings").clicked() {
                             self.save_settings();
@@ -10012,7 +9742,6 @@ impl VapourflyApp {
                     });
                 });
 
-                // Detected accounts with one-click override.
                 section_card(ui, "Detected accounts", |ui| {
                     ui.horizontal(|ui| {
                         if secondary_button(ui, "Refresh Accounts").clicked() {
@@ -10059,7 +9788,7 @@ impl VapourflyApp {
                                             .color(t().text_primary),
                                     );
                                     ui.label(
-                                        RichText::new(mask_steam_id(&account.steam_id64))
+                                        RichText::new(display::mask_id(&account.steam_id64))
                                             .size(TS_SM)
                                             .color(t().text_muted)
                                             .monospace(),
@@ -10178,7 +9907,6 @@ impl VapourflyApp {
                 });
             });
 
-            // Summary rail.
             ui.add_space(SP_4);
             ui.allocate_ui_with_layout(
                 egui::vec2(200.0, ui.available_height()),
@@ -10292,7 +10020,6 @@ impl VapourflyApp {
             return;
         }
 
-        // All inputs are valid — build the batch and persist atomically.
         let str_field = |field: ConfigField, value: &str| -> ConfigUpdate {
             if value.is_empty() {
                 (field, None)
@@ -10306,6 +10033,7 @@ impl VapourflyApp {
             str_field(ConfigField::Account, &self.account_edit),
             str_field(ConfigField::Cc, &self.cc_edit),
             str_field(ConfigField::Lang, &self.lang_edit),
+            str_field(ConfigField::SteamApiKey, self.steam_api_key_edit.trim()),
         ];
         if let Some(update) = backup_update {
             updates.push((ConfigField::BackupRetentionCount, update));
@@ -10327,9 +10055,6 @@ impl VapourflyApp {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 fn game_primary_badge(game: &Game) -> (&'static str, Color32, Color32) {
     if game.is_junk {
@@ -10374,7 +10099,6 @@ fn render_collection_card(ui: &mut egui::Ui, coll: &SteamCollection, demo_or_off
                     ui.set_width(COLLECTION_CARD_W - f32::from(m(SP_3)) * 2.0);
 
                     ui.horizontal(|ui| {
-                        // Icon tile like the reference collection cards.
                         egui::Frame::NONE
                             .fill(t().accent_soft)
                             .inner_margin(egui::Margin::same(m(SP_2)))
@@ -10405,7 +10129,6 @@ fn render_collection_card(ui: &mut egui::Ui, coll: &SteamCollection, demo_or_off
 
                     ui.add_space(SP_2);
 
-                    // Poster collage — best-effort Steam CDN art for member AppIDs.
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing = egui::vec2(SP_1, SP_1);
                         let shown: Vec<u32> =
@@ -10451,7 +10174,6 @@ fn render_collection_card(ui: &mut egui::Ui, coll: &SteamCollection, demo_or_off
                     });
 
                     ui.add_space(SP_2);
-                    // Footer: game count + synced state, like the reference.
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(format!(
@@ -10507,38 +10229,18 @@ fn empty_value_label() -> &'static str {
     "None"
 }
 
-fn parse_required_u32(label: &str, input: &str) -> Result<u32, String> {
+fn parse_required<T: std::str::FromStr>(label: &str, input: &str) -> Result<T, String> {
     input
         .trim()
         .parse()
         .map_err(|_| format!("{label} must be a whole number."))
 }
 
-fn parse_required_usize(label: &str, input: &str) -> Result<usize, String> {
-    input
-        .trim()
-        .parse()
-        .map_err(|_| format!("{label} must be a whole number."))
-}
-
-fn parse_optional_u32(label: &str, input: &str) -> Result<Option<u32>, String> {
+fn parse_optional<T: std::str::FromStr>(label: &str, input: &str) -> Result<Option<T>, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Ok(None);
     }
-
-    trimmed
-        .parse()
-        .map(Some)
-        .map_err(|_| format!("{label} must be a whole number."))
-}
-
-fn parse_optional_u64(label: &str, input: &str) -> Result<Option<u64>, String> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-
     trimmed
         .parse()
         .map(Some)
@@ -10558,13 +10260,6 @@ fn format_playtime(minutes: u32) -> String {
     }
 }
 
-fn format_junk_signal(signal: &JunkSignal) -> String {
-    display::format_junk_signal(signal)
-}
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
 
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -10574,8 +10269,14 @@ fn main() -> eframe::Result<()> {
         .map(|w| PathBuf::from(&w[1]));
 
     let ui_demo = args.iter().any(|a| a == "--ui-demo");
+    // `--offline` starts with offline mode enabled (same semantics as the
+    // Data Sources toggle and the CLI flag): cache-only hydration, no
+    // network fetches. Useful on large libraries where the initial online
+    // scan's lazy hydration (ADR-0002) would take a long time.
+    let offline = args.iter().any(|a| a == "--offline");
 
-    let app = VapourflyApp::new(fixtures_path, ui_demo);
+    let mut app = VapourflyApp::new(fixtures_path, ui_demo);
+    app.offline_mode = offline;
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -10614,9 +10315,6 @@ fn main() -> eframe::Result<()> {
     )
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -11865,7 +11563,6 @@ mod tests {
         assert_eq!(app.playlist_edit_id, "discover");
     }
 
-    // -- Generator playlist slots (ADR-0007) --------------------------------
 
     fn sample_generator_playlist(id: &str, app_ids: Vec<u32>) -> PlaylistFile {
         PlaylistFile {
@@ -12233,7 +11930,6 @@ mod tests {
         );
     }
 
-    // -- Data Sources presentation helpers (ticket 08) ----------------------
 
     #[test]
     fn source_display_names_match_product_table() {

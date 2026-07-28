@@ -31,43 +31,36 @@ pub fn junk_app_ids_from_decisions(decisions: &[JunkDecision]) -> Vec<u32> {
     normalize_app_ids(decisions.iter().filter(|d| d.is_junk).map(|d| d.app_id))
 }
 
+/// Normalize and reject empty AppID lists with the given error message.
+fn normalize_non_empty(app_ids: Vec<u32>, empty_msg: &str) -> Result<Vec<u32>> {
+    let ids = normalize_app_ids(app_ids);
+    if ids.is_empty() {
+        return Err(VapourflyError::InvalidInput(empty_msg.into()));
+    }
+    Ok(ids)
+}
+
 /// Upsert junk games into a named Steam Collection.
 pub fn junk_apply(collection_id: impl Into<String>, app_ids: Vec<u32>) -> Result<WriteOp> {
-    let added = normalize_app_ids(app_ids);
-    if added.is_empty() {
-        return Err(VapourflyError::InvalidInput(
-            "no junk candidates to apply".into(),
-        ));
-    }
     Ok(WriteOp::UpsertCollection {
         id: collection_id.into(),
-        added,
+        added: normalize_non_empty(app_ids, "no junk candidates to apply")?,
         removed: vec![],
     })
 }
 
 /// Add junk games to Steam's hidden collection.
 pub fn junk_hide(app_ids: Vec<u32>) -> Result<WriteOp> {
-    let app_ids = normalize_app_ids(app_ids);
-    if app_ids.is_empty() {
-        return Err(VapourflyError::InvalidInput(
-            "no junk candidates to hide".into(),
-        ));
-    }
-    Ok(WriteOp::AddToHidden { app_ids })
+    Ok(WriteOp::AddToHidden {
+        app_ids: normalize_non_empty(app_ids, "no junk candidates to hide")?,
+    })
 }
 
 /// Upsert recommendations into the temporary `vapourfly-picks` collection.
 pub fn recommend_to_collection(app_ids: Vec<u32>) -> Result<WriteOp> {
-    let added = normalize_app_ids(app_ids);
-    if added.is_empty() {
-        return Err(VapourflyError::InvalidInput(
-            "no recommendations to write".into(),
-        ));
-    }
     Ok(WriteOp::UpsertCollection {
         id: RECOMMEND_COLLECTION_ID.into(),
-        added,
+        added: normalize_non_empty(app_ids, "no recommendations to write")?,
         removed: vec![],
     })
 }
@@ -101,13 +94,9 @@ pub fn playlist_sync(playlist: &PlaylistFile, app_ids: Vec<u32>) -> Result<Write
             "playlist id cannot produce a Steam collection id".into(),
         ));
     }
-    let added = normalize_app_ids(app_ids);
-    if added.is_empty() {
-        return Err(VapourflyError::InvalidInput("no app IDs to sync".into()));
-    }
     Ok(WriteOp::UpsertCollection {
         id: collection_id,
-        added,
+        added: normalize_non_empty(app_ids, "no app IDs to sync")?,
         removed: vec![],
     })
 }

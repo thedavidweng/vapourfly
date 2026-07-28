@@ -29,12 +29,10 @@ pub fn select_account<'a>(
         ));
     }
 
-    // Single account: always auto-select.
     if accounts.len() == 1 {
         return Ok(&accounts[0]);
     }
 
-    // Try preferred name.
     if let Some(pref) = preferred {
         let pref_lower = pref.to_lowercase();
         if let Some(acct) = accounts.iter().find(|a| {
@@ -52,21 +50,15 @@ pub fn select_account<'a>(
         )));
     }
 
-    // No preferred: try most_recent.
     let most_recent: Vec<&SteamAccount> = accounts.iter().filter(|a| a.most_recent).collect();
     if most_recent.len() == 1 {
         return Ok(most_recent[0]);
     }
 
-    // Ambiguous: multiple most-recent accounts, or none and multiple accounts.
     Err(VapourflyError::AmbiguousAccount {
         count: accounts.len(),
     })
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

@@ -11,12 +11,9 @@
 //! the data needed by a mood's criteria is simply excluded — moods never
 //! fail, they just produce shorter lists when data is sparse.
 
+use crate::eligibility::{is_generator_eligible, is_unplayed};
 use crate::models::{Game, Playlist, PlaylistContent, PlaylistFile, VAPOURFLY_PLAYLIST_SCHEMA};
 use crate::scoring;
-
-// ---------------------------------------------------------------------------
-// Mood catalogue
-// ---------------------------------------------------------------------------
 
 /// The seven canonical Editorial Moods.
 ///
@@ -99,10 +96,6 @@ impl EditorialMood {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Compilation
-// ---------------------------------------------------------------------------
-
 /// Compile an Editorial Mood into a Manual playlist evaluated against the
 /// current library.
 ///
@@ -115,8 +108,7 @@ pub fn compile_editorial_mood(
 ) -> PlaylistFile {
     let mut app_ids: Vec<u32> = games
         .iter()
-        .filter(|g| is_eligible(g))
-        .filter(|g| matches_mood(mood, g))
+        .filter(|g| is_generator_eligible(g) && matches_mood(mood, g))
         .map(|g| g.app_id)
         .collect();
 
@@ -136,12 +128,6 @@ pub fn compile_editorial_mood(
     }
 }
 
-/// A game is eligible for any mood if it is a Game (not a Tool/DLC/Application),
-/// not hidden, and not junk.
-fn is_eligible(game: &Game) -> bool {
-    crate::eligibility::is_generator_eligible(game)
-}
-
 /// Apply the hidden criteria for a specific mood.
 fn matches_mood(mood: EditorialMood, game: &Game) -> bool {
     match mood {
@@ -154,10 +140,6 @@ fn matches_mood(mood: EditorialMood, game: &Game) -> bool {
         EditorialMood::QuickRound => is_quick_round(game),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Mood criteria
-// ---------------------------------------------------------------------------
 
 /// Today's Biggest Hits: on sale (discount_percent > 0).
 ///
@@ -181,44 +163,23 @@ fn is_popularity_surge(game: &Game) -> bool {
 /// date is available we still accept the game if it is otherwise indie and
 /// highly rated (degrade gracefully on missing data).
 fn is_indie_rising(game: &Game) -> bool {
-    if !is_indie(game) {
-        return false;
-    }
-    if !scoring::is_high_rating(game) {
-        return false;
-    }
-    is_recent_release(game)
-}
-
-/// Unplayed meaning shared with Discover (zero/unknown playtime).
-fn is_unplayed(game: &Game) -> bool {
-    crate::eligibility::is_unplayed(game)
+    is_indie(game) && scoring::is_high_rating(game) && is_recent_release(game)
 }
 
 /// Detect indie classification from IGDB themes/keywords or Steam Store genres.
 fn is_indie(game: &Game) -> bool {
-    if let Some(igdb) = &game.igdb {
-        let indie_in_themes = igdb
-            .themes
+    fn any_indie(items: &[String]) -> bool {
+        items
             .iter()
-            .any(|t| t.to_ascii_lowercase().contains("indie"));
-        let indie_in_keywords = igdb
-            .keywords
-            .iter()
-            .any(|k| k.to_ascii_lowercase().contains("indie"));
-        if indie_in_themes || indie_in_keywords {
-            return true;
-        }
+            .any(|s| s.to_ascii_lowercase().contains("indie"))
     }
-    if let Some(store) = &game.steam_store
-        && store
-            .genres
-            .iter()
-            .any(|g| g.to_ascii_lowercase().contains("indie"))
-    {
-        return true;
-    }
-    false
+    game.igdb
+        .as_ref()
+        .is_some_and(|i| any_indie(&i.themes) || any_indie(&i.keywords))
+        || game
+            .steam_store
+            .as_ref()
+            .is_some_and(|s| any_indie(&s.genres))
 }
 
 /// A release is "recent" if its Steam Store release_date parses to a year
@@ -226,23 +187,12 @@ fn is_indie(game: &Game) -> bool {
 /// accept the game (degrade gracefully — missing data should not exclude a
 /// candidate that is otherwise indie and highly rated).
 fn is_recent_release(game: &Game) -> bool {
-    let Some(store) = &game.steam_store else {
-        return true;
-    };
-    let Some(date_str) = &store.release_date else {
-        return true;
-    };
-    match parse_release_year(date_str) {
-        Some(year) => {
-            let now_year = chrono::Utc::now()
-                .format("%Y")
-                .to_string()
-                .parse::<i32>()
-                .unwrap_or(0);
-            now_year.saturating_sub(year) <= 3
-        }
-        None => true,
-    }
+    use chrono::Datelike;
+    game.steam_store
+        .as_ref()
+        .and_then(|s| s.release_date.as_deref())
+        .and_then(parse_release_year)
+        .is_none_or(|year| chrono::Utc::now().year().saturating_sub(year) <= 3)
 }
 
 /// Extract a 4-digit year from a Steam Store release date string.
@@ -273,43 +223,33 @@ fn parse_release_year(s: &str) -> Option<i32> {
 /// Friday Party: Steam Store categories include Co-op, Local Multiplayer, or
 /// Party. Games without Steam Store data are excluded.
 fn is_party_game(game: &Game) -> bool {
-    let Some(store) = &game.steam_store else {
-        return false;
-    };
-    let lower: Vec<String> = store
-        .categories
-        .iter()
-        .map(|c| c.to_ascii_lowercase())
-        .collect();
-    lower.iter().any(|c| {
-        c.contains("co-op")
-            || c.contains("coop")
-            || c.contains("local multiplayer")
-            || c.contains("party")
-            || c.contains("shared/split screen")
+    game.steam_store.as_ref().is_some_and(|store| {
+        store
+            .categories
+            .iter()
+            .map(|c| c.to_ascii_lowercase())
+            .any(|c| {
+                c.contains("co-op")
+                    || c.contains("coop")
+                    || c.contains("local multiplayer")
+                    || c.contains("party")
+                    || c.contains("shared/split screen")
+            })
     })
 }
 
 /// Deck Guardians: ProtonDB Platinum or Gold + full controller support + a
 /// short game ([`scoring::is_short_game`]).
 fn is_deck_guardian(game: &Game) -> bool {
-    use crate::models::ProtonTier;
-    let proton_ok = game
-        .protondb
+    use crate::models::{ControllerSupport, ProtonTier};
+    game.protondb
         .as_ref()
-        .is_some_and(|p| matches!(p.tier, ProtonTier::Platinum | ProtonTier::Gold));
-    if !proton_ok {
-        return false;
-    }
-    use crate::models::ControllerSupport;
-    let controller_ok = game
-        .pcgw
-        .as_ref()
-        .is_some_and(|p| p.controller_support == ControllerSupport::Full);
-    if !controller_ok {
-        return false;
-    }
-    scoring::is_short_game(game)
+        .is_some_and(|p| matches!(p.tier, ProtonTier::Platinum | ProtonTier::Gold))
+        && game
+            .pcgw
+            .as_ref()
+            .is_some_and(|p| p.controller_support == ControllerSupport::Full)
+        && scoring::is_short_game(game)
 }
 
 /// Unopened Treasures: unplayed + high rating + not junk.
@@ -327,10 +267,6 @@ fn is_weekend_marathon(game: &Game) -> bool {
 fn is_quick_round(game: &Game) -> bool {
     is_unplayed(game) && scoring::is_short_game(game)
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

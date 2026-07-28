@@ -46,14 +46,11 @@ pub struct ScanOptions {
 pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
     let mut warnings = Vec::new();
 
-    // -- 1. Resolve steam directory -------------------------------------------
-    let steam_root = if let Some(fix) = &opts.fixtures {
-        fix.clone()
-    } else {
-        opts.steam_dir.clone()
-    };
+    let steam_root = opts
+        .fixtures
+        .clone()
+        .unwrap_or_else(|| opts.steam_dir.clone());
 
-    // -- 2. Detect accounts and select one ------------------------------------
     let accounts = detect_accounts(&steam_root).unwrap_or_default();
     let account = select_account(&accounts, opts.account.as_deref());
     let (account_name, user_id) = match account {
@@ -67,7 +64,6 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
         }
     };
 
-    // -- 3. Detect library folders --------------------------------------------
     let library_folders = match detect_library_folders(&steam_root) {
         Ok(folders) if !folders.is_empty() => folders,
         Ok(_) => {
@@ -86,7 +82,6 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
         }
     };
 
-    // -- 4. Parse appmanifests from all library folders -----------------------
     let mut all_manifests = Vec::new();
     for folder in &library_folders {
         match parse_appmanifests(folder) {
@@ -102,7 +97,6 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
 
     let userdata_dir = resolve_userdata_dir(&steam_root, &user_id);
 
-    // -- 5. Parse localconfig for playtime data -------------------------------
     let localconfig_path = userdata_dir.join("config/localconfig.vdf");
     let local_apps = match parse_localconfig(&localconfig_path) {
         Ok(apps) => apps,
@@ -115,7 +109,6 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
         }
     };
 
-    // -- 6. Parse librarycache for name fallback ------------------------------
     let cache_path = userdata_dir.join("config/librarycache");
     let library_cache = match parse_librarycache(&cache_path) {
         Ok(cache) => cache,
@@ -128,7 +121,6 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
         }
     };
 
-    // -- 7. Parse cloud storage for collections and hidden status -------------
     let cloud_path = userdata_dir.join(crate::steam::CLOUD_STORAGE_RELATIVE);
     let (collections, hidden_ids) = match read_cloud_storage(&cloud_path) {
         Ok(cloud) => match read_user_collections(&cloud) {
@@ -153,7 +145,6 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
         }
     };
 
-    // -- 8. Merge into Game records -------------------------------------------
 
     // Build collection membership map (excluding hidden collection itself).
     let mut collection_map: HashMap<u32, Vec<String>> = HashMap::new();
@@ -263,11 +254,10 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
         );
     }
 
-    // -- 9. Resolve remaining names from appinfo.vdf --------------------------
     let unresolved: HashSet<u32> = games_map
-        .iter()
-        .filter(|(app_id, game)| game.name == placeholder_name(**app_id))
-        .map(|(app_id, _)| *app_id)
+        .values()
+        .filter(|game| game.has_placeholder_name())
+        .map(|game| game.app_id)
         .collect();
 
     if !unresolved.is_empty() {
@@ -288,7 +278,24 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
         }
     }
 
-    // -- 10. Sort games by name then app_id -----------------------------------
+    // Surface how many names stayed unresolved: no local source (appmanifest,
+    // librarycache, appinfo.vdf) had them. Real names backfill from Steam
+    // Store hydration when online; without that, name-keyed enrichment
+    // (HLTB, RAWG) is skipped for these games.
+    let still_unresolved = games_map
+        .values()
+        .filter(|g| g.has_placeholder_name())
+        .count();
+    if still_unresolved > 0 {
+        warnings.push(ScanWarning {
+            code: "unresolved_names".into(),
+            message: format!(
+                "{still_unresolved} games have placeholder names (no local name source); \
+                 names backfill from Steam Store hydration when online"
+            ),
+        });
+    }
+
     let mut games: Vec<Game> = games_map.into_values().collect();
     games.sort_by(|a, b| a.name.cmp(&b.name).then(a.app_id.cmp(&b.app_id)));
 
@@ -300,10 +307,6 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
     })
 }
 
-fn placeholder_name(app_id: u32) -> String {
-    format!("App {app_id}")
-}
-
 /// Classify app type from state flags (simplified).
 fn classify_app_type(_app_id: u32, state_flags: u32) -> SteamAppType {
     // StateFlags bit 2 (value 4) = FullyInstalled.
@@ -313,10 +316,6 @@ fn classify_app_type(_app_id: u32, state_flags: u32) -> SteamAppType {
         SteamAppType::Unknown(format!("state:{state_flags}"))
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

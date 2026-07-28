@@ -325,12 +325,22 @@ vapourfly settings set lang japanese
 vapourfly settings set backup_retention_count 10
 vapourfly settings set steam_dir /opt/steam
 vapourfly settings set account myuser
+vapourfly settings set steam_api_key <your-key>   # from https://steamcommunity.com/dev/apikey
 
 # Remove a field (falls back to env var or platform default)
 vapourfly settings unset account
 ```
 
-**Settable fields:** `steam_dir`, `account`, `cc`, `lang`, `backup_retention_count`.
+**Settable fields:** `steam_dir`, `account`, `cc`, `lang`, `backup_retention_count`, `steam_api_key`.
+
+`steam_api_key` is your own free Steam Web API key (create one in a minute at
+<https://steamcommunity.com/dev/apikey>; any domain works, e.g. `localhost`).
+With a key configured, every scan resolves all owned game names in one
+request; without one, names backfill progressively from Steam Store
+hydration. The key stays on your machine (`config.toml`, or the
+`VAPOURFLY_STEAM_API_KEY` environment variable, which takes precedence) —
+it is personal per Valve's API terms and is never bundled with the app.
+`settings show` displays it masked.
 
 `settings show` reports the resolved configuration (CLI flags and environment
 variables override config file values, matching the precedence documented at

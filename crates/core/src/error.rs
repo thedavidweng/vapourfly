@@ -10,10 +10,6 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-// ---------------------------------------------------------------------------
-// Path wrapper that only reveals the file name in Display
-// ---------------------------------------------------------------------------
-
 /// A [`PathBuf`] wrapper whose [`Display`] impl only shows the file name,
 /// not the full path. Use [`SafePath::full`] to recover the original path.
 #[derive(Debug, Clone)]
@@ -50,10 +46,6 @@ impl From<PathBuf> for SafePath {
         Self(p)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Core error enum
-// ---------------------------------------------------------------------------
 
 #[derive(Error, Debug)]
 pub enum VapourflyError {
@@ -125,33 +117,10 @@ impl VapourflyError {
             other => format!("{other}"),
         }
     }
-
-    /// Return a user-friendly remediation hint, if one is available.
-    pub fn remediation_hint(&self) -> Option<&'static str> {
-        match self {
-            Self::FileNotFound { .. } => Some("check that the file exists and the path is correct"),
-            Self::ParseError { .. } => Some("the file may be corrupted; try re-downloading it"),
-            Self::UnsupportedFormat(_) => Some("run `vapourfly --help` to see supported formats"),
-            Self::AmbiguousAccount { .. } => Some("pass --account <name> to disambiguate"),
-            Self::UnsafeWrite { .. } => Some("use --force to override (data loss may occur)"),
-            Self::NetworkUnavailable { .. } => Some("check your internet connection and try again"),
-            Self::CredentialsMissing { .. } => {
-                Some("run `vapourfly auth login` to set up credentials")
-            }
-            Self::RateLimited { .. } => Some("wait a moment, then try again"),
-            Self::StaleCache { .. } => Some("run `vapourfly refresh` to update the cache"),
-            Self::InvalidInput(_) => None,
-            Self::Internal(_) => Some("this is a bug — please report it"),
-        }
-    }
 }
 
 /// Convenience alias used throughout the crate.
 pub type Result<T> = std::result::Result<T, VapourflyError>;
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -241,59 +210,6 @@ mod tests {
                 "non-path variant should be identical in Display and verbose: {err:?}"
             );
         }
-    }
-
-    // -- remediation hints ---------------------------------------------------
-
-    #[test]
-    fn remediation_hints_exist_for_expected_variants() {
-        let err = VapourflyError::FileNotFound {
-            path: SafePath::new("x"),
-        };
-        assert!(err.remediation_hint().is_some());
-
-        let err = VapourflyError::ParseError {
-            path: SafePath::new("x"),
-            format: "VDF".into(),
-            reason: "bad".into(),
-        };
-        assert!(err.remediation_hint().is_some());
-
-        let err = VapourflyError::UnsupportedFormat("XML".into());
-        assert!(err.remediation_hint().is_some());
-
-        let err = VapourflyError::AmbiguousAccount { count: 2 };
-        assert!(err.remediation_hint().is_some());
-
-        let err = VapourflyError::UnsafeWrite {
-            reason: "symlink".into(),
-        };
-        assert!(err.remediation_hint().is_some());
-
-        let err = VapourflyError::NetworkUnavailable {
-            source: Box::new(std::io::Error::new(
-                std::io::ErrorKind::ConnectionRefused,
-                "connection refused",
-            )),
-        };
-        assert!(err.remediation_hint().is_some());
-
-        let err = VapourflyError::CredentialsMissing {
-            provider: "Steam".into(),
-        };
-        assert!(err.remediation_hint().is_some());
-
-        let err = VapourflyError::RateLimited {
-            provider: "API".into(),
-            retry_after_secs: 10,
-        };
-        assert!(err.remediation_hint().is_some());
-
-        let err = VapourflyError::StaleCache {
-            provider: "API".into(),
-            reason: "old".into(),
-        };
-        assert!(err.remediation_hint().is_some());
     }
 
     // -- SafePath unit tests -------------------------------------------------

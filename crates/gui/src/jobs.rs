@@ -45,16 +45,11 @@
 
 use std::sync::Mutex;
 
-// ---------------------------------------------------------------------------
-// WorkflowKind
-// ---------------------------------------------------------------------------
-
 /// Identifies the kind of background workflow.
 ///
 /// Used together with an input fingerprint to detect when a new job's
 /// inputs differ from a previous job's, even if the global ID is higher.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[allow(dead_code)] // variants used as jobs move off-frame
 pub enum WorkflowKind {
     Scan,
     Write,
@@ -69,10 +64,6 @@ pub enum WorkflowKind {
     PlaylistMatch,
 }
 
-// ---------------------------------------------------------------------------
-// JobId
-// ---------------------------------------------------------------------------
-
 /// Monotonic request ID for a background job.
 ///
 /// Each time the user triggers a job (scan, write, cache refresh, dry-run),
@@ -81,10 +72,6 @@ pub enum WorkflowKind {
 /// poll compares the full ticket before applying the result.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct JobId(pub u64);
-
-// ---------------------------------------------------------------------------
-// JobTicket
-// ---------------------------------------------------------------------------
 
 /// The complete identity of a background job: monotonic [`JobId`] + workflow
 /// [`WorkflowKind`] + input `fingerprint`.
@@ -100,10 +87,6 @@ pub struct JobTicket {
     pub fingerprint: u64,
 }
 
-// ---------------------------------------------------------------------------
-// fingerprint
-// ---------------------------------------------------------------------------
-
 /// Stable 64-bit fingerprint of a job's input string, for stale-input
 /// detection. Two jobs with the same logical inputs produce the same
 /// fingerprint; a changed chooser or parameter produces a different one.
@@ -114,10 +97,6 @@ pub fn fingerprint_u64(s: &str) -> u64 {
     s.hash(&mut h);
     h.finish()
 }
-
-// ---------------------------------------------------------------------------
-// JobRunner
-// ---------------------------------------------------------------------------
 
 /// Allocates monotonically increasing [`JobTicket`]s.
 ///
@@ -157,10 +136,6 @@ impl JobRunner {
     }
 }
 
-// ---------------------------------------------------------------------------
-// JobSlot
-// ---------------------------------------------------------------------------
-
 /// A thread-safe slot holding the latest result of a background job, tagged
 /// with the [`JobTicket`] that produced it.
 ///
@@ -189,12 +164,8 @@ impl<T: Send + 'static> JobSlot<T> {
     /// it.
     pub fn set(&self, ticket: JobTicket, result: Result<T, String>) {
         let mut guard = self.inner.lock().unwrap();
-        match &*guard {
-            Some((existing, _)) if existing.id > ticket.id => {
-                // The stored result is newer — discard the stale incoming one.
-                return;
-            }
-            _ => {}
+        if matches!(&*guard, Some((existing, _)) if existing.id > ticket.id) {
+            return;
         }
         *guard = Some((ticket, result));
     }
@@ -221,10 +192,6 @@ impl<T: Send + 'static> JobSlot<T> {
         *self.inner.lock().unwrap() = None;
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

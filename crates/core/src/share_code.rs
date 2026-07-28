@@ -110,10 +110,6 @@ pub fn decode_share_code(code: &str) -> Result<PlaylistFile> {
     Ok(pf)
 }
 
-// ---------------------------------------------------------------------------
-// Binary payload encoding
-// ---------------------------------------------------------------------------
-
 fn encode_payload(playlist: &Playlist) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     buf.push(FORMAT_VERSION);
@@ -219,10 +215,6 @@ fn decode_payload(binary: &[u8]) -> Result<Playlist> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Compression
-// ---------------------------------------------------------------------------
-
 fn compress(data: &[u8]) -> Result<Vec<u8>> {
     let mut encoder = ZlibEncoder::new(data, Compression::default());
     let mut out = Vec::new();
@@ -259,10 +251,6 @@ fn decompress(data: &[u8]) -> Result<Vec<u8>> {
     }
     Ok(out)
 }
-
-// ---------------------------------------------------------------------------
-// Little-endian primitive helpers
-// ---------------------------------------------------------------------------
 
 fn write_u32_le(buf: &mut Vec<u8>, value: u32) {
     buf.extend_from_slice(&value.to_le_bytes());
@@ -316,10 +304,6 @@ fn read_string_u16(binary: &[u8], cursor: &mut usize) -> Result<String> {
     String::from_utf8(bytes.to_vec())
         .map_err(|e| VapourflyError::InvalidInput(format!("invalid share code utf-8: {e}")))
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

@@ -18,7 +18,12 @@ use crate::error::{Result, VapourflyError};
 /// I/O errors other than "not found".
 pub fn parse_librarycache(path: &Path) -> Result<HashMap<u32, String>> {
     if path.is_dir() {
-        return parse_librarycache_dir(path);
+        let json_path = path.join("librarycache.json");
+        return if json_path.is_file() {
+            parse_librarycache(&json_path)
+        } else {
+            Ok(HashMap::new())
+        };
     }
 
     let content = match fs::read_to_string(path) {
@@ -34,14 +39,6 @@ pub fn parse_librarycache(path: &Path) -> Result<HashMap<u32, String>> {
     };
 
     parse_librarycache_json(&content)
-}
-
-fn parse_librarycache_dir(dir: &Path) -> Result<HashMap<u32, String>> {
-    let json_path = dir.join("librarycache.json");
-    if json_path.is_file() {
-        return parse_librarycache(&json_path);
-    }
-    Ok(HashMap::new())
 }
 
 /// Parse library cache JSON content into an app-id-to-name map.
@@ -60,16 +57,8 @@ fn parse_librarycache_json(content: &str) -> Result<HashMap<u32, String>> {
         }
     };
 
-    let mut map = HashMap::new();
-    for entry in entries {
-        map.insert(entry.appid, entry.name);
-    }
-    Ok(map)
+    Ok(entries.into_iter().map(|e| (e.appid, e.name)).collect())
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

@@ -15,20 +15,15 @@ use vapourfly_core::models::{
 use crate::cache::DiskCache;
 use crate::http::{CacheRecord, HttpClient};
 
-// ---------------------------------------------------------------------------
-// Cache TTLs per source
-// ---------------------------------------------------------------------------
-
-const IGDB_TTL: Duration = Duration::from_secs(7 * 24 * 3600); // 7 days
-const RAWG_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
-const PROTONDB_TTL: Duration = Duration::from_secs(24 * 3600); // 1 day
-const PCGW_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
+// TTLs are sized for background repopulation (ADR-0009): a full-library
+// refresh is a rate-limited background job, so short TTLs would schedule a
+// large daily job for data that rarely changes.
+const IGDB_TTL: Duration = Duration::from_secs(14 * 24 * 3600); // ratings/keywords: slow-moving
+const RAWG_TTL: Duration = Duration::from_secs(14 * 24 * 3600);
+const PROTONDB_TTL: Duration = Duration::from_secs(7 * 24 * 3600); // tiers change rarely
+const PCGW_TTL: Duration = Duration::from_secs(14 * 24 * 3600);
 const HLTB_TTL: Duration = Duration::from_secs(30 * 24 * 3600); // 30 days
-const STEAM_STORE_TTL: Duration = Duration::from_secs(24 * 3600);
-
-// ---------------------------------------------------------------------------
-// Source name constants
-// ---------------------------------------------------------------------------
+const STEAM_STORE_TTL: Duration = Duration::from_secs(3 * 24 * 3600); // prices/sales move fastest
 
 pub const SOURCE_IGDB: &str = "igdb";
 pub const SOURCE_RAWG: &str = "rawg";
@@ -37,18 +32,17 @@ pub const SOURCE_PCGW: &str = "pcgw";
 pub const SOURCE_HLTB: &str = "hltb";
 pub const SOURCE_STEAM_STORE: &str = "steam-store";
 
+/// All sources in enrichment order. AppID-keyed sources run first —
+/// Steam Store hydration backfills placeholder names ("App <id>"), so the
+/// name-keyed sources (HLTB, RAWG) that follow can look those games up.
 pub const ALL_SOURCES: &[&str] = &[
+    SOURCE_STEAM_STORE,
     SOURCE_IGDB,
-    SOURCE_RAWG,
     SOURCE_PROTONDB,
     SOURCE_PCGW,
     SOURCE_HLTB,
-    SOURCE_STEAM_STORE,
+    SOURCE_RAWG,
 ];
-
-// ---------------------------------------------------------------------------
-// Enrichment options
-// ---------------------------------------------------------------------------
 
 /// Which sources to enrich from.
 #[derive(Clone, Debug)]
@@ -70,10 +64,6 @@ impl Default for EnrichmentOptions {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Enrichment result
-// ---------------------------------------------------------------------------
-
 /// Summary of a cache-only hydration pass.
 #[derive(Clone, Debug, Default)]
 pub struct HydrationSummary {
@@ -91,7 +81,7 @@ pub struct EnrichmentSummary {
     pub cache_hits: usize,
     /// Number of network fetches performed.
     pub network_fetches: usize,
-    /// Number of fetches that failed (logged, not fatal).
+    /// Fetches that failed (logged, not fatal).
     pub errors: Vec<EnrichmentError>,
     /// Per-source stats.
     pub source_stats: Vec<SourceRefreshStats>,
@@ -115,10 +105,6 @@ pub struct EnrichmentError {
     pub message: String,
 }
 
-// ---------------------------------------------------------------------------
-// Source status (for `sources status` command)
-// ---------------------------------------------------------------------------
-
 /// Status information about a single cached source.
 #[derive(Clone, Debug)]
 pub struct SourceStatus {
@@ -126,13 +112,8 @@ pub struct SourceStatus {
     pub cache_entries: usize,
     pub stale_entries: usize,
     pub last_success: Option<chrono::DateTime<chrono::Utc>>,
-    pub last_error: Option<String>,
     pub cache_dir_exists: bool,
 }
-
-// ---------------------------------------------------------------------------
-// Enrichment service
-// ---------------------------------------------------------------------------
 
 /// Credentials for the sources that need them, resolved once at the seam.
 ///
@@ -143,10 +124,13 @@ pub struct SourceCredentials {
     pub rawg_key: Option<String>,
     pub igdb_client_id: Option<String>,
     pub igdb_client_secret: Option<String>,
+    /// Steam Web API key (<https://steamcommunity.com/dev/apikey>): enables
+    /// one-request bulk name resolution via `GetOwnedGames`.
+    pub steam_api_key: Option<String>,
 }
 
 impl SourceCredentials {
-    /// Resolve credentials from the `VAPOURFLY_*` environment variables.
+    /// Resolve credentials from the `VAPOURFLY_*` environment variables only.
     pub fn from_env() -> Self {
         fn non_empty(var: &str) -> Option<String> {
             std::env::var(var).ok().filter(|v| !v.is_empty())
@@ -155,7 +139,21 @@ impl SourceCredentials {
             rawg_key: non_empty("VAPOURFLY_RAWG_KEY"),
             igdb_client_id: non_empty("VAPOURFLY_IGDB_CLIENT_ID"),
             igdb_client_secret: non_empty("VAPOURFLY_IGDB_CLIENT_SECRET"),
+            steam_api_key: non_empty("VAPOURFLY_STEAM_API_KEY"),
         }
+    }
+
+    /// Resolve credentials with the full documented precedence: environment
+    /// variables first, then the user's `config.toml` (currently only the
+    /// Steam Web API key is file-configurable — users create their own at
+    /// <https://steamcommunity.com/dev/apikey> via the Settings UI or
+    /// `vapourfly settings set steam_api_key <key>`).
+    pub fn resolve() -> Self {
+        let mut credentials = Self::from_env();
+        if credentials.steam_api_key.is_none() {
+            credentials.steam_api_key = vapourfly_core::config::resolve_steam_api_key();
+        }
+        credentials
     }
 }
 
@@ -220,13 +218,10 @@ pub fn enrich_games_with(
     summary
 }
 
-// ---------------------------------------------------------------------------
-// Cache key derivation — owned here, per source
-// ---------------------------------------------------------------------------
-//
-// Writers (the enrichment state-machine) and readers (`hydrate_from_cache`,
-// `missing_store_details`) derive keys through these functions only, so the
-// key convention cannot drift between them.
+// Cache key derivation is owned here, per source: writers (the enrichment
+// state-machine) and readers (`hydrate_from_cache`, `missing_store_details`)
+// derive keys through these functions only, so the key convention cannot
+// drift between them.
 
 fn app_key_for(app_id: u32) -> String {
     format!("app/{app_id}")
@@ -243,10 +238,6 @@ fn appid_key(game: &Game) -> String {
 fn name_key(game: &Game) -> String {
     format!("name/{}", game.name)
 }
-
-// ---------------------------------------------------------------------------
-// Source adapter + the cache state-machine (written once)
-// ---------------------------------------------------------------------------
 
 /// One Hydration source behind the enrichment seam: how to key the cache,
 /// how long entries live, which [`Game`] field it fills, and how to fetch.
@@ -403,8 +394,16 @@ fn enrich_source(
                     source: SOURCE_HLTB,
                     ttl: HLTB_TTL,
                     key: name_key,
+                    // Placeholder names would query (and cache) garbage —
+                    // treat them as "no data" until a real name backfills.
+                    fetch: &|g| {
+                        if g.has_placeholder_name() {
+                            Ok(None)
+                        } else {
+                            client.fetch(&g.name)
+                        }
+                    },
                     field: |g| &mut g.hltb,
-                    fetch: &|g| client.fetch(&g.name),
                 },
                 options,
                 &mut stats,
@@ -412,7 +411,6 @@ fn enrich_source(
             );
         }
         SOURCE_RAWG => {
-            // RAWG requires an API key; skip silently if not configured.
             let Some(rawg_key) = credentials.rawg_key.clone() else {
                 return stats;
             };
@@ -425,7 +423,14 @@ fn enrich_source(
                     ttl: RAWG_TTL,
                     key: name_key,
                     field: |g| &mut g.rawg,
-                    fetch: &|g| client.search_by_name(&g.name),
+                    // Placeholder names would query (and cache) garbage.
+                    fetch: &|g| {
+                        if g.has_placeholder_name() {
+                            Ok(None)
+                        } else {
+                            client.search_by_name(&g.name)
+                        }
+                    },
                 },
                 options,
                 &mut stats,
@@ -433,7 +438,6 @@ fn enrich_source(
             );
         }
         SOURCE_IGDB => {
-            // IGDB requires credentials; skip silently if not configured.
             let (Some(id), Some(secret)) = (
                 credentials.igdb_client_id.clone(),
                 credentials.igdb_client_secret.clone(),
@@ -462,7 +466,6 @@ fn enrich_source(
         }
         SOURCE_STEAM_STORE => {
             let client = crate::steam_store::SteamStoreClient::with_http(http.clone());
-            // Default locale; could be made configurable via EnrichmentOptions.
             let (cc, lang) = ("us", "english");
             enrich_with(
                 games,
@@ -478,6 +481,10 @@ fn enrich_source(
                 &mut stats,
                 errors,
             );
+            // Steam Store is keyed by AppID and carries the real name —
+            // backfill placeholder names so name-keyed sources and the UI
+            // get real titles even without appinfo.vdf / librarycache.
+            backfill_names_from_store(games);
         }
         _ => {}
     }
@@ -485,9 +492,18 @@ fn enrich_source(
     stats
 }
 
-// ---------------------------------------------------------------------------
-// Cache-only hydration (for Junk / Recommend / Playlist workflows)
-// ---------------------------------------------------------------------------
+/// Replace `"App <id>"` placeholder names with the Steam Store name where
+/// store details are present. No-op for games with a resolved local name.
+fn backfill_names_from_store(games: &mut [Game]) {
+    for game in games.iter_mut() {
+        if game.has_placeholder_name()
+            && let Some(store) = &game.steam_store
+            && !store.name.is_empty()
+        {
+            game.name = store.name.clone();
+        }
+    }
+}
 
 /// Apply one cached field onto a game record, tracking hydration stats.
 fn hydrate_field<T: serde::de::DeserializeOwned>(
@@ -520,8 +536,9 @@ pub fn hydrate_from_cache(games: &mut [Game], cache: &DiskCache) -> HydrationSum
     for game in games.iter_mut() {
         let app = app_key(game);
         let appid = appid_key(game);
-        let name = name_key(game);
 
+        // AppID-keyed fields first: Steam Store details backfill placeholder
+        // names, so the name-keyed lookups below use the real title.
         hydrate_field::<ProtonDbData>(
             cache,
             SOURCE_PROTONDB,
@@ -530,8 +547,6 @@ pub fn hydrate_from_cache(games: &mut [Game], cache: &DiskCache) -> HydrationSum
             &mut summary,
         );
         hydrate_field::<PcgwData>(cache, SOURCE_PCGW, &app, &mut game.pcgw, &mut summary);
-        hydrate_field::<HltbData>(cache, SOURCE_HLTB, &name, &mut game.hltb, &mut summary);
-        hydrate_field::<RawgData>(cache, SOURCE_RAWG, &name, &mut game.rawg, &mut summary);
         hydrate_field::<IgdbData>(cache, SOURCE_IGDB, &appid, &mut game.igdb, &mut summary);
         hydrate_field::<SteamStoreDetails>(
             cache,
@@ -540,14 +555,15 @@ pub fn hydrate_from_cache(games: &mut [Game], cache: &DiskCache) -> HydrationSum
             &mut game.steam_store,
             &mut summary,
         );
+        backfill_names_from_store(std::slice::from_mut(game));
+
+        let name = name_key(game);
+        hydrate_field::<HltbData>(cache, SOURCE_HLTB, &name, &mut game.hltb, &mut summary);
+        hydrate_field::<RawgData>(cache, SOURCE_RAWG, &name, &mut game.rawg, &mut summary);
     }
 
     summary
 }
-
-// ---------------------------------------------------------------------------
-// Missing-entry store details (for Playlist Match completion price)
-// ---------------------------------------------------------------------------
 
 /// Read cached Steam Store details for a set of AppIDs that are **not** in the
 /// owned library (missing Playlist entries).
@@ -606,14 +622,12 @@ pub fn resolve_missing_store_details_with_http(
     lang: &str,
     http: &HttpClient,
 ) -> std::collections::HashMap<u32, SteamStoreDetails> {
-    // Start with cache-only lookups for all AppIDs.
     let mut map = missing_store_details(app_ids, cache);
 
     if offline || app_ids.is_empty() {
         return map;
     }
 
-    // Fetch any AppIDs not yet in cache via SteamStoreClient.
     let client = crate::steam_store::SteamStoreClient::with_http(http.clone());
     for &app_id in app_ids {
         if map.contains_key(&app_id) {
@@ -639,10 +653,6 @@ pub fn resolve_missing_store_details_with_http(
     map
 }
 
-// ---------------------------------------------------------------------------
-// Cache status (for `sources status` CLI command)
-// ---------------------------------------------------------------------------
-
 /// Read the cache directory and compute status for each known source.
 pub fn source_status(cache_root: &Path) -> Vec<SourceStatus> {
     ALL_SOURCES
@@ -654,47 +664,45 @@ pub fn source_status(cache_root: &Path) -> Vec<SourceStatus> {
             let mut entries = 0usize;
             let mut stale = 0usize;
             let mut last_success: Option<chrono::DateTime<chrono::Utc>> = None;
-            let last_error: Option<String> = None;
 
             if cache_dir_exists {
-                // Walk the source directory and count .json files
                 for entry in walkdir::WalkDir::new(&dir).into_iter().flatten() {
-                    if entry.file_type().is_file()
-                        && entry.path().extension().is_some_and(|e| e == "json")
+                    if !entry.file_type().is_file()
+                        || entry.path().extension().is_none_or(|e| e != "json")
                     {
-                        entries += 1;
-                        // Try to read fetched_at for last_success tracking
-                        if let Ok(bytes) = std::fs::read(entry.path()) {
-                            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                                let mut fetched_utc = None;
-                                if let Some(ts) = val.get("fetched_at").and_then(|v| v.as_str()) {
-                                    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
-                                        let utc = dt.with_timezone(&chrono::Utc);
-                                        fetched_utc = Some(utc);
-                                        match last_success {
-                                            Some(existing) if existing >= utc => {}
-                                            _ => last_success = Some(utc),
-                                        }
-                                    }
-                                }
-                                // Staleness is computed from fetched_at + ttl
-                                // (mirroring CacheRecord::is_expired). The
-                                // persisted `stale` field only records the
-                                // fallback state at write time, which the
-                                // normal put path always writes as false.
-                                let ttl_secs = val
-                                    .get("ttl")
-                                    .and_then(|t| t.get("secs"))
-                                    .and_then(|v| v.as_u64());
-                                if let (Some(fetched), Some(ttl)) = (fetched_utc, ttl_secs) {
-                                    let age = chrono::Utc::now()
-                                        .signed_duration_since(fetched)
-                                        .num_seconds();
-                                    if age > 0 && age as u64 > ttl {
-                                        stale += 1;
-                                    }
-                                }
-                            }
+                        continue;
+                    }
+                    entries += 1;
+                    let Ok(bytes) = std::fs::read(entry.path()) else {
+                        continue;
+                    };
+                    let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                        continue;
+                    };
+                    let fetched_utc = val
+                        .get("fetched_at")
+                        .and_then(|v| v.as_str())
+                        .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+                        .map(|dt| dt.with_timezone(&chrono::Utc));
+                    if let Some(utc) = fetched_utc
+                        && last_success.is_none_or(|existing| existing < utc)
+                    {
+                        last_success = Some(utc);
+                    }
+                    // Staleness is computed from fetched_at + ttl (mirroring
+                    // CacheRecord::is_expired). The persisted `stale` field
+                    // only records the fallback state at write time, which
+                    // the normal put path always writes as false.
+                    let ttl_secs = val
+                        .get("ttl")
+                        .and_then(|t| t.get("secs"))
+                        .and_then(|v| v.as_u64());
+                    if let (Some(fetched), Some(ttl)) = (fetched_utc, ttl_secs) {
+                        let age = chrono::Utc::now()
+                            .signed_duration_since(fetched)
+                            .num_seconds();
+                        if age > 0 && age as u64 > ttl {
+                            stale += 1;
                         }
                     }
                 }
@@ -705,16 +713,11 @@ pub fn source_status(cache_root: &Path) -> Vec<SourceStatus> {
                 cache_entries: entries,
                 stale_entries: stale,
                 last_success,
-                last_error,
                 cache_dir_exists,
             }
         })
         .collect()
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -723,6 +726,43 @@ mod tests {
     use std::collections::HashMap;
     use tempfile::TempDir;
     use vapourfly_core::models::{Game, IgdbData, ProtonDbData, ProtonTier, SteamAppType};
+
+    fn store_details(app_id: u32, name: &str) -> SteamStoreDetails {
+        SteamStoreDetails {
+            app_id,
+            name: name.into(),
+            steam_store_type: "game".into(),
+            is_free: false,
+            short_description: None,
+            header_image: None,
+            developers: vec![],
+            publishers: vec![],
+            genres: vec![],
+            categories: vec![],
+            release_date: None,
+            metacritic_score: None,
+            platforms: vapourfly_core::models::SteamStorePlatforms {
+                windows: true,
+                mac: false,
+                linux: false,
+            },
+            coming_soon: false,
+            price_overview: None,
+        }
+    }
+
+    fn put_store_record(cache: &DiskCache, details: SteamStoreDetails) {
+        let record = CacheRecord {
+            source: SOURCE_STEAM_STORE.to_string(),
+            key: format!("app/{}", details.app_id),
+            fetched_at: chrono::Utc::now(),
+            ttl: STEAM_STORE_TTL,
+            data: details,
+            stale: false,
+            etag: None,
+        };
+        cache.put(&record).unwrap();
+    }
 
     fn make_test_game(app_id: u32, name: &str) -> Game {
         Game {
@@ -1025,6 +1065,7 @@ mod tests {
             rawg_key: Some("k".into()),
             igdb_client_id: Some("id".into()),
             igdb_client_secret: Some("s".into()),
+            ..Default::default()
         };
 
         let mut games = vec![make_test_game(730, "Counter-Strike 2")];
@@ -1058,6 +1099,54 @@ mod tests {
         assert_eq!(summary.network_fetches, 0);
         assert!(games[0].rawg.is_none());
         assert!(games[0].igdb.is_none());
+    }
+
+    #[test]
+    fn store_hydration_backfills_placeholder_names() {
+        // Real-world macOS condition: no appinfo.vdf / librarycache names,
+        // so every game scans as "App <id>". Steam Store data (keyed by
+        // AppID) must backfill the real title during hydration.
+        let tmp = TempDir::new().unwrap();
+        let cache = DiskCache::new(tmp.path());
+        put_store_record(&cache, store_details(292030, "The Witcher 3: Wild Hunt"));
+
+        let mut placeholder = make_test_game(292030, "App 292030");
+        let mut resolved = make_test_game(292030, "My Local Name");
+        hydrate_from_cache(std::slice::from_mut(&mut placeholder), &cache);
+        hydrate_from_cache(std::slice::from_mut(&mut resolved), &cache);
+
+        assert_eq!(placeholder.name, "The Witcher 3: Wild Hunt");
+        assert_eq!(resolved.name, "My Local Name", "resolved local names win");
+    }
+
+    #[test]
+    fn name_keyed_sources_skip_placeholder_names() {
+        // No mock registration: any network call would error. A placeholder
+        // name must be treated as "no data", not queried or cached.
+        let http = HttpClient::with_backend(Box::new(MockBackend::new()));
+        let tmp = TempDir::new().unwrap();
+        let cache = DiskCache::new(tmp.path());
+        let options = EnrichmentOptions {
+            sources: vec![SOURCE_HLTB.to_string(), SOURCE_RAWG.to_string()],
+            offline: false,
+            force: true,
+        };
+        let credentials = SourceCredentials {
+            rawg_key: Some("k".into()),
+            ..Default::default()
+        };
+
+        let mut games = vec![make_test_game(384300, "App 384300")];
+        let summary = enrich_games_with(&mut games, &cache, &options, &credentials, &http);
+
+        assert!(
+            summary.errors.is_empty(),
+            "placeholder-named games must not hit the network: {:?}",
+            summary.errors
+        );
+        assert_eq!(summary.network_fetches, 0);
+        assert!(games[0].hltb.is_none());
+        assert!(games[0].rawg.is_none());
     }
 
     #[test]
@@ -1147,45 +1236,12 @@ mod tests {
     fn resolve_missing_store_details_offline_uses_cache_only() {
         let tmp = TempDir::new().unwrap();
         let cache = DiskCache::new(tmp.path());
-
-        // Pre-populate cache for one AppID, leave another uncached.
-        let details = SteamStoreDetails {
-            app_id: 292030,
-            name: "The Witcher 3".into(),
-            steam_store_type: "game".into(),
-            is_free: false,
-            short_description: None,
-            header_image: None,
-            developers: vec![],
-            publishers: vec![],
-            genres: vec![],
-            categories: vec![],
-            release_date: None,
-            metacritic_score: None,
-            platforms: vapourfly_core::models::SteamStorePlatforms {
-                windows: true,
-                mac: false,
-                linux: false,
-            },
-            coming_soon: false,
-            price_overview: None,
-        };
-        let record = CacheRecord {
-            source: SOURCE_STEAM_STORE.to_string(),
-            key: "app/292030".to_string(),
-            fetched_at: chrono::Utc::now(),
-            ttl: STEAM_STORE_TTL,
-            data: details,
-            stale: false,
-            etag: None,
-        };
-        cache.put(&record).unwrap();
+        put_store_record(&cache, store_details(292030, "The Witcher 3"));
 
         // Offline mode: must not issue network requests.
         let result =
             resolve_missing_store_details(&[292030, 999999], &cache, true, "us", "english");
 
-        // Cached AppID is present.
         assert!(result.contains_key(&292030));
         // Uncached AppID is absent (no network fetch in offline mode).
         assert!(!result.contains_key(&999999));
@@ -1198,94 +1254,12 @@ mod tests {
         // least the cached entries and doesn't panic on network failures.
         let tmp = TempDir::new().unwrap();
         let cache = DiskCache::new(tmp.path());
-
-        // Pre-populate cache for one AppID.
-        let details = SteamStoreDetails {
-            app_id: 292030,
-            name: "The Witcher 3".into(),
-            steam_store_type: "game".into(),
-            is_free: false,
-            short_description: None,
-            header_image: None,
-            developers: vec![],
-            publishers: vec![],
-            genres: vec![],
-            categories: vec![],
-            release_date: None,
-            metacritic_score: None,
-            platforms: vapourfly_core::models::SteamStorePlatforms {
-                windows: true,
-                mac: false,
-                linux: false,
-            },
-            coming_soon: false,
-            price_overview: None,
-        };
-        let record = CacheRecord {
-            source: SOURCE_STEAM_STORE.to_string(),
-            key: "app/292030".to_string(),
-            fetched_at: chrono::Utc::now(),
-            ttl: STEAM_STORE_TTL,
-            data: details,
-            stale: false,
-            etag: None,
-        };
-        cache.put(&record).unwrap();
+        put_store_record(&cache, store_details(292030, "The Witcher 3"));
 
         // Online mode with AppID 0 — the fetch will fail but must not panic.
         let result = resolve_missing_store_details(&[292030, 0], &cache, false, "us", "english");
 
-        // Cached AppID is always present.
         assert!(result.contains_key(&292030));
-    }
-
-    #[test]
-    fn resolve_missing_store_details_offline_returns_cache_only() {
-        // Offline mode must return only cached entries without attempting
-        // any network fetch. Uncached AppIDs are simply absent.
-        let tmp = TempDir::new().unwrap();
-        let cache = DiskCache::new(tmp.path());
-
-        // Pre-populate cache for one AppID.
-        let details = SteamStoreDetails {
-            app_id: 292030,
-            name: "The Witcher 3".into(),
-            steam_store_type: "game".into(),
-            is_free: false,
-            short_description: None,
-            header_image: None,
-            developers: vec![],
-            publishers: vec![],
-            genres: vec![],
-            categories: vec![],
-            release_date: None,
-            metacritic_score: None,
-            platforms: vapourfly_core::models::SteamStorePlatforms {
-                windows: true,
-                mac: false,
-                linux: false,
-            },
-            coming_soon: false,
-            price_overview: None,
-        };
-        let record = CacheRecord {
-            source: SOURCE_STEAM_STORE.to_string(),
-            key: "app/292030".to_string(),
-            fetched_at: chrono::Utc::now(),
-            ttl: STEAM_STORE_TTL,
-            data: details,
-            stale: false,
-            etag: None,
-        };
-        cache.put(&record).unwrap();
-
-        // Offline mode: only cached AppID should be present.
-        let result =
-            resolve_missing_store_details(&[292030, 999999], &cache, true, "us", "english");
-
-        assert!(result.contains_key(&292030));
-        // Uncached AppID must NOT appear (no fetch attempted).
-        assert!(!result.contains_key(&999999));
     }
 
     #[test]

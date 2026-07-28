@@ -15,10 +15,6 @@ use std::sync::atomic::{AtomicI8, Ordering};
 
 use crate::error::{Result, SafePath, VapourflyError};
 
-// ---------------------------------------------------------------------------
-// Testable process detection
-// ---------------------------------------------------------------------------
-
 /// Tri-state override for process detection in tests.
 /// -1 = no override (use real detection), 0 = force not running, 1 = force running.
 static STEAM_RUNNING_OVERRIDE: AtomicI8 = AtomicI8::new(-1);
@@ -39,10 +35,6 @@ pub fn set_steam_running_override(value: Option<bool>) {
     };
     STEAM_RUNNING_OVERRIDE.store(v, Ordering::Relaxed);
 }
-
-// ---------------------------------------------------------------------------
-// Platform-specific detection
-// ---------------------------------------------------------------------------
 
 /// Real platform-specific Steam process detection.
 ///
@@ -105,10 +97,6 @@ pub fn is_steam_running() -> bool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Write safety checks
-// ---------------------------------------------------------------------------
-
 /// Check write safety before modifying Steam files.
 ///
 /// 1. If Steam is running and `allow_steam_running` is `false`, returns
@@ -170,10 +158,6 @@ fn check_unix_writable(dir: &Path) -> Result<()> {
 
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

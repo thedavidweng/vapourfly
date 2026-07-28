@@ -12,10 +12,6 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use eframe::egui::Color32;
 
-// ---------------------------------------------------------------------------
-// ThemeMode
-// ---------------------------------------------------------------------------
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ThemeMode {
     #[default]
@@ -55,10 +51,6 @@ impl ThemeMode {
         if v == 1 { Self::Dark } else { Self::Light }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tokens
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
 pub struct Tokens {
@@ -133,9 +125,88 @@ impl Tokens {
     };
 }
 
-// ---------------------------------------------------------------------------
-// Active theme (global for free-function paint calls)
-// ---------------------------------------------------------------------------
+// Tag tints: reference cards use per-tag pastel tints, not a single accent hue.
+
+/// (background, foreground) pairs: pink, blue, green, orange, violet, teal.
+const TAG_TINTS_LIGHT: [(Color32, Color32); 6] = [
+    (
+        Color32::from_rgb(252, 233, 242),
+        Color32::from_rgb(173, 35, 106),
+    ),
+    (
+        Color32::from_rgb(230, 240, 253),
+        Color32::from_rgb(31, 90, 173),
+    ),
+    (
+        Color32::from_rgb(230, 246, 234),
+        Color32::from_rgb(23, 128, 63),
+    ),
+    (
+        Color32::from_rgb(255, 242, 227),
+        Color32::from_rgb(178, 94, 13),
+    ),
+    (
+        Color32::from_rgb(241, 233, 252),
+        Color32::from_rgb(112, 51, 182),
+    ),
+    (
+        Color32::from_rgb(226, 246, 245),
+        Color32::from_rgb(13, 131, 120),
+    ),
+];
+
+const TAG_TINTS_DARK: [(Color32, Color32); 6] = [
+    (
+        Color32::from_rgb(58, 32, 46),
+        Color32::from_rgb(240, 150, 195),
+    ),
+    (
+        Color32::from_rgb(30, 42, 62),
+        Color32::from_rgb(140, 180, 240),
+    ),
+    (
+        Color32::from_rgb(30, 50, 38),
+        Color32::from_rgb(130, 210, 155),
+    ),
+    (
+        Color32::from_rgb(58, 44, 26),
+        Color32::from_rgb(235, 180, 110),
+    ),
+    (
+        Color32::from_rgb(44, 34, 62),
+        Color32::from_rgb(185, 155, 240),
+    ),
+    (
+        Color32::from_rgb(26, 50, 48),
+        Color32::from_rgb(120, 215, 205),
+    ),
+];
+
+/// Deterministic (background, foreground) tint for a tag/genre name.
+/// Same name → same hue, across views and sessions.
+pub fn tag_tint(name: &str) -> (Color32, Color32) {
+    let tints = if ThemeMode::from_u8(ACTIVE_THEME.load(Ordering::Relaxed)).is_dark() {
+        &TAG_TINTS_DARK
+    } else {
+        &TAG_TINTS_LIGHT
+    };
+    let mut hash: u32 = 5381;
+    for b in name.bytes() {
+        hash = hash.wrapping_mul(33) ^ u32::from(b.to_ascii_lowercase());
+    }
+    tints[(hash as usize) % tints.len()]
+}
+
+/// Fixed tint by palette index (pink, blue, green, orange, violet, teal) —
+/// for editorial chips whose colors are part of the design, not hashed.
+pub fn tint(index: usize) -> (Color32, Color32) {
+    let tints = if ThemeMode::from_u8(ACTIVE_THEME.load(Ordering::Relaxed)).is_dark() {
+        &TAG_TINTS_DARK
+    } else {
+        &TAG_TINTS_LIGHT
+    };
+    tints[index % tints.len()]
+}
 
 /// Active theme for free functions that paint chrome/cards outside App methods.
 static ACTIVE_THEME: AtomicU8 = AtomicU8::new(0);
@@ -152,10 +223,6 @@ pub fn t() -> Tokens {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Type scale
-// ---------------------------------------------------------------------------
-
 // Type scale: a slightly larger display step preserves the generous hierarchy
 // in the reference screens while regular controls remain compact.
 
@@ -167,28 +234,17 @@ pub const TS_LG: f32 = 18.0;
 pub const TS_XL: f32 = 23.0;
 pub const TS_2XL: f32 = 27.0;
 
-// ---------------------------------------------------------------------------
-// Spacing scale (4px grid)
-// ---------------------------------------------------------------------------
-
+// Spacing scale on a 4px grid.
 pub const SP_1: f32 = 4.0;
 pub const SP_2: f32 = 8.0;
 pub const SP_3: f32 = 12.0;
 pub const SP_4: f32 = 16.0;
 pub const SP_6: f32 = 24.0;
 
-// ---------------------------------------------------------------------------
-// Layout constants
-// ---------------------------------------------------------------------------
-
 pub const TOPBAR_HEIGHT: f32 = 58.0;
 pub const SIDEBAR_WIDTH: f32 = 132.0;
 /// Compact (icon-only) sidebar width, used at 1024–1179px window width.
 pub const SIDEBAR_WIDTH_COMPACT: f32 = 76.0;
-
-// ---------------------------------------------------------------------------
-// Responsive breakpoints (window width in px)
-// ---------------------------------------------------------------------------
 
 /// Below this width the sidebar shrinks to icon-only (76px).
 pub const BP_COMPACT_SIDEBAR: f32 = 1180.0;
@@ -223,11 +279,31 @@ pub const CORNER_PILL: f32 = 20.0;
 pub const RECOMMEND_CARD_IMG_W: f32 = 220.0;
 pub const RECOMMEND_CARD_IMG_H: f32 = 124.0;
 
-pub const POSTER_W: f32 = 194.0;
 pub const POSTER_H: f32 = 142.0;
+/// Minimum library card width; the grid stretches cards to fill the row.
 pub const GAME_CARD_W: f32 = 206.0;
-/// Artwork (with overlaid status/menu) + title + chips + metadata + actions.
-pub const GAME_CARD_H: f32 = 268.0;
+
+/// Height of card artwork rendered at `width`, following Steam's header
+/// capsule aspect (460×215) so the CDN image fills its box exactly.
+pub fn card_art_height(width: f32) -> f32 {
+    (width * 215.0 / 460.0).round()
+}
+
+/// Full library-card height for a given card width: aspect-correct artwork
+/// plus the fixed text stack (title + chips + meta + actions + spacing) —
+/// no dead space below the action row.
+pub fn game_card_height(card_w: f32) -> f32 {
+    card_art_height(card_w - 12.0) + 126.0
+}
+
+/// Card width that fills `main_width` with `columns` cards and SP_3 gaps.
+///
+/// Keeps one extra gap of slack so the wrapped row never overflows by a
+/// fraction of a pixel (which would wrap the last card onto its own row).
+pub fn library_card_width(main_width: f32, columns: usize) -> f32 {
+    let columns = columns.max(1) as f32;
+    ((main_width - columns * SP_3) / columns).floor()
+}
 pub const LIBRARY_RAIL_WIDTH: f32 = 214.0;
 
 pub fn library_main_width(available: f32, rail_below: bool) -> f32 {
@@ -247,10 +323,6 @@ pub fn library_grid_columns(main_width: f32) -> usize {
 pub const fn m(v: f32) -> i8 {
     v as i8
 }
-
-// ---------------------------------------------------------------------------
-// Egui style/visuals configuration
-// ---------------------------------------------------------------------------
 
 /// Apply the active theme's style and visuals to an egui context.
 ///

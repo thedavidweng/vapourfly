@@ -19,8 +19,6 @@ const BUILD_DATE: &str = env!("VF_BUILD_DATE");
 
 /// Full version string with git and build metadata.
 fn long_version() -> &'static str {
-    // Leak a String so we can return &'static from a computed value.
-    // This runs at most once.
     static INIT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     INIT.get_or_init(|| format!("{VERSION} ({GIT_HASH}, {BUILD_DATE})"))
         .as_str()
@@ -46,10 +44,6 @@ use vapourfly_core::recommend;
 use vapourfly_core::share_code;
 use vapourfly_core::steam;
 use vapourfly_core::write;
-
-// ---------------------------------------------------------------------------
-// CLI definition
-// ---------------------------------------------------------------------------
 
 #[derive(Parser)]
 #[command(
@@ -112,6 +106,16 @@ fn credential_status() -> (bool, bool) {
         && std::env::var("VAPOURFLY_IGDB_CLIENT_SECRET").is_ok();
     let rawg = std::env::var("VAPOURFLY_RAWG_KEY").is_ok();
     (igdb, rawg)
+}
+
+/// Credential column label for a source in `sources status` output.
+fn credential_label(source: &str, igdb_configured: bool, rawg_configured: bool) -> &'static str {
+    let configured = match source {
+        "igdb" => igdb_configured,
+        "rawg" => rawg_configured,
+        _ => return "not required",
+    };
+    if configured { "configured" } else { "missing" }
 }
 
 fn cache_refresh_valid_sources() -> Vec<&'static str> {
@@ -548,14 +552,9 @@ struct RecommendArgs {
     format: OutputFormat,
 }
 
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
 fn main() {
     let cli = Cli::parse();
 
-    // Set up logging
     let level = if cli.verbose { "debug" } else { "warn" };
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -695,10 +694,6 @@ fn main() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Command implementations
-// ---------------------------------------------------------------------------
-
 fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let steam_dir = cli.resolve_steam_dir().ok();
 
@@ -714,14 +709,12 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     match &steam_dir {
         Some(dir) => {
-            // Steam dir
             if cli.verbose {
                 println!("Steam dir:     {}", dir.display());
             } else {
                 println!("Steam dir:     {}", steam::redact_path(dir));
             }
 
-            // Accounts
             let accounts = steam::detect_accounts(dir).unwrap_or_default();
             let selected = steam::select_account(&accounts, cli.account.as_deref()).ok();
             println!("Accounts:      {} detected", accounts.len());
@@ -740,7 +733,6 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            // Libraries
             let folders = steam::detect_library_folders(dir).unwrap_or_default();
             println!("Libraries:     {}", folders.len());
             if cli.verbose {
@@ -749,7 +741,6 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            // Cloud storage
             if let Some(acc) = selected {
                 let cloud_path = steam::cloud_storage_path(dir, &acc.steam_id64);
                 if cloud_path.exists() {
@@ -761,7 +752,6 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                 println!("Cloud storage: (no account selected)");
             }
 
-            // Cache root
             let cache_dir = vapourfly_core::config::default_cache_dir();
             if cli.verbose {
                 println!("Cache root:    {}", cache_dir.display());
@@ -775,13 +765,10 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Credential status
     println!();
     println!("Credentials");
     println!("-----------");
-    let igdb_ok = std::env::var("VAPOURFLY_IGDB_CLIENT_ID").is_ok()
-        && std::env::var("VAPOURFLY_IGDB_CLIENT_SECRET").is_ok();
-    let rawg_ok = std::env::var("VAPOURFLY_RAWG_KEY").is_ok();
+    let (igdb_ok, rawg_ok) = credential_status();
     println!(
         "IGDB:          {}",
         if igdb_ok {
@@ -796,6 +783,17 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
             "configured"
         } else {
             "not configured"
+        }
+    );
+    let steam_key_ok = vapourfly_core::config::resolve_steam_api_key().is_some();
+    println!(
+        "Steam Web API: {}",
+        if steam_key_ok {
+            "configured (instant name resolution)"
+        } else {
+            "not configured (names backfill from Steam Store instead; create a \
+             free key at https://steamcommunity.com/dev/apikey and run \
+             `vapourfly settings set steam_api_key <key>`)"
         }
     );
 
@@ -854,7 +852,6 @@ fn cmd_scan(
 
     let mut result = steam::scan_library(&opts)?;
 
-    // Enrich with external API data if requested.
     if enrich {
         let cache =
             vapourfly_api::cache::DiskCache::new(vapourfly_core::config::default_cache_dir());
@@ -925,7 +922,6 @@ fn cmd_scan(
                         "collections": g.steam_collections,
                         "is_hidden": g.is_hidden,
                     });
-                    // Include enriched data when present
                     if let Some(protondb) = &g.protondb {
                         entry["protondb"] = serde_json::to_value(protondb).unwrap_or_default();
                     }
@@ -1264,18 +1260,7 @@ fn cmd_junk_apply(
     }
     println!("  Unchanged entries: {}", plan.diff.unchanged_count);
 
-    if dry_run {
-        println!();
-        println!("Dry run complete. No changes made.");
-    } else {
-        let backup =
-            write::commit_with_retention(&plan, cli.allow_steam_running, backup_retention())?;
-        println!();
-        println!("Write complete.");
-        println!("  Backup: {}", backup.display());
-    }
-
-    Ok(())
+    finish_plan(&plan, cli, dry_run)
 }
 
 fn cmd_junk_hide(
@@ -1310,18 +1295,7 @@ fn cmd_junk_hide(
     }
     println!("  Unchanged entries: {}", plan.diff.unchanged_count);
 
-    if dry_run {
-        println!();
-        println!("Dry run complete. No changes made.");
-    } else {
-        let backup =
-            write::commit_with_retention(&plan, cli.allow_steam_running, backup_retention())?;
-        println!();
-        println!("Write complete.");
-        println!("  Backup: {}", backup.display());
-    }
-
-    Ok(())
+    finish_plan(&plan, cli, dry_run)
 }
 
 fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::error::Error>> {
@@ -1379,18 +1353,7 @@ fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::erro
         }
         println!("  Unchanged entries: {}", plan.diff.unchanged_count);
 
-        if dry_run {
-            println!();
-            println!("Dry run complete. No changes made.");
-            return Ok(());
-        }
-
-        let backup =
-            write::commit_with_retention(&plan, cli.allow_steam_running, backup_retention())?;
-        println!();
-        println!("Write complete.");
-        println!("  Backup: {}", backup.display());
-        return Ok(());
+        return finish_plan(&plan, cli, dry_run);
     }
 
     match format {
@@ -1527,11 +1490,6 @@ fn parse_rules_file_contents(
     Ok(rules)
 }
 
-/// Persist a playlist to an explicit store directory.
-///
-/// This is the storage primitive used by [`store_playlist`] (which writes to
-/// the platform playlist store) and by tests that need to target a temporary
-/// directory.
 fn cmd_playlist_import(
     cli: &Cli,
     path: Option<PathBuf>,
@@ -1545,8 +1503,7 @@ fn cmd_playlist_import(
         return Err("must specify a playlist file path or --code".into());
     };
 
-    store_playlist(&pf)?;
-    let stored_path = playlist_store_dir().join(format!("{}.json", pf.playlist.id));
+    let stored_path = store_playlist(&pf)?;
 
     println!("Imported playlist: {}", pf.playlist.name);
     println!("  ID: {}", pf.playlist.id);
@@ -1567,18 +1524,7 @@ fn cmd_playlist_import(
 
     println!();
     println!("Match summary:");
-    println!("  Owned:    {}", report.owned.len());
-    println!("  Missing:  {}", report.missing.len());
-    println!("  Played:   {}", report.played.len());
-    println!("  Unplayed: {}", report.unplayed.len());
-    println!("  Hidden:   {}", report.hidden.len());
-    println!("  Junk:     {}", report.junk.len());
-    match &report.completion_price {
-        Some(price) => println!("  Completion price: {}", price.format()),
-        None => println!(
-            "  Completion price: (unavailable — missing entries may be free, unpriced, or not cached)"
-        ),
-    }
+    print_match_counts(&report);
     println!();
     println!("Stored to {}", stored_path.display());
     Ok(())
@@ -1653,18 +1599,7 @@ fn cmd_playlist_match(
             println!("  ID:       {}", pf.playlist.id);
             println!();
             println!("Match report:");
-            println!("  Owned:    {}", report.owned.len());
-            println!("  Missing:  {}", report.missing.len());
-            println!("  Played:   {}", report.played.len());
-            println!("  Unplayed: {}", report.unplayed.len());
-            println!("  Hidden:   {}", report.hidden.len());
-            println!("  Junk:     {}", report.junk.len());
-            match &report.completion_price {
-                Some(price) => println!("  Completion price: {}", price.format()),
-                None => println!(
-                    "  Completion price: (unavailable — missing entries may be free, unpriced, or not cached)"
-                ),
-            }
+            print_match_counts(&report);
         }
         OutputFormat::Json => {
             let output = serde_json::json!({
@@ -1722,18 +1657,7 @@ fn cmd_sync_collection(
     }
     println!("  Unchanged entries: {}", plan.diff.unchanged_count);
 
-    if dry_run {
-        println!();
-        println!("Dry run complete. No changes made.");
-    } else {
-        let backup =
-            write::commit_with_retention(&plan, cli.allow_steam_running, backup_retention())?;
-        println!();
-        println!("Write complete.");
-        println!("  Backup: {}", backup.display());
-    }
-
-    Ok(())
+    finish_plan(&plan, cli, dry_run)
 }
 
 fn cmd_cache_refresh(cli: &Cli, source: String) -> Result<(), Box<dyn std::error::Error>> {
@@ -1815,23 +1739,7 @@ fn cmd_sources_status(_cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn st
             );
             println!("{}", "-".repeat(75));
             for s in &statuses {
-                let cred = match s.name.as_str() {
-                    "igdb" => {
-                        if igdb_configured {
-                            "configured"
-                        } else {
-                            "missing"
-                        }
-                    }
-                    "rawg" => {
-                        if rawg_configured {
-                            "configured"
-                        } else {
-                            "missing"
-                        }
-                    }
-                    _ => "not required",
-                };
+                let cred = credential_label(&s.name, igdb_configured, rawg_configured);
                 let last = s.last_success.map_or_else(
                     || "n/a".into(),
                     |dt| dt.format("%Y-%m-%d %H:%M").to_string(),
@@ -1847,23 +1755,7 @@ fn cmd_sources_status(_cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn st
             let json_sources: Vec<serde_json::Value> = statuses
                 .iter()
                 .map(|s| {
-                    let cred = match s.name.as_str() {
-                        "igdb" => {
-                            if igdb_configured {
-                                "configured"
-                            } else {
-                                "missing"
-                            }
-                        }
-                        "rawg" => {
-                            if rawg_configured {
-                                "configured"
-                            } else {
-                                "missing"
-                            }
-                        }
-                        _ => "not required",
-                    };
+                    let cred = credential_label(&s.name, igdb_configured, rawg_configured);
                     serde_json::json!({
                         "name": s.name,
                         "credentials": cred,
@@ -2032,10 +1924,6 @@ fn cmd_diagnostics_export(cli: &Cli, out: PathBuf) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Settings command
-// ---------------------------------------------------------------------------
-
 fn cmd_settings_show(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error::Error>> {
     let overrides = config::CliOverrides {
         steam_dir: cli.steam_dir.clone(),
@@ -2084,8 +1972,21 @@ fn cmd_settings_show(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std:
                     "not configured"
                 },
             );
+            println!(
+                "{:<22} {}",
+                "Steam Web API key:",
+                match &cfg.steam_api_key {
+                    Some(key) => format!("configured ({})", format::mask_id(key)),
+                    None => "not configured — create one at \
+                             https://steamcommunity.com/dev/apikey"
+                        .to_string(),
+                },
+            );
             println!();
-            println!("Settable fields: steam_dir, account, cc, lang, backup_retention_count");
+            println!(
+                "Settable fields: steam_dir, account, cc, lang, backup_retention_count, \
+                 steam_api_key"
+            );
             println!("Use: vapourfly settings set <field> <value>");
             println!("     vapourfly settings unset <field>");
         }
@@ -2099,6 +2000,7 @@ fn cmd_settings_show(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std:
                 "backup_retention_count": cfg.backup_retention_count,
                 "has_igdb_credentials": cfg.has_igdb_credentials,
                 "has_rawg_credentials": cfg.has_rawg_credentials,
+                "has_steam_api_key": cfg.steam_api_key.is_some(),
             });
             println!("{}", serde_json::to_string_pretty(&json)?);
         }
@@ -2124,7 +2026,13 @@ fn cmd_settings_set(key: String, value: String) -> Result<(), Box<dyn std::error
     config::set_config_field(field, &normalised)?;
 
     let path = config::config_file_path();
-    println!("Set {key} = {normalised}");
+    // Never echo secrets back in full.
+    let display_value = if field == ConfigField::SteamApiKey {
+        format::mask_id(&normalised)
+    } else {
+        normalised
+    };
+    println!("Set {key} = {display_value}");
     if let Some(path) = path {
         println!("  Written to {}", path.display());
     }
@@ -2153,28 +2061,14 @@ fn cmd_settings_unset(key: String) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /// Return the directory where imported playlists are stored.
 fn playlist_store_dir() -> PathBuf {
     vapourfly_core::config::default_playlists_dir()
 }
 
-/// Persist a playlist to the local playlist store.
-fn store_playlist(pf: &PlaylistFile) -> Result<(), Box<dyn std::error::Error>> {
-    playlist_store::put(&playlist_store_dir(), pf)?;
-    Ok(())
-}
-
-/// Persist a playlist under an explicit store root (tests).
-#[cfg(test)]
-fn store_playlist_at(
-    pf: &PlaylistFile,
-    store_dir: &std::path::Path,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    Ok(playlist_store::put(store_dir, pf)?)
+/// Persist a playlist to the local playlist store; returns the written path.
+fn store_playlist(pf: &PlaylistFile) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    Ok(playlist_store::put(&playlist_store_dir(), pf)?)
 }
 
 /// Load a stored playlist by ID from the local playlist store.
@@ -2204,6 +2098,43 @@ fn validate_write_flags(dry_run: bool, confirm: bool) -> Result<(), Box<dyn std:
         return Err("cannot specify both --dry-run and --confirm".into());
     }
     Ok(())
+}
+
+/// Shared epilogue for write commands: report a dry run, or commit the plan
+/// (with backup retention) and report the backup path.
+fn finish_plan(
+    plan: &vapourfly_core::write::PreviewedPlan,
+    cli: &Cli,
+    dry_run: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if dry_run {
+        println!();
+        println!("Dry run complete. No changes made.");
+    } else {
+        let backup =
+            write::commit_with_retention(plan, cli.allow_steam_running, backup_retention())?;
+        println!();
+        println!("Write complete.");
+        println!("  Backup: {}", backup.display());
+    }
+    Ok(())
+}
+
+/// Print the shared owned/missing/played/... counts of a Playlist match
+/// report, including the completion-price line.
+fn print_match_counts(report: &vapourfly_core::models::PlaylistMatchReport) {
+    println!("  Owned:    {}", report.owned.len());
+    println!("  Missing:  {}", report.missing.len());
+    println!("  Played:   {}", report.played.len());
+    println!("  Unplayed: {}", report.unplayed.len());
+    println!("  Hidden:   {}", report.hidden.len());
+    println!("  Junk:     {}", report.junk.len());
+    match &report.completion_price {
+        Some(price) => println!("  Completion price: {}", price.format()),
+        None => println!(
+            "  Completion price: (unavailable — missing entries may be free, unpriced, or not cached)"
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -2263,7 +2194,7 @@ mod tests {
 
         // Verify the playlist can be persisted and re-read.
         let store_dir = tmp.path().join("store");
-        let stored_path = store_playlist_at(&pf, &store_dir).unwrap();
+        let stored_path = playlist_store::put(&store_dir, &pf).unwrap();
         assert!(stored_path.exists());
         let reloaded = playlist::import_playlist(&stored_path).unwrap();
         assert_eq!(reloaded.playlist.id, "test-id");
@@ -2384,6 +2315,21 @@ mod tests {
         })
     }
 
+    fn test_manual_playlist() -> PlaylistFile {
+        PlaylistFile {
+            vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
+            created_by: "test".into(),
+            playlist: Playlist {
+                id: "test-match".into(),
+                name: "Test Match".into(),
+                description: String::new(),
+                content: PlaylistContent::Manual {
+                    app_ids: vec![730, 440],
+                },
+            },
+        }
+    }
+
     /// The confirmation gate: every write command requires exactly one of
     /// --dry-run / --confirm before anything else happens.
     #[test]
@@ -2411,32 +2357,8 @@ mod tests {
     /// (Default::default())` which re-ran Steam detection and failed.
     #[test]
     fn playlist_match_succeeds_with_fixtures_only() {
-        let fixtures = std::path::Path::new("data/fixtures/steam_minimal");
-        if !fixtures.exists() {
-            eprintln!("skipping: fixtures not found at {}", fixtures.display());
-            return;
-        }
-        let cli = Cli {
-            fixtures: Some(fixtures.to_path_buf()),
-            steam_dir: None,
-            account: None,
-            verbose: false,
-            offline: true,
-            allow_steam_running: false,
-            command: Commands::Doctor,
-        };
-        let pf = PlaylistFile {
-            vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
-            created_by: "test".into(),
-            playlist: Playlist {
-                id: "test-match".into(),
-                name: "Test Match".into(),
-                description: String::new(),
-                content: PlaylistContent::Manual {
-                    app_ids: vec![730, 440],
-                },
-            },
-        };
+        let Some(cli) = fixtures_cli() else { return };
+        let pf = test_manual_playlist();
         let scan_result = scan_library_hydrated(&cli, JunkMode::Default).unwrap();
         let result = match_playlist_with_missing(&cli, &pf, &scan_result.games);
         assert!(result.is_ok(), "match must succeed with fixtures only");
@@ -2446,33 +2368,11 @@ mod tests {
     /// that is not the platform default.
     #[test]
     fn playlist_match_succeeds_with_custom_steam_dir() {
-        let fixtures = std::path::Path::new("data/fixtures/steam_minimal");
-        if !fixtures.exists() {
-            eprintln!("skipping: fixtures not found at {}", fixtures.display());
-            return;
-        }
         // Use fixtures as a custom steam_dir (same structure).
-        let cli = Cli {
-            fixtures: None,
-            steam_dir: Some(fixtures.to_path_buf()),
-            account: None,
-            verbose: false,
-            offline: true,
-            allow_steam_running: false,
-            command: Commands::Doctor,
-        };
-        let pf = PlaylistFile {
-            vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
-            created_by: "test".into(),
-            playlist: Playlist {
-                id: "test-match".into(),
-                name: "Test Match".into(),
-                description: String::new(),
-                content: PlaylistContent::Manual {
-                    app_ids: vec![730, 440],
-                },
-            },
-        };
+        let Some(mut cli) = fixtures_cli() else { return };
+        cli.steam_dir = cli.fixtures.take();
+
+        let pf = test_manual_playlist();
         let scan_result = scan_library_hydrated(&cli, JunkMode::Default).unwrap();
         let result = match_playlist_with_missing(&cli, &pf, &scan_result.games);
         assert!(result.is_ok(), "match must succeed with custom --steam-dir");

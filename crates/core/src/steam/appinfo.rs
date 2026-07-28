@@ -290,10 +290,6 @@ fn map_io(err: std::io::Error) -> VapourflyError {
     VapourflyError::InvalidInput(format!("appinfo.vdf read error: {err}"))
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -34,23 +34,18 @@ pub fn read_user_collections(cloud: &CloudStorageFile) -> Result<Vec<SteamCollec
     let mut collections = Vec::new();
 
     for (outer_key, entry) in cloud {
-        // Only user-collections
         if !outer_key.starts_with("user-collections.") {
             continue;
         }
 
-        // Skip deleted
         if entry.is_deleted == Some(true) {
             continue;
         }
 
-        // Must have a value
-        let value_str = match &entry.value {
-            Some(v) => v,
-            None => continue,
+        let Some(value_str) = &entry.value else {
+            continue;
         };
 
-        // Parse collection value
         let cv: CollectionValue = match serde_json::from_str(value_str) {
             Ok(v) => v,
             Err(e) => {
@@ -63,7 +58,6 @@ pub fn read_user_collections(cloud: &CloudStorageFile) -> Result<Vec<SteamCollec
             }
         };
 
-        // Compute effective AppIDs = added - removed
         let removed_set: std::collections::HashSet<u32> = cv.removed.iter().copied().collect();
         let mut app_ids: Vec<u32> = cv
             .added
@@ -85,7 +79,6 @@ pub fn read_user_collections(cloud: &CloudStorageFile) -> Result<Vec<SteamCollec
         });
     }
 
-    // Sort by name then id
     collections.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
 
     Ok(collections)

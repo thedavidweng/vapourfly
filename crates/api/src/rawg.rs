@@ -1,14 +1,14 @@
 //! RAWG API client.
 //!
-//! Requires the `VAPOURFLY_RAWG_KEY` environment variable.
+//! Requires an API key, resolved from `VAPOURFLY_RAWG_KEY` at the
+//! enrichment seam.
 
 use serde::Deserialize;
-use vapourfly_core::error::{Result, VapourflyError};
+use vapourfly_core::error::Result;
 use vapourfly_core::models::RawgData;
 
-use crate::http::HttpClient;
+use crate::http::{HttpClient, parse_json};
 
-#[allow(dead_code)]
 const RAWG_API_BASE: &str = "https://api.rawg.io/api";
 
 /// RAWG API client.
@@ -18,31 +18,6 @@ pub struct RawgClient {
 }
 
 impl RawgClient {
-    /// Create a new RAWG client from environment variables.
-    ///
-    /// Returns [`CredentialsMissing`](VapourflyError::CredentialsMissing) if
-    /// `VAPOURFLY_RAWG_KEY` is not set.
-    pub fn from_env() -> Result<Self> {
-        Self::from_env_with_http(HttpClient::new())
-    }
-
-    /// Create a new RAWG client from environment variables with a custom
-    /// [`HttpClient`] (e.g. one backed by a [`MockBackend`](crate::http::MockBackend)).
-    pub fn from_env_with_http(http: HttpClient) -> Result<Self> {
-        let api_key = std::env::var("VAPOURFLY_RAWG_KEY")
-            .map_err(|_| VapourflyError::CredentialsMissing {
-                provider: "RAWG".into(),
-            })?
-            .trim()
-            .to_string();
-        if api_key.is_empty() {
-            return Err(VapourflyError::CredentialsMissing {
-                provider: "RAWG".into(),
-            });
-        }
-        Ok(Self { api_key, http })
-    }
-
     /// Create a RAWG client with an explicit API key and HTTP client.
     pub fn new(api_key: String, http: HttpClient) -> Self {
         Self { api_key, http }
@@ -65,47 +40,30 @@ impl RawgClient {
             return Ok(None);
         }
 
-        let search_result: RawgSearchResponse =
-            serde_json::from_slice(&response.body).map_err(|e| VapourflyError::ParseError {
-                path: vapourfly_core::error::SafePath::new(format!(
-                    "rawg/search/{}.json",
-                    encode_query(name)
-                )),
-                format: "JSON".into(),
-                reason: e.to_string(),
-            })?;
+        let search_result: RawgSearchResponse = parse_json(
+            &response.body,
+            &format!("rawg/search/{}.json", encode_query(name)),
+        )?;
 
-        if search_result.results.is_empty() {
+        // Prefer Steam store presence, then rating, then ratings count.
+        let Some(best) = search_result.results.into_iter().max_by(|a, b| {
+            let a_has_steam = a.stores.iter().any(|s| s.store.name == "Steam");
+            let b_has_steam = b.stores.iter().any(|s| s.store.name == "Steam");
+            a_has_steam
+                .cmp(&b_has_steam)
+                .then(
+                    a.rating
+                        .partial_cmp(&b.rating)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+                .then(a.ratings_count.cmp(&b.ratings_count))
+        }) else {
             return Ok(None);
-        }
-
-        // Pick the best match: prefer results with a Steam store, then by
-        // name similarity (exact match first, then highest rating).
-        let best = search_result
-            .results
-            .into_iter()
-            .max_by(|a, b| {
-                let a_has_steam = a.stores.iter().any(|s| s.store.name == "Steam");
-                let b_has_steam = b.stores.iter().any(|s| s.store.name == "Steam");
-                // Prefer Steam store presence, then rating.
-                a_has_steam
-                    .cmp(&b_has_steam)
-                    .then(
-                        a.rating
-                            .partial_cmp(&b.rating)
-                            .unwrap_or(std::cmp::Ordering::Equal),
-                    )
-                    .then(a.ratings_count.cmp(&b.ratings_count))
-            })
-            .unwrap();
+        };
 
         Ok(Some(RawgData {
             rawg_id: best.id as u64,
-            rating_0_5: if best.rating > 0.0 {
-                Some(best.rating as f32)
-            } else {
-                None
-            },
+            rating_0_5: (best.rating > 0.0).then_some(best.rating as f32),
             ratings_count: Some(best.ratings_count),
             genres: best.genres.into_iter().map(|g| g.name).collect(),
             tags: best.tags.into_iter().map(|t| t.name).collect(),
@@ -113,10 +71,6 @@ impl RawgClient {
         }))
     }
 }
-
-// ---------------------------------------------------------------------------
-// RAWG JSON response types
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 struct RawgSearchResponse {
@@ -166,35 +120,11 @@ fn encode_query(s: &str) -> String {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::http::{HttpResponse, MockBackend};
     use std::collections::HashMap;
-
-    #[test]
-    fn missing_key_returns_credentials_missing() {
-        // SAFETY: tests run single-threaded per process, and this env var
-        // is only used by this crate.
-        unsafe {
-            std::env::remove_var("VAPOURFLY_RAWG_KEY");
-        }
-
-        let err = match RawgClient::from_env() {
-            Ok(_) => panic!("expected error"),
-            Err(e) => e,
-        };
-        match err {
-            VapourflyError::CredentialsMissing { provider } => {
-                assert_eq!(provider, "RAWG");
-            }
-            other => panic!("expected CredentialsMissing, got: {other}"),
-        }
-    }
 
     #[test]
     fn search_returns_none_on_404() {

@@ -187,21 +187,22 @@ The process of loading external metadata (HLTB, IGDB, RAWG, ProtonDB, PCGW,
 Steam Store) onto Game records before a workflow evaluates them. Two phases
 exist in the code:
 
-- **Populate** — `scan --enrich` or `cache refresh --source <src>` fetches from
-  the network and writes to the local disk cache (`enrich_games`).
+- **Populate** — fetches from the network and writes to the local disk cache
+  (`enrich_games`). Runs as the GUI's automatic background job after first
+  paint, or explicitly via `scan --enrich` / `cache refresh --source <src>`.
 - **Hydrate** — apply cache entries (including stale) onto Game records
   (`hydrate_from_cache`).
 
-**Default (ADR-0002):** workflows (junk / recommend / playlist / discover /
-dynamic / editorial mood) go through `workflow::prepare`, which **lazy-fetches
-missing cache entries over the network** unless `--offline` / offline mode is
-set. Offline is the only way to force cache-only behaviour.
-
-Rationale: recommendations and junk decisions should always use the freshest
-data; requiring the user to remember a separate refresh step produces silently
-stale results. Trade-off: workflows may be slow on large libraries with cold
-caches, and may hit API rate limits. See
-[ADR-0002](docs/adr/0002-lazy-hydration-with-degradation.md).
+**Default (ADR-0009, supersedes ADR-0002):** workflows (junk / recommend /
+playlist / discover / dynamic / editorial mood) and the GUI library scan go
+through `workflow::prepare`, which is **cache-only plus bounded fetches** —
+it never does bulk network work, so results render in seconds at any
+library size. The bounded fetches are the owned-games name map (one request,
+only with a configured Steam Web API key) and missing Playlist entry prices
+during match. Freshness comes from TTLs plus background/explicit
+repopulation, not from fetch-at-evaluation. `--offline` / offline mode still
+forces zero network, including the bounded fetches. See
+[ADR-0009](docs/adr/0009-instant-first-paint-hydration.md).
 
 **Failure semantics:** a per-game fetch failure degrades gracefully — that
 game is evaluated with whatever data is available (equivalent to cache-only

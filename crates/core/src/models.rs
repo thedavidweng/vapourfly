@@ -9,19 +9,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-// ---------------------------------------------------------------------------
-// Schema version constants
-// ---------------------------------------------------------------------------
-
 pub const VAPOURFLY_PLAYLIST_SCHEMA: &str = "vapourfly.playlist.v1";
 pub const VAPOURFLY_SCAN_SCHEMA: &str = "vapourfly.scan.v1";
-pub const VAPOURFLY_DIFF_SCHEMA: &str = "vapourfly.write_plan.v1";
 pub const VAPOURFLY_JUNK_PREVIEW_SCHEMA: &str = "vapourfly.junk_preview.v1";
 pub const VAPOURFLY_RECOMMENDATIONS_SCHEMA: &str = "vapourfly.recommendations.v1";
-
-// ---------------------------------------------------------------------------
-// VDF
-// ---------------------------------------------------------------------------
 
 /// A node in a Text VDF tree.  Objects preserve insertion order so that a
 /// round-trip through parse → emit does not silently re-order keys.
@@ -64,27 +55,8 @@ impl VdfNode {
         Some(current)
     }
 
-    /// Return every value associated with `key`, preserving insertion order.
-    ///
-    /// Useful when a VDF file contains duplicate keys (common in Steam
-    /// configuration files). Returns an empty `Vec` if the node is not an
-    /// object or the key is absent.
-    pub fn child_values(&self, key: &str) -> Vec<&VdfNode> {
-        match self {
-            VdfNode::Object(entries) => entries
-                .iter()
-                .filter(|(k, _)| k == key)
-                .map(|(_, v)| v)
-                .collect(),
-            _ => Vec::new(),
-        }
-    }
-
-    /// Return the first string value for `key`, or `None`.
-    ///
-    /// Convenience wrapper around [`child_values`](Self::child_values) for the
-    /// common case where you only care about the first match and it is a
-    /// string.
+    /// Return the first string value for `key`, or `None` when the node is
+    /// not an object, the key is absent, or the value is not a string.
     pub fn first_string(&self, key: &str) -> Option<&str> {
         match self {
             VdfNode::Object(entries) => {
@@ -101,10 +73,6 @@ impl VdfNode {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Steam application types
-// ---------------------------------------------------------------------------
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SteamAppType {
     Game,
@@ -120,10 +88,6 @@ impl Default for SteamAppType {
         Self::Unknown("unknown".into())
     }
 }
-
-// ---------------------------------------------------------------------------
-// Core Game record
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Game {
@@ -154,9 +118,16 @@ pub struct Game {
     pub steam_store: Option<SteamStoreDetails>,
 }
 
-// ---------------------------------------------------------------------------
-// External data models
-// ---------------------------------------------------------------------------
+impl Game {
+    /// True when the scan could not resolve a real name and fell back to
+    /// `"App <id>"` (no appmanifest, librarycache, or appinfo.vdf source —
+    /// common on machines with no games installed). Name-keyed lookups
+    /// (HLTB, RAWG) are meaningless for such games; Steam Store hydration
+    /// backfills the real name by AppID.
+    pub fn has_placeholder_name(&self) -> bool {
+        self.name == format!("App {}", self.app_id)
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HltbData {
@@ -274,10 +245,6 @@ pub struct PriceOverview {
     pub discount_percent: u32,
 }
 
-// ---------------------------------------------------------------------------
-// Local app state (from localconfig.vdf)
-// ---------------------------------------------------------------------------
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LocalAppState {
     pub app_id: u32,
@@ -287,10 +254,6 @@ pub struct LocalAppState {
     pub playtime_disconnected_minutes: Option<u32>,
     pub raw_fields: BTreeMap<String, String>,
 }
-
-// ---------------------------------------------------------------------------
-// Cloud storage / collections
-// ---------------------------------------------------------------------------
 
 pub type CloudStorageFile = Vec<(String, CloudEntry)>;
 
@@ -333,10 +296,6 @@ pub struct SteamCollection {
     pub removed_app_ids: Vec<u32>,
     pub is_hidden_collection: bool,
 }
-
-// ---------------------------------------------------------------------------
-// Write plan
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WritePlan {
@@ -385,10 +344,6 @@ pub enum WriteOp {
     },
 }
 
-// ---------------------------------------------------------------------------
-// Playlist models
-// ---------------------------------------------------------------------------
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlaylistFile {
     pub vapourfly_schema: String,
@@ -429,10 +384,6 @@ pub enum PlaylistRule {
     Not(Box<PlaylistRule>),
 }
 
-// ---------------------------------------------------------------------------
-// Recommendation models
-// ---------------------------------------------------------------------------
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RecommendRequest {
     pub available_minutes: u32,
@@ -457,10 +408,6 @@ pub struct RecommendReason {
     pub description: String,
     pub weight: f32,
 }
-
-// ---------------------------------------------------------------------------
-// Junk models
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JunkRules {
@@ -545,10 +492,6 @@ pub enum JunkMode {
     Aggressive,
 }
 
-// ---------------------------------------------------------------------------
-// Playlist match report
-// ---------------------------------------------------------------------------
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlaylistMatchReport {
     pub owned: Vec<u32>,
@@ -630,9 +573,7 @@ impl PriceCoverage {
     pub fn confirmed_non_free(&self) -> usize {
         self.confirmed_non_free_priced + self.confirmed_non_free_unpriced
     }
-}
 
-impl PriceCoverage {
     /// Ratio of priced to confirmed non-free missing entries, or `None`
     /// when there are no confirmed non-free entries.
     pub fn ratio(&self) -> Option<f64> {
@@ -664,10 +605,6 @@ impl Money {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Scan result
-// ---------------------------------------------------------------------------
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ScanResult {
     pub games: Vec<Game>,
@@ -681,10 +618,6 @@ pub struct ScanWarning {
     pub code: String,
     pub message: String,
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

@@ -7,7 +7,7 @@ use serde::Deserialize;
 use vapourfly_core::error::{Result, VapourflyError};
 use vapourfly_core::models::{PriceOverview, SteamStoreDetails, SteamStorePlatforms};
 
-use crate::http::HttpClient;
+use crate::http::{HttpClient, parse_json};
 
 const STEAM_STORE_API_BASE: &str = "https://store.steampowered.com/api";
 
@@ -16,20 +16,7 @@ pub struct SteamStoreClient {
     http: HttpClient,
 }
 
-impl Default for SteamStoreClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl SteamStoreClient {
-    /// Create a new Steam Store client.
-    pub fn new() -> Self {
-        Self {
-            http: HttpClient::new(),
-        }
-    }
-
     /// Create a Steam Store client with a custom [`HttpClient`].
     pub fn with_http(http: HttpClient) -> Self {
         Self { http }
@@ -50,24 +37,18 @@ impl SteamStoreClient {
             )));
         }
 
-        let wrapper: AppDetailsResponse =
-            serde_json::from_slice(&response.body).map_err(|e| VapourflyError::ParseError {
-                path: vapourfly_core::error::SafePath::new(format!(
-                    "steam-store/appdetails/{app_id}.json"
-                )),
-                format: "JSON".into(),
-                reason: e.to_string(),
-            })?;
+        let context = format!("steam-store/appdetails/{app_id}.json");
+        let parse_error = |reason: String| VapourflyError::ParseError {
+            path: vapourfly_core::error::SafePath::new(context.as_str()),
+            format: "JSON".into(),
+            reason,
+        };
+
+        let wrapper: AppDetailsResponse = parse_json(&response.body, &context)?;
 
         let entry = wrapper
             .get(&app_id.to_string())
-            .ok_or_else(|| VapourflyError::ParseError {
-                path: vapourfly_core::error::SafePath::new(format!(
-                    "steam-store/appdetails/{app_id}.json"
-                )),
-                format: "JSON".into(),
-                reason: format!("missing key for app {app_id}"),
-            })?;
+            .ok_or_else(|| parse_error(format!("missing key for app {app_id}")))?;
 
         if !entry.success {
             return Err(VapourflyError::InvalidInput(format!(
@@ -78,13 +59,7 @@ impl SteamStoreClient {
         let data = entry
             .data
             .as_ref()
-            .ok_or_else(|| VapourflyError::ParseError {
-                path: vapourfly_core::error::SafePath::new(format!(
-                    "steam-store/appdetails/{app_id}.json"
-                )),
-                format: "JSON".into(),
-                reason: "success=true but data is null".into(),
-            })?;
+            .ok_or_else(|| parse_error("success=true but data is null".into()))?;
 
         Ok(SteamStoreDetails {
             app_id,
@@ -130,10 +105,6 @@ impl SteamStoreClient {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Deserialization helpers (Steam Store JSON shape)
-// ---------------------------------------------------------------------------
-
 type AppDetailsResponse = std::collections::HashMap<String, AppDetailsEntry>;
 
 #[derive(Debug, Deserialize)]
@@ -161,10 +132,12 @@ struct AppDetailsData {
     price_overview: Option<RawPriceOverview>,
 }
 
+/// A `{id, description}` pair from appdetails. Only the description is
+/// consumed — deliberately no `id` field, because the real API is
+/// inconsistent about its type (genre ids are strings, category ids are
+/// numbers) and parsing it broke every response.
 #[derive(Debug, Deserialize)]
 struct NameDescription {
-    #[allow(dead_code)]
-    id: u32,
     description: String,
 }
 
@@ -195,21 +168,11 @@ struct RawPriceOverview {
     discount_percent: u32,
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::http::{HttpResponse, MockBackend};
     use std::collections::HashMap;
-
-    #[test]
-    fn client_creation() {
-        let client = SteamStoreClient::new();
-        let _ = client;
-    }
 
     #[test]
     fn fetch_appdetails_parses_valid_response() {

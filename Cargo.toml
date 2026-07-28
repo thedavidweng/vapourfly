@@ -11,11 +11,9 @@ license = "MIT OR Apache-2.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
-anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1", features = ["v4", "serde"] }
 dirs = "6"
 walkdir = "2"
 sha2 = "0.11"

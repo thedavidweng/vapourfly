@@ -7,10 +7,6 @@
 use crate::error::{Result, VapourflyError};
 use crate::models::VdfNode;
 
-// ---------------------------------------------------------------------------
-// Tokenizer
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
     String(String),
@@ -99,10 +95,6 @@ fn tokenize(input: &str) -> Result<Vec<Token>> {
     Ok(tokens)
 }
 
-// ---------------------------------------------------------------------------
-// Parser (recursive descent over the token list)
-// ---------------------------------------------------------------------------
-
 /// Parse an object body: a sequence of key-value pairs until `}` or EOF.
 fn parse_object_body(tokens: &[Token], pos: &mut usize) -> Result<VdfNode> {
     let mut entries: Vec<(String, VdfNode)> = Vec::new();
@@ -151,10 +143,6 @@ fn parse_object_body(tokens: &[Token], pos: &mut usize) -> Result<VdfNode> {
 
     Ok(VdfNode::Object(entries))
 }
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
 
 /// Parse a Text VDF string into a [`VdfNode`].
 ///
@@ -235,10 +223,6 @@ fn push_escaped(out: &mut String, s: &str) {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

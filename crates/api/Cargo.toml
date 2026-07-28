@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
+default = ["hltb_scrape"]
 hltb_scrape = []
 
 [dependencies]
@@ -13,7 +14,6 @@ vapourfly-core = { path = "../core" }
 chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
 tracing = { workspace = true }
 ureq = { workspace = true }
 strsim = "0.11"

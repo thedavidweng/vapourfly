@@ -126,16 +126,6 @@ pub fn list_all(
     Ok(result)
 }
 
-/// Put using the platform default playlists directory.
-pub fn put_default(playlist: &PlaylistFile) -> Result<PathBuf> {
-    put(&crate::config::default_playlists_dir(), playlist)
-}
-
-/// Get using the platform default playlists directory.
-pub fn get_default(id: &str) -> Result<PlaylistFile> {
-    get(&crate::config::default_playlists_dir(), id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

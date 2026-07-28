@@ -15,10 +15,6 @@ use crate::models::{
     WritePlanDiff,
 };
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
 /// Generate a [`WritePlan`] by applying `operations` to a copy of `cloud`.
 ///
 /// 1. Reads the file at `target_path` and computes `before_sha256`.
@@ -33,16 +29,12 @@ pub fn generate_write_plan(
     operations: Vec<WriteOp>,
     target_path: PathBuf,
 ) -> Result<WritePlan> {
-    // 1. Read original bytes for before hash
     let original_bytes = std::fs::read(&target_path).map_err(|_| VapourflyError::FileNotFound {
         path: crate::SafePath::new(&target_path),
     })?;
     let before_sha256 = hex_sha256(&original_bytes);
 
-    // 2. Snapshot the original state for diff computation
     let original_snapshot = cloud.clone();
-
-    // 3. Apply operations to a mutable copy
     let mut modified = cloud.clone();
     let now_unix = chrono::Utc::now().timestamp();
 
@@ -59,7 +51,6 @@ pub fn generate_write_plan(
         }
     }
 
-    // 4. Serialise and compute after hash
     let after_json =
         serde_json::to_string_pretty(&modified).map_err(|e| VapourflyError::ParseError {
             path: crate::SafePath::new(&target_path),
@@ -68,7 +59,7 @@ pub fn generate_write_plan(
         })?;
     let after_sha256 = hex_sha256(after_json.as_bytes());
 
-    // 5. Validate round-trip
+    // Validate round-trip before the plan can ever be committed.
     let _: CloudStorageFile =
         serde_json::from_str(&after_json).map_err(|e| VapourflyError::ParseError {
             path: crate::SafePath::new(&target_path),
@@ -76,10 +67,9 @@ pub fn generate_write_plan(
             reason: format!("round-trip validation failed: {e}"),
         })?;
 
-    // 6. Generate diff
     let diff = compute_diff(&original_snapshot, &modified, &operations);
 
-    // 7. Backup/tmp paths are assigned at execute time with timestamp + sha.
+    // Backup/tmp paths are assigned at execute time with timestamp + sha.
     // Leaving them empty avoids lying to callers who print plan.backup_path.
     Ok(WritePlan {
         target_path,
@@ -115,7 +105,6 @@ pub fn upsert_collection(
 
     let outer_key = format!("user-collections.{collection_id}");
 
-    // Deduplicate and sort AppIDs
     let mut app_ids = app_ids;
     app_ids.sort_unstable();
     app_ids.dedup();
@@ -132,7 +121,6 @@ pub fn upsert_collection(
         VapourflyError::Internal(format!("failed to serialise CollectionValue: {e}"))
     })?;
 
-    // Find existing entry or create new one
     if let Some((_, entry)) = cloud.iter_mut().find(|(k, _)| k == &outer_key) {
         // Preserve existing metadata, update mutable fields
         entry.key = outer_key;
@@ -170,7 +158,6 @@ pub fn merge_hidden(
 ) -> Result<()> {
     let outer_key = "user-collections.hidden";
 
-    // Collect existing hidden AppIDs
     let mut merged: Vec<u32> = cloud
         .iter()
         .find(|(k, _)| k == outer_key)
@@ -184,7 +171,6 @@ pub fn merge_hidden(
     merged.sort_unstable();
     merged.dedup();
 
-    // Build value
     let cv = CollectionValue {
         id: "hidden".to_owned(),
         name: "Hidden".to_owned(),
@@ -220,10 +206,6 @@ pub fn merge_hidden(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Validation
-// ---------------------------------------------------------------------------
-
 /// Reject collection IDs that contain whitespace, slashes, backslashes,
 /// control characters, or `..` path traversal sequences.
 fn validate_collection_id(id: &str) -> Result<()> {
@@ -255,10 +237,6 @@ fn validate_collection_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Diff computation
-// ---------------------------------------------------------------------------
-
 fn compute_diff(
     before: &CloudStorageFile,
     _after: &CloudStorageFile,
@@ -266,11 +244,9 @@ fn compute_diff(
 ) -> WritePlanDiff {
     let mut diff = WritePlanDiff::default();
 
-    // Index the "before" state by outer key
     let before_map: BTreeMap<&str, &CloudEntry> =
         before.iter().map(|(k, e)| (k.as_str(), e)).collect();
 
-    // Walk operations to find which collections changed
     for op in operations {
         match op {
             WriteOp::UpsertCollection { id, added, removed } => {
@@ -397,10 +373,6 @@ mod hex {
         s
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

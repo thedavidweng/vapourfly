@@ -26,10 +26,6 @@ pub struct JunkPreviewResult {
     pub mode: JunkMode,
 }
 
-// ---------------------------------------------------------------------------
-// Loading overrides from disk
-// ---------------------------------------------------------------------------
-
 /// Load a [`ManualOverrides`] file from disk.  The file must be valid JSON
 /// matching the struct layout.
 pub fn load_manual_overrides(path: &Path) -> Result<ManualOverrides> {
@@ -74,10 +70,6 @@ pub fn load_default_manual_overrides() -> ManualOverrides {
     load_manual_overrides_or_default(&crate::config::default_manual_overrides_path())
 }
 
-// ---------------------------------------------------------------------------
-// Single-game evaluation
-// ---------------------------------------------------------------------------
-
 /// Evaluate a single game against the junk rules and return a decision.
 ///
 /// This does **not** apply force-include/exclude overrides — that is done by
@@ -92,7 +84,6 @@ fn evaluate_game(
     let mut missing: Vec<JunkSignalKind> = Vec::new();
     let mut available: usize = 0;
 
-    // -- Playtime (required signal) ------------------------------------------
     match game.playtime_minutes {
         Some(minutes) => {
             available += 1;
@@ -103,7 +94,6 @@ fn evaluate_game(
         None => missing.push(JunkSignalKind::Playtime),
     }
 
-    // -- Completion time (HLTB) ---------------------------------------------
     match signal::effective_completion_time(game, overrides) {
         Some((seconds, source)) => {
             available += 1;
@@ -114,7 +104,6 @@ fn evaluate_game(
         None => missing.push(JunkSignalKind::CompletionTime),
     }
 
-    // -- Rating -------------------------------------------------------------
     match signal::effective_rating(game, Some(&overrides.manual_rating)) {
         Some((rating_0_5, source)) => {
             available += 1;
@@ -125,10 +114,9 @@ fn evaluate_game(
         None => missing.push(JunkSignalKind::Rating),
     }
 
-    // -- Confidence: fraction of possible signals that are available ----------
+    // Confidence: fraction of the three possible signals that are available.
     let confidence = available as f32 / 3.0;
 
-    // -- Classify matched signals --------------------------------------------
     let playtime_matched = matched
         .iter()
         .any(|s| matches!(s, JunkSignal::LowPlaytime { .. }));
@@ -138,26 +126,18 @@ fn evaluate_game(
         .filter(|s| !matches!(s, JunkSignal::LowPlaytime { .. }))
         .count();
 
-    // -- Apply mode logic ----------------------------------------------------
     let is_junk = match mode {
         JunkMode::Default => {
-            // Playtime must be low AND at least one other signal must be low,
-            // AND we need at least `min_available_signals` data points.
             playtime_matched && other_matched_count >= 1 && available >= rules.min_available_signals
         }
+        // Strict: every available signal must indicate junk, and require at
+        // least `min_available_signals` so low playtime alone is not enough.
         JunkMode::Strict => {
-            // Every available signal must indicate junk.  Additionally require
-            // at least `min_available_signals` so that a single low-playtime
-            // result alone is not enough.
             playtime_matched
                 && matched.len() == available
                 && available >= rules.min_available_signals
         }
-        JunkMode::Aggressive => {
-            // Playtime must be low and at least one other available signal
-            // must be low.  No minimum signal count.
-            playtime_matched && other_matched_count >= 1
-        }
+        JunkMode::Aggressive => playtime_matched && other_matched_count >= 1,
     };
 
     JunkDecision {
@@ -170,10 +150,6 @@ fn evaluate_game(
         mode: mode.clone(),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Public entry point
-// ---------------------------------------------------------------------------
 
 /// Evaluate every game against the junk rules and return a decision per game.
 ///
@@ -193,16 +169,12 @@ pub fn evaluate_junk(
         .iter()
         .map(|game| {
             let mut decision = evaluate_game(game, rules, mode, overrides);
-
-            // Force-include: never junk, regardless of signals.
             if overrides.force_include.contains(&game.app_id) {
                 decision.is_junk = false;
             }
-            // Force-exclude: always junk, regardless of signals.
             if overrides.force_exclude.contains(&game.app_id) {
                 decision.is_junk = true;
             }
-
             decision
         })
         .collect()
@@ -225,10 +197,6 @@ pub fn apply_junk_flags(
     }
     decisions
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

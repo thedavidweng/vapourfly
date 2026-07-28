@@ -7,10 +7,10 @@
 
 use serde::Deserialize;
 
-use vapourfly_core::error::{Result, VapourflyError};
+use vapourfly_core::error::Result;
 use vapourfly_core::models::{ProtonDbData, ProtonTier};
 
-use crate::http::HttpClient;
+use crate::http::{HttpClient, parse_json};
 
 const PROTONDB_API_BASE: &str = "https://www.protondb.com/api/v1/reports/summaries";
 
@@ -19,20 +19,7 @@ pub struct ProtonDbClient {
     http: HttpClient,
 }
 
-impl Default for ProtonDbClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ProtonDbClient {
-    /// Create a new ProtonDB client.
-    pub fn new() -> Self {
-        Self {
-            http: HttpClient::new(),
-        }
-    }
-
     /// Create a ProtonDB client with a custom [`HttpClient`].
     pub fn with_http(http: HttpClient) -> Self {
         Self { http }
@@ -56,11 +43,7 @@ impl ProtonDbClient {
         }
 
         let summary: ProtonDbSummary =
-            serde_json::from_slice(&response.body).map_err(|e| VapourflyError::ParseError {
-                path: vapourfly_core::error::SafePath::new(format!("protondb/{app_id}.json")),
-                format: "JSON".into(),
-                reason: e.to_string(),
-            })?;
+            parse_json(&response.body, &format!("protondb/{app_id}.json"))?;
 
         Ok(ProtonDbData {
             tier: summary.tier(),
@@ -77,8 +60,6 @@ struct ProtonDbSummary {
     confidence: String,
     #[serde(default)]
     score: Option<f32>,
-    #[allow(dead_code)]
-    total: Option<u32>,
 }
 
 impl ProtonDbSummary {
@@ -94,10 +75,6 @@ impl ProtonDbSummary {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

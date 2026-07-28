@@ -35,7 +35,6 @@ pub fn parse_localconfig(path: &Path) -> Result<BTreeMap<u32, LocalAppState>> {
 
     let root = parse_text_vdf(&content)?;
 
-    // Navigate: UserLocalConfigStore / Software / Valve / Steam / apps
     let apps_node =
         match root.child_object(&["UserLocalConfigStore", "Software", "Valve", "Steam", "apps"]) {
             Some(node) => node,
@@ -91,10 +90,9 @@ fn parse_app_fields(app_id: u32, fields: &[(String, VdfNode)]) -> LocalAppState 
 
     for (key, value) in fields {
         if let VdfNode::String(s) = value {
-            // Store all fields in raw_fields (original case).
+            // raw_fields keeps every field in its original case.
             state.raw_fields.insert(key.clone(), s.clone());
 
-            // Extract known fields (case-insensitive).
             let key_lower = key.to_lowercase();
             match key_lower.as_str() {
                 FIELD_PLAYTIME => {

@@ -55,7 +55,7 @@ pub fn rank_discover_picks(games: &[Game], options: &DiscoverOptions) -> Vec<Dis
 
     let mut picks: Vec<DiscoverPick> = games
         .iter()
-        .filter(|g| is_discover_candidate(g))
+        .filter(|g| crate::eligibility::is_discover_eligible(g))
         .filter_map(|game| {
             let (score, reasons) = score_candidate(game, &taste_vector, &seed_similar);
             if score > 0.0 {
@@ -142,10 +142,6 @@ fn seed_similar_ids(games: &[Game], seed_app_id: Option<u32>) -> HashSet<u64> {
         seed_similar.extend(igdb.similar_game_ids.iter().copied());
     }
     seed_similar
-}
-
-fn is_discover_candidate(game: &Game) -> bool {
-    crate::eligibility::is_discover_eligible(game)
 }
 
 fn score_candidate(
