@@ -115,8 +115,10 @@ impl IgdbClient {
             return Ok(None);
         }
 
-        let entries: Vec<ExternalGameEntry> =
-            parse_json(&response.body, &format!("igdb/external_games/{app_id}.json"))?;
+        let entries: Vec<ExternalGameEntry> = parse_json(
+            &response.body,
+            &format!("igdb/external_games/{app_id}.json"),
+        )?;
 
         let Some(entry) = entries.into_iter().next() else {
             return Ok(None);

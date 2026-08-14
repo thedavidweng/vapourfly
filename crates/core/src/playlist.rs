@@ -31,8 +31,7 @@ use std::path::Path;
 use crate::error::{Result, SafePath, VapourflyError};
 use crate::models::{
     CompletionPrice, ControllerSupport, Game, Money, PlaylistContent, PlaylistFile,
-    PlaylistMatchReport, PlaylistRule, PriceCoverage, SteamStoreDetails,
-    VAPOURFLY_PLAYLIST_SCHEMA,
+    PlaylistMatchReport, PlaylistRule, PriceCoverage, SteamStoreDetails, VAPOURFLY_PLAYLIST_SCHEMA,
 };
 use crate::signal;
 
@@ -206,8 +205,9 @@ fn eval(rule: &PlaylistRule, game: &Game) -> bool {
         PlaylistRule::PlaytimeBetween { min, max } => game
             .playtime_minutes
             .is_some_and(|minutes| minutes >= *min && minutes <= *max),
-        PlaylistRule::RatingAtLeast { rating_0_5 } => signal::effective_rating(game, None)
-            .is_some_and(|(rating, _)| rating >= *rating_0_5),
+        PlaylistRule::RatingAtLeast { rating_0_5 } => {
+            signal::effective_rating(game, None).is_some_and(|(rating, _)| rating >= *rating_0_5)
+        }
         PlaylistRule::HasGenre { genre } => {
             let lower = genre.to_lowercase();
             game.igdb
@@ -223,10 +223,9 @@ fn eval(rule: &PlaylistRule, game: &Game) -> bool {
             game.rawg
                 .as_ref()
                 .is_some_and(|r| any_eq_ci(&r.tags, &lower))
-                || game
-                    .igdb
-                    .as_ref()
-                    .is_some_and(|ig| any_eq_ci(&ig.keywords, &lower) || any_eq_ci(&ig.themes, &lower))
+                || game.igdb.as_ref().is_some_and(|ig| {
+                    any_eq_ci(&ig.keywords, &lower) || any_eq_ci(&ig.themes, &lower)
+                })
                 || any_eq_ci(&game.steam_collections, &lower)
         }
         PlaylistRule::Installed => game.installed,

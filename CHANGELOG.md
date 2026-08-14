@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-14
+
+First packaged release after the v0.1.0 source drop. Breaking: share-code
+format, removed playlist-radio / old mood template, hydration is cache-first
+(ADR-0009), and the desktop GUI is GPUI rather than egui.
+
 ### Added
 
 #### Playlist sharing, generators, and moods
@@ -19,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### GUI redesign (ADR-0006)
 
-- Dual-theme design-system shell (light neutral / dark cool) with persisted theme toggle, monochrome line icons, and the sidebar IA Discover, Library, Recommendations, Playlists, Collections + Data Sources, Settings.
+- **GPUI desktop shell** (gpui 0.2 + gpui-component 0.5) replacing egui/eframe. Dual-theme design-system chrome (light neutral / dark cool) with persisted theme toggle, monochrome line icons, and the sidebar IA Discover, Library, Recommendations, Playlists, Collections + Data Sources, Settings.
 - Library: responsive card grid with deterministic illustrated offline covers, search + scope segments (All/Installed/Unplayed/Hidden), labelled Deck/Controller/playtime/genre/tag/sort filters, editorial category chips, advanced ProtonDB/HLTB/exclusion controls, 48-per-page **Load more** pagination, insights rail, skeleton loading cards, and card actions (Discover similar, Copy AppID, Open Steam Store).
 - Junk moved into a Library toolbar panel: dense preview table with per-row selection, bulk select, summary rail (threshold, HLTB coverage, focus reclaimed); apply/hide operate on the selected subset only.
 - Recommendations: Session Planner (minutes, count, quick presets, shuffle seed, exclude-collections picker, Deck/installed toggles), top-3 highlight cards with covers and match-percent badges, explanation rail, and a "Why this pick?" panel.
@@ -29,12 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Collections: card grid with poster collages and an **Export all** action (native save dialog).
 - `--ui-demo` mode: fully isolated demo data (no real Steam I/O, no CDN fetches, deterministic placeholder art).
 - Background job runner: junk preview, recommendations, discover, dynamic, mood, and playlist match all run off the UI thread with staleness-checked job tickets.
+- GitHub Release workflow: tag `v*` builds CLI + GUI archives for macOS (arm64/x86_64), Linux x86_64, and Windows x86_64.
 
 #### CLI
 
 - `vapourfly recommend --exclude-collection <NAME>` (repeatable) — exclude games in specific Steam collections from recommendations.
 - `vapourfly settings show [--format json]` — display resolved Vapourfly configuration and the config file path.
-- `vapourfly settings set <field> <value>` — write a config field to `config.toml` (steam_dir, account, cc, lang, backup_retention_count).
+- `vapourfly settings set <field> <value>` — write a config field to `config.toml` (`steam_dir`, `account`, `cc`, `lang`, `backup_retention_count`, `steam_api_key`).
 - `vapourfly settings unset <field>` — remove a config field from `config.toml`.
 - `vapourfly playlist create-rules --id --name --description --rules <file>` — create and store a rule-based playlist from a JSON rules array or a full playlist file.
 - `vapourfly playlist match` and `vapourfly playlist import` now print the completion price line (with a hint when no Steam Store price is cached).
@@ -83,7 +90,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Environment variables (`VAPOURFLY_CC`, `VAPOURFLY_LANG`) now override config-file values, matching the documented CLI > env > file > default precedence.
 - `config::load_config_table_at` now returns an error when the config file exists but cannot be parsed, instead of silently replacing it with an empty table. A missing file still yields an empty table so first-run creation works.
 - `steam::appinfo::lookup_appinfo_names` no longer takes a generic `BuildHasher` parameter; it accepts a standard `HashSet<u32>`. No caller used a custom hasher.
-- Dependency refresh: egui/eframe 0.35 and workspace dependency bumps.
+- Dependency refresh: GPUI / gpui-component and workspace crates. The egui/eframe 0.35 bump from the previous cycle is superseded.
 
 #### GUI
 
@@ -100,6 +107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`playlist-radio` dynamic template** (breaking, ADR-0005): `collections dynamic playlist-radio` and the corresponding GUI entry are gone; Discover with a seed AppID covers every playlist-radio scenario.
 - The old tag/genre-filter `mood` dynamic template (ADR-0004), replaced by Editorial Moods with curated hidden criteria.
+- egui/eframe desktop implementation, replaced by GPUI.
 
 ## [0.1.0] - 2026-06-26
 
@@ -181,3 +189,7 @@ Initial release of Vapourfly — a local-first CLI/GUI tool for managing Steam g
 - GUI cache refresh is available from Data Sources; scan enrichment output remains CLI-only.
 - IGDB enrichment requires credentials; games without credentials fall back to cache.
 - `cargo deny check` requires `cargo-deny` installed separately.
+
+[Unreleased]: https://github.com/thedavidweng/vapourfly/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/thedavidweng/vapourfly/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/thedavidweng/vapourfly/releases/tag/v0.1.0

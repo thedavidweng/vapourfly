@@ -14,3 +14,6 @@ fixture-scan:
 
 release-check: check-all
     cargo deny check
+
+release-build:
+    cargo build --release -p vapourfly-cli -p vapourfly-gui

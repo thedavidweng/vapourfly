@@ -47,11 +47,16 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Run the optional HLTB feature check when touching external API or cache code:
+HLTB scraping is on by default. When touching external API or cache code, also
+check the build with the scrape client disabled:
 
 ```bash
-cargo check -p vapourfly-api --features hltb_scrape
+cargo check -p vapourfly-api --no-default-features
 ```
+
+Domain language lives in [CONTEXT.md](CONTEXT.md). Architecture decisions live
+in [docs/adr/](docs/adr/). Update [docs/FEATURES.md](docs/FEATURES.md) and
+[docs/CLI.md](docs/CLI.md) when a user-facing contract changes.
 
 ## Pull Request Guidelines
 

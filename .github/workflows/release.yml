@@ -1,0 +1,121 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  VAPOURFLY_CI_TOOLCHAIN: "1.96"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: vapourfly-macos-aarch64
+          - os: macos-13
+            artifact: vapourfly-macos-x86_64
+          - os: ubuntu-latest
+            artifact: vapourfly-linux-x86_64
+          - os: windows-latest
+            artifact: vapourfly-windows-x86_64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux GUI build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake clang g++ pkg-config \
+            libxkbcommon-dev libwayland-dev \
+            libx11-dev libxrandr-dev libxi-dev \
+            libxcursor-dev libxinerama-dev \
+            libgl1-mesa-dev libasound2-dev \
+            libssl-dev
+
+      - name: Install Rust ${{ env.VAPOURFLY_CI_TOOLCHAIN }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.VAPOURFLY_CI_TOOLCHAIN }}
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-release-
+
+      - name: Build release binaries
+        run: cargo +${{ env.VAPOURFLY_CI_TOOLCHAIN }} build --release -p vapourfly-cli -p vapourfly-gui
+
+      - name: Package Unix archive
+        if: runner.os != 'Windows'
+        run: |
+          stage="${{ matrix.artifact }}"
+          mkdir -p "$stage"
+          cp target/release/vapourfly "$stage/"
+          cp target/release/vapourfly-gui "$stage/"
+          cp README.md LICENSE-MIT LICENSE-APACHE "$stage/"
+          tar -czf "${stage}.tar.gz" "$stage"
+
+      - name: Package Windows zip
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $stage = "${{ matrix.artifact }}"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item target/release/vapourfly.exe $stage/
+          Copy-Item target/release/vapourfly-gui.exe $stage/
+          Copy-Item README.md,LICENSE-MIT,LICENSE-APACHE $stage/
+          Compress-Archive -Path $stage -DestinationPath "$stage.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.tar.gz
+            ${{ matrix.artifact }}.zip
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          shopt -s nullglob
+          files=(dist/*.tar.gz dist/*.zip)
+          notes=$(awk '
+            /^## \[0\./ { if (found) exit; found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md)
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "$notes" \
+            "${files[@]}"

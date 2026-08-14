@@ -38,7 +38,7 @@ Reports:
 - Number of library folders
 - Cloud storage availability
 - Cache root location
-- IGDB and RAWG credential status
+- IGDB, RAWG, and Steam Web API credential status (keys are never printed)
 
 ### `vapourfly accounts list`
 
@@ -69,8 +69,8 @@ vapourfly scan --enrich --format json
 **JSON output** includes: `app_id`, `name`, `installed`, `playtime_minutes`, `playtime_2wks_minutes`, `collections`, `is_hidden`, plus a `warnings` array.
 
 `--enrich` uses IGDB, RAWG, ProtonDB, PCGW, HLTB, and Steam Store sources. It
-uses the local cache and fetches stale or missing records unless global
-`--offline` is set.
+populates the local cache (and applies cached entries, including stale ones)
+unless global `--offline` is set.
 
 ### `vapourfly collections`
 
@@ -97,10 +97,10 @@ vapourfly collections mood quick-round --out quick-round.json
 
 Hidden collections are reported separately as a count.
 
-Dynamic templates and Editorial Moods hydrate external metadata before
-compiling. When not offline, missing cache entries are fetched on demand
-(ADR-0002); fetch failures degrade gracefully. Use `--offline` to force
-cache-only behaviour.
+Dynamic templates and Editorial Moods hydrate from the local cache before
+compiling (ADR-0009). Fetch failures degrade gracefully. Use `--offline` to
+block network entirely. Populate missing cache entries with `cache refresh`
+or `scan --enrich`.
 
 ### `vapourfly junk`
 
@@ -147,10 +147,9 @@ Cannot use `--strict` and `--aggressive` together.
 
 Each decision includes a confidence score (fraction of possible signals for which data was available) and lists which signals matched and which were missing.
 
-Current CLI junk commands scan the library, hydrate external metadata (lazy
-network fetch when not offline — ADR-0002), and then evaluate junk rules.
-Fetch failures degrade gracefully; use `--offline` to force cache-only
-hydration.
+Current CLI junk commands scan the library, hydrate from the local cache
+(ADR-0009), and then evaluate junk rules. Fetch failures degrade gracefully;
+use `--offline` to block network entirely.
 
 ### `vapourfly recommend`
 
@@ -179,10 +178,9 @@ vapourfly recommend --minutes 120 --count 5 --to-collection --confirm
 
 **Output columns (table):** App ID, Name, Score, Reasons.
 
-Current CLI recommendations scan the library, hydrate external metadata (lazy
-network fetch when not offline — ADR-0002), annotate junk flags, and then
-score games. Fetch failures degrade gracefully; use `--offline` to force
-cache-only hydration.
+Current CLI recommendations scan the library, hydrate from the local cache
+(ADR-0009), annotate junk flags, and then score games. Fetch failures degrade
+gracefully; use `--offline` to block network entirely.
 
 ### `vapourfly playlist`
 
@@ -230,11 +228,11 @@ Available rule operators: `ProtonAtLeast`, `HltbMaxMinutes`,
 (`[{"op":"Installed"}, ...]`) or a full Vapourfly playlist JSON file (the rules
 are extracted from `content.value.rules`).
 
-Playlist import, match, sync, and discover workflows hydrate external metadata
-before evaluating rules or similarity. When not offline, missing cache entries
-are fetched on demand (ADR-0002); fetch failures degrade gracefully. Rules
-that depend on external metadata only match when the relevant data is
-available.
+Playlist import, match, sync, and discover workflows hydrate from the local
+cache before evaluating rules or similarity (ADR-0009). Playlist match may
+fetch Steam Store prices for missing entries unless `--offline` is set. Fetch
+failures degrade gracefully. Rules that depend on external metadata only
+match when the relevant data is available.
 
 ### `vapourfly sync`
 
@@ -249,8 +247,8 @@ vapourfly sync collection my-playlist-id --confirm
 ```
 
 The playlist ID is slugified to produce the Steam collection ID. For rule-based playlists, the rules are evaluated against the current library to resolve matching AppIDs.
-Rule-based sync hydrates external metadata before resolving matching AppIDs
-(lazy network fetch when not offline — ADR-0002).
+Rule-based sync hydrates from the local cache before resolving matching AppIDs
+(ADR-0009).
 
 ### `vapourfly cache`
 
@@ -384,4 +382,5 @@ Most commands that produce tabular output support `--format`:
 | `VAPOURFLY_IGDB_CLIENT_ID` | IGDB / Twitch client ID |
 | `VAPOURFLY_IGDB_CLIENT_SECRET` | IGDB / Twitch client secret |
 | `VAPOURFLY_RAWG_KEY` | RAWG API key |
+| `VAPOURFLY_STEAM_API_KEY` | Steam Web API key for owned-game name resolution (overrides `steam_api_key` in config) |
 | `RUST_LOG` | Override log level (default: `warn`, or `debug` with `--verbose`) |

@@ -2369,7 +2369,9 @@ mod tests {
     #[test]
     fn playlist_match_succeeds_with_custom_steam_dir() {
         // Use fixtures as a custom steam_dir (same structure).
-        let Some(mut cli) = fixtures_cli() else { return };
+        let Some(mut cli) = fixtures_cli() else {
+            return;
+        };
         cli.steam_dir = cli.fixtures.take();
 
         let pf = test_manual_playlist();

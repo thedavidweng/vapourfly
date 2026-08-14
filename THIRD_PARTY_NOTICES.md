@@ -32,7 +32,7 @@ Used for: Cross-platform Steam directory detection, appinfo.vdf binary format, l
 Source: [TinyWiiBackupManager](https://github.com/mq1/TinyWiiBackupManager)
 License: GPL-3.0
 Reference files: Rust workspace structure, game model, HTTP client, UI patterns
-Used for: Rust workspace architecture patterns (core/gui separation), egui state management, ureq HTTP client patterns, portable data directory design
+Used for: Rust workspace architecture patterns (core/gui separation), GUI state management, ureq HTTP client patterns, portable data directory design
 
 ## Reference vs. Production
 

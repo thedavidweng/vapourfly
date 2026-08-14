@@ -6,7 +6,7 @@ document covers the interactive flows that require a running GUI.
 
 ## Prerequisites
 
-- Build the GUI: `cargo build -p vapourfly-gui`
+- Build the GUI: `cargo build -p vapourfly-gui` (GPUI + gpui-component desktop shell)
 - Have fixture data available: `data/fixtures/steam_minimal/`
 - For visual review without a real Steam account, launch in demo mode:
   `cargo run -p vapourfly-gui -- --ui-demo`
@@ -39,7 +39,7 @@ Sidebar lists **only**:
 - Junk — open from Library toolbar (`Junk…`)
 - Backups — open from Settings → Backups section
 
-Shell defaults to the light desktop token theme (warm canvas, white cards, orchid accent) and can switch to the dark design-system palette from the top chrome (macOS-style top bar + monochrome line icons in both modes).
+Shell defaults to the light desktop token theme (warm canvas, white cards, orchid accent) and can switch to the dark design-system palette from the top chrome. The shipped desktop app is GPUI + [gpui-component](https://github.com/longbridge/gpui-component); library-scale lists use a virtualized `uniform_list`.
 
 ## Test Steps
 
@@ -105,7 +105,7 @@ Shell defaults to the light desktop token theme (warm canvas, white cards, orchi
 8. Clear Seed, preview again, and confirm the result set updates without errors.
 9. Enter a non-numeric value in Available minutes and verify the UI shows a validation error instead of silently using a default.
 10. Toggle Deck mode and Installed only, preview again, and confirm the result set updates without errors.
-11. Click **Write to vapourfly-picks**.
+11. Click **Save as Steam collection**.
 12. Verify the dry-run diff targets the `vapourfly-picks` collection and requires confirmation before writing.
 
 ### 5. Playlists
@@ -151,7 +151,7 @@ Shell defaults to the light desktop token theme (warm canvas, white cards, orchi
 ### 6. Discover
 
 1. Navigate to **Discover** via the left sidebar (not via Playlists).
-2. Confirm the page shows the "Tonight, what should I play?" headline with a seed AppID input, pick-count presets (10/20/40), and a **Generate** control.
+2. Confirm the page shows the "Find similar games" headline with a seed game-name/AppID input, pick-count presets (10/20/40), and a **Generate** control.
 3. Set seed AppID and pick count, click **Generate**, and verify the highest-scored pick renders as a **Top recommendation hero card** (artwork, metadata chips, reason pills) with the remaining picks in a "Picked for you" card row; the playlist is stored under stable id `discover`.
 4. Clear seed AppID, regenerate, and verify the taste-based playlist **overwrites** the same `discover` slot (no second playlist id).
 5. Click **Open in Playlists** and verify the generated playlist is loaded for edit/share/sync. To keep a long-term copy, change id/name and Save again.

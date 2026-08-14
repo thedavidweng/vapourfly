@@ -43,7 +43,7 @@
 //! assert_eq!(slot.take_if(t2), Some(Ok(200)));
 //! ```
 
-use std::sync::Mutex;
+use std::sync::{Arc, Condvar, Mutex};
 
 /// Identifies the kind of background workflow.
 ///
@@ -90,6 +90,53 @@ pub struct JobTicket {
 /// Stable 64-bit fingerprint of a job's input string, for stale-input
 /// detection. Two jobs with the same logical inputs produce the same
 /// fingerprint; a changed chooser or parameter produces a different one.
+/// Wakes the GPUI entity after a background [`JobSlot`] stores a result.
+///
+/// `signal` is `Send + Sync` so worker threads can call it. The UI task
+/// blocks on [`JobWake::wait`] (off the frame) then `tick()` + `notify`.
+#[derive(Clone)]
+pub struct JobWake {
+    inner: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl Default for JobWake {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl JobWake {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new((Mutex::new(false), Condvar::new())),
+        }
+    }
+
+    pub fn signal(&self) {
+        let (lock, cvar) = &*self.inner;
+        let mut ready = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *ready = true;
+        cvar.notify_one();
+    }
+
+    /// Block until [`JobWake::signal`] has been called at least once since
+    /// the last wait. Extra signals coalesce.
+    pub fn wait(&self) {
+        let (lock, cvar) = &*self.inner;
+        let mut ready = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !*ready {
+            ready = cvar
+                .wait(ready)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        *ready = false;
+    }
+}
+
 pub fn fingerprint_u64(s: &str) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -148,13 +195,21 @@ pub struct JobSlot<T> {
     inner: Mutex<Option<(JobTicket, Result<T, String>)>>,
 }
 
-impl<T: Send + 'static> JobSlot<T> {
+impl<T> JobSlot<T> {
     pub const fn new() -> Self {
         Self {
             inner: Mutex::new(None),
         }
     }
+}
 
+impl<T> Default for JobSlot<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Send + 'static> JobSlot<T> {
     /// Store a result tagged with the given [`JobTicket`].
     ///
     /// **Race-safe:** if the slot already holds a result with a **higher**
@@ -339,5 +394,40 @@ mod tests {
         assert_eq!(slot.take_if(t_new), Some(Ok(42)));
         // The old result was discarded.
         assert!(slot.take_if(t_old).is_none());
+    }
+
+    #[test]
+    fn job_wake_signal_unblocks_waiter() {
+        let wake = JobWake::new();
+        let waiter = wake.clone();
+        let done = std::thread::spawn(move || {
+            waiter.wait();
+            true
+        });
+        wake.signal();
+        assert!(done.join().unwrap());
+    }
+
+    #[test]
+    fn job_wake_signal_before_wait_does_not_deadlock() {
+        let wake = JobWake::new();
+        wake.signal();
+        wake.wait();
+    }
+
+    #[test]
+    fn job_wake_coalesces_extra_signals() {
+        let wake = JobWake::new();
+        wake.signal();
+        wake.signal();
+        wake.wait();
+        // A second wait must block until another signal — spawn one after a tick.
+        let waiter = wake.clone();
+        let done = std::thread::spawn(move || {
+            waiter.wait();
+            1
+        });
+        wake.signal();
+        assert_eq!(done.join().unwrap(), 1);
     }
 }

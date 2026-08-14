@@ -23,10 +23,8 @@ toml = "1"
 ureq = "3"
 winreg = "0.56"
 serial_test = "3"
-eframe = { version = "0.35", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "x11"] }
-egui = "0.35"
-egui_extras = { version = "0.35", features = ["http", "image"] }
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+gpui = "0.2.2"
+gpui-component = "0.5.1"
 rfd = "0.15"
 base64 = "0.22"
 flate2 = "1"
@@ -39,7 +37,7 @@ strip = true
 
 # Keep the released wayland-scanner 0.31.10 code generation API, while
 # backporting its quick-xml 0.41 security update. Newer unreleased scanner
-# revisions break the released Wayland runtime crates used by eframe.
+# revisions break the released Wayland runtime crates used on Linux.
 [patch.crates-io]
 wayland-scanner = { path = "vendor/wayland-scanner" }
 

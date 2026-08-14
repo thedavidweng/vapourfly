@@ -9,9 +9,10 @@ Vapourfly enriches your Steam library with metadata from external data sources. 
 | **IGDB** | Client ID + Secret | Genres, themes, keywords, ratings (0-100), time-to-beat, similar games | Uses Twitch OAuth. Data is authoritative for game metadata. |
 | **RAWG** | API key | Genres, tags, ratings (0-5), store availability | Large database with community-sourced data. |
 | **ProtonDB** | None | Compatibility tier (Borked/Native/Platinum/Gold/Silver/Bronze), confidence, score | Community-reported Linux/Steam Deck compatibility. |
-| **PCGamingWiki** | None | Controller support (Full/Partial/None), Steam Deck notes, fixes URL | MediaWiki-based, queried via the Cargo API. |
-| **HLTB** | None | Main story time, main + extras time, completionist time | Optional feature gate (`hltb_scrape`). Default build returns no data. |
+| **PCGamingWiki** | None | Controller support (Full/Partial/None), fixes URL | MediaWiki Cargo API. Steam Deck notes come from ProtonDB. |
+| **HLTB** | None | Main story time, main + extras time, completionist time | Enabled in the default build (`hltb_scrape`). |
 | **Steam Store** | None | App name, type, description, developers, publishers, genres, categories, price, platforms, Metacritic score | Public Steam Store API. |
+| **Steam Web API** | User-created key | Owned-game AppID → name map | One cached `GetOwnedGames` request. Optional; names otherwise backfill from Steam Store. |
 
 ## IGDB
 
@@ -101,17 +102,18 @@ ProtonDB data is useful for Steam Deck and Linux compatibility filtering:
 ### Data Used
 
 - **Controller Support** -- `Full`, `Partial`, `None`, or `Unknown`
-- **Steam Deck Notes** -- Specific notes about Steam Deck compatibility
 - **Fixes URL** -- Link to the PCGW page with known fixes and workarounds
+
+Steam Deck compatibility is taken from ProtonDB, not PCGW.
 
 ## HLTB (HowLongToBeat)
 
-**Source:** `howlongtobeat.com`
+**Source:** `howlongtobeat.com` (`bleed` endpoints)
 **Authentication:** None
-**Feature Gate:** `hltb_scrape` (not enabled by default)
+**Feature:** `hltb_scrape` (enabled by default; omit with `--no-default-features`)
 
 Time-to-beat data is also available through IGDB when IGDB credentials are
-configured; that path does not require the `hltb_scrape` feature gate.
+configured.
 
 ### Data Used
 
@@ -146,6 +148,32 @@ Junk detection uses the main story time to identify short games that the user ha
 - **Price Overview** -- Current price, discount percentage
 - **Coming Soon** -- Whether the game is not yet released
 
+## Steam Web API
+
+**Endpoint:** `https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/`
+**Authentication:** User-created Steam Web API key
+
+Used only to resolve `"App <id>"` placeholder names when `appinfo.vdf` is
+missing (common on macOS). One request, cached for one day.
+
+### Setup
+
+1. Create a key at [steamcommunity.com/dev/apikey](https://steamcommunity.com/dev/apikey) (any domain works, e.g. `localhost`).
+2. Store it locally — never share it:
+
+```bash
+vapourfly settings set steam_api_key <your-key>
+# or
+export VAPOURFLY_STEAM_API_KEY="your-key"
+```
+
+The environment variable overrides the config file. `settings show` and
+`doctor` print the key masked. Per Valve's terms the key is personal and is
+never bundled with the app.
+
+Without a key, names backfill progressively from Steam Store hydration.
+Name-keyed sources (HLTB, RAWG) skip placeholder-named games.
+
 ## Caching
 
 All API responses are cached locally under the Vapourfly cache directory (reported by `vapourfly doctor`). The cache:
@@ -168,13 +196,14 @@ vapourfly sources status
 
 Cache refresh is blocked in `--offline` mode.
 
-Cache refresh stores source responses locally. Junk, Recommend, Playlist Match,
-Playlist Sync, Discover, Editorial Mood, and Dynamic Template workflows run
-through `workflow::prepare`, which **lazy-fetches missing cache entries over
-the network by default** (ADR-0002). Pass `--offline` to force cache-only
-hydration. Per-game fetch failures degrade gracefully — the workflow always
-returns a result. Use `scan --enrich --format json` when you need to inspect
-enriched game data from the CLI without running a full evaluation workflow.
+`workflow::prepare` (junk, recommend, playlist, discover, editorial mood,
+dynamic template, GUI library scan) hydrates from this cache only — including
+stale entries — plus at most one bounded name-map request when a Steam Web
+API key is configured (ADR-0009). Playlist match may fetch missing-entry
+Steam Store prices on demand. Populate missing or stale entries with
+`cache refresh`, `scan --enrich`, or the GUI's background populate job.
+`--offline` blocks every network call. Per-game fetch failures degrade
+gracefully — the workflow always returns a result.
 
 ## Data Priority
 
@@ -183,7 +212,7 @@ When multiple sources provide the same data, Vapourfly uses this priority order:
 - **Ratings:** RAWG (native 0-5) > IGDB (0-100, converted to 0-5) > Manual override
 - **Genres:** IGDB + RAWG (union of both)
 - **Tags:** RAWG tags + IGDB keywords + IGDB themes + Steam collections (union)
-- **Completion time:** Manual override > HLTB (if feature enabled) > IGDB time-to-beat
+- **Completion time:** Manual override > HLTB (if the scrape client is compiled in) > IGDB time-to-beat
 
 ## Graceful Degradation
 
@@ -192,4 +221,5 @@ Vapourfly works without any API credentials. When external data is unavailable:
 - Junk detection uses only Steam playtime data (confidence score reflects missing signals)
 - Recommendation scoring falls back to local metadata
 - Playlist rules that depend on missing data fail closed (positive predicates return false, negated predicates pass through)
+- Names stay as `"App <id>"` until Steam Store or the owned-games map fills them
 - `vapourfly doctor` and `vapourfly sources status` report which credentials are missing

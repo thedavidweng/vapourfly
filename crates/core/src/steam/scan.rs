@@ -145,7 +145,6 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
         }
     };
 
-
     // Build collection membership map (excluding hidden collection itself).
     let mut collection_map: HashMap<u32, Vec<String>> = HashMap::new();
     for col in &collections {

@@ -35,17 +35,18 @@ This is Steam's cloud storage file for user-defined collections. See [STEAM_FILE
 
 ## External API Calls
 
-When API credentials are configured, Vapourfly makes HTTPS requests to external services:
+When credentials are configured or a source needs no key, Vapourfly makes HTTPS requests to external services:
 
 | Service | Data Sent | Data Received |
 |---|---|---|
 | IGDB (api.igdb.com) | OAuth token, game queries (AppID or name) | Genres, ratings, time-to-beat, keywords |
 | RAWG (api.rawg.io) | API key, game queries (AppID or name) | Genres, tags, ratings |
 | ProtonDB (protondb.com) | AppID (in URL path) | Compatibility tier and confidence |
-| PCGamingWiki (pcgamingwiki.com) | Game name (in MediaWiki query) | Controller support, Deck notes |
+| PCGamingWiki (pcgamingwiki.com) | Game name (in MediaWiki query) | Controller support, fixes URL |
 | Steam Store (store.steampowered.com) | AppID (in query parameter) | Store metadata, pricing, platform info |
+| Steam Web API (api.steampowered.com) | User-created API key and SteamID64 (`GetOwnedGames`) | Owned AppID → name map |
 
-No Steam credentials, library contents, or personal identifiers are sent to any external service. API calls use only game AppIDs or names for lookup.
+IGDB, RAWG, ProtonDB, PCGW, and Steam Store calls use only game AppIDs or names. The optional Steam Web API call is the exception: it sends the user's SteamID64 with the key they created, solely to resolve owned-game names. Library contents, playtime, and Steam login credentials are never sent.
 
 All API responses are cached locally. See [API_SOURCES.md](API_SOURCES.md) for caching details.
 
@@ -75,7 +76,7 @@ The `vapourfly diagnostics export` command produces a sanitized JSON file for bu
 - OS and architecture
 - Detected Steam directory (redacted unless `--verbose`)
 - Number of accounts and library folders
-- API credential status (configured / not configured, never the actual keys)
+- API credential status (configured / not configured, never the actual keys — including Steam Web API)
 - Cache directory location (redacted unless `--verbose`)
 - Any active warnings or errors
 
@@ -106,4 +107,6 @@ In offline mode, all external API calls are blocked. Only locally cached data an
 
 ## Credential Storage
 
-API credentials are read from environment variables at runtime. Vapourfly does not store credentials to disk, embed them in configuration files, or transmit them except as required by the external API's authentication flow (e.g., IGDB OAuth token exchange over HTTPS).
+- **IGDB and RAWG** credentials are read from environment variables at runtime. They are not written to `config.toml`.
+- **Steam Web API key** may be stored locally in `config.toml` as `steam_api_key`, or supplied via `VAPOURFLY_STEAM_API_KEY` (env wins). The key is never bundled with the app, never logged, and is shown masked in `doctor` / `settings show`.
+- Credentials are transmitted only as required by the external API's authentication flow (IGDB OAuth token exchange, Steam Web API query parameter) over HTTPS.

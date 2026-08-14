@@ -16,7 +16,7 @@ Vapourfly reads and writes Steam configuration files that may contain sensitive 
 
 1. **No secrets in logs.** Vapourfly must never log API keys, tokens, session IDs, or credentials at any log level. Use redaction (e.g., `[REDACTED]`) if a value must appear in debug output.
 
-2. **No secrets in config files.** Default configuration files and example configs must not contain real credentials. Use placeholder values like `YOUR_API_KEY_HERE`.
+2. **No secrets in committed files.** Default configuration files, examples, fixtures, and the repository must not contain real credentials. A user may store their own Steam Web API key in local `config.toml` as `steam_api_key`; that file is machine-local. Never log, print, or commit the raw key — `doctor` and `settings show` mask it.
 
 3. **No secrets in scan output.** CLI output (e.g., `vapourfly scan`, `vapourfly doctor`, `vapourfly diagnostics export`) must not print raw SteamIDs or account names unless the user explicitly opts in with `--verbose`.
 
@@ -30,7 +30,9 @@ If you discover a security vulnerability in Vapourfly, please report it responsi
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Instead, email: **security@vapourfly.dev**
+Report privately via
+[GitHub Security Advisories](https://github.com/thedavidweng/vapourfly/security/advisories/new)
+or email **security@vapourfly.dev**.
 
 Include:
 

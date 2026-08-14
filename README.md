@@ -6,33 +6,53 @@ Vapourfly helps you organize, categorize, and curate your Steam library. Define 
 
 ## Status
 
-v0.1.0 is a source-only release. Expect breaking changes until v1.0.
+v0.2.0. Expect breaking changes until v1.0.
 For the current CLI/GUI feature contract, see
 [docs/FEATURES.md](docs/FEATURES.md).
 
+![Library](docs/screenshots/library.png)
+
 ## Supported Platforms
 
-- macOS
-- Linux
-- Windows
+- macOS (Apple Silicon and Intel)
+- Linux (x86_64)
+- Windows (x86_64)
 
 ## Installation
 
+### Pre-built binaries
+
+Download CLI + GUI archives from
+[GitHub Releases](https://github.com/thedavidweng/vapourfly/releases).
+
+Each archive contains `vapourfly` (CLI) and `vapourfly-gui` (desktop app).
+Put the CLI on your `PATH`. macOS Gatekeeper may require **Right-click →
+Open** the first time — these builds are not notarized.
+
+Linux runtime libraries:
+
+```bash
+sudo apt install libxkbcommon0 libwayland-client0 libx11-6 libasound2t64 \
+  || sudo apt install libxkbcommon0 libwayland-client0 libx11-6 libasound2
+```
+
 ### From Source
+
+Vapourfly targets **Rust 1.96**. On Linux, install the GUI build dependencies
+first:
+
+```bash
+sudo apt install cmake clang g++ pkg-config \
+  libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev \
+  libxcursor-dev libxinerama-dev libgl1-mesa-dev libasound2-dev libssl-dev
+```
 
 ```bash
 git clone https://github.com/thedavidweng/vapourfly.git
 cd vapourfly
 cargo install --path crates/cli
-```
-
-Build the GUI from the same checkout:
-
-```bash
 cargo run -p vapourfly-gui --release
 ```
-
-Pre-built binaries are not shipped with v0.1.0.
 
 ## First Scan
 
@@ -84,17 +104,18 @@ Backups are stored alongside the original file and include a SHA-256 hash for in
 ## API Credential Setup
 
 Some enriched metadata features require external API credentials. Set these
-environment variables before launching the CLI or GUI:
+before launching the CLI or GUI:
 
-| Variable | Source | Required For |
+| Variable / setting | Source | Required For |
 |---|---|---|
 | `VAPOURFLY_IGDB_CLIENT_ID` | [IGDB / Twitch Developer Console](https://dev.twitch.tv/console) | Genre, rating, and time-to-beat data from IGDB |
 | `VAPOURFLY_IGDB_CLIENT_SECRET` | Same as above | IGDB OAuth authentication |
 | `VAPOURFLY_RAWG_KEY` | [RAWG API](https://rawg.io/apidocs) | Genre, tag, and rating data from RAWG |
+| `VAPOURFLY_STEAM_API_KEY` or `settings set steam_api_key` | [Steam Web API key](https://steamcommunity.com/dev/apikey) | Instant owned-game name resolution (one cached request). Create your own key; it is personal and never bundled with the app. |
 
 ProtonDB, PCGamingWiki, HLTB, and Steam Store data do not require credentials.
-Direct HLTB scraping is compiled behind the optional `hltb_scrape` feature;
-IGDB time-to-beat fields are available when IGDB credentials are configured.
+HLTB scraping is enabled in the default build. IGDB time-to-beat fields are
+available when IGDB credentials are configured.
 
 Check your credential status at any time:
 
@@ -157,10 +178,10 @@ Identify games you are unlikely to play using three evaluation modes:
 | **Aggressive** | Low playtime + at least one other negative signal, no minimum data requirement |
 
 Every decision is explainable: the output includes which signals matched, which were missing, and a confidence score reflecting data completeness.
-Current CLI and GUI junk flows scan the library, hydrate external metadata
-(lazy network fetch when not offline — ADR-0002), and then classify games.
-Fetch failures degrade gracefully; use `--offline` to force cache-only
-hydration.
+Current CLI and GUI junk flows scan the library, hydrate from the local
+cache (ADR-0009), and then classify games. Missing cache entries are filled
+by `cache refresh`, `scan --enrich`, or the GUI background populate job.
+Fetch failures degrade gracefully; use `--offline` to force zero network.
 
 ```bash
 # Preview junk candidates (default mode)
@@ -200,9 +221,8 @@ vapourfly recommend --minutes 120 --to-collection --dry-run
 vapourfly recommend --minutes 120 --to-collection --confirm
 ```
 
-Current CLI and GUI recommendation flows hydrate external metadata and
-annotate junk flags before scoring. When not offline, missing cache entries
-are fetched on demand (ADR-0002); fetch failures degrade gracefully.
+Current CLI and GUI recommendation flows hydrate cached metadata and
+annotate junk flags before scoring. Fetch failures degrade gracefully.
 
 ## Playlists
 
@@ -273,10 +293,10 @@ Available rule operators: `ProtonAtLeast`, `HltbMaxMinutes`,
 `ControllerSupportFull`, `PlaytimeBetween`, `RatingAtLeast`, `HasGenre`,
 `HasTag`, `Installed`, `NotJunk`, `NotHidden`, `And`, `Or`, `Not`.
 Playlist import, match, sync, discover, dynamic template, and editorial mood
-workflows hydrate external metadata before evaluating rules or similarity.
-When not offline, missing cache entries are fetched on demand (ADR-0002);
-fetch failures degrade gracefully. External metadata rules only match when
-the relevant data is available.
+workflows hydrate cached metadata before evaluating rules or similarity.
+Playlist match may fetch missing-entry Steam Store prices unless `--offline`
+is set. Fetch failures degrade gracefully. External metadata rules only
+match when the relevant data is available.
 
 ### Match Reports
 
@@ -329,8 +349,11 @@ See [docs/PRIVACY.md](docs/PRIVACY.md) for what is included and redacted.
 - [docs/FEATURES.md](docs/FEATURES.md) -- Current feature contract for CLI/GUI parity
 - [docs/CLI.md](docs/CLI.md) -- Full command reference with examples
 - [docs/STEAM_FILE_SAFETY.md](docs/STEAM_FILE_SAFETY.md) -- Write targets, backup strategy, and atomic writes
-- [docs/API_SOURCES.md](docs/API_SOURCES.md) -- IGDB, RAWG, ProtonDB, PCGW, HLTB data strategy
+- [docs/API_SOURCES.md](docs/API_SOURCES.md) -- IGDB, RAWG, ProtonDB, PCGW, HLTB, Steam Store, and Steam Web API
 - [docs/PRIVACY.md](docs/PRIVACY.md) -- Local-first design, redaction, and data handling
+- [docs/gui-smoke-test.md](docs/gui-smoke-test.md) -- Manual GUI smoke checklist
+- [CONTEXT.md](CONTEXT.md) -- Domain glossary
+- [docs/adr/](docs/adr/) -- Architecture decision records
 
 ## License
 
@@ -352,7 +375,7 @@ Vapourfly's design was informed by studying the following open-source projects. 
 - [Depressurizer](https://github.com/rallion/depressurizer) -- Steam library categorization tool. Inspired Vapourfly's understanding of VDF formats, Steam collections, and SteamID handling. (GPLv3)
 - [Gameloop.Vdf](https://github.com/BeyondDimension/Gameloop.Vdf) -- C# Text VDF library. Served as reference for VDF token-level parsing behavior. (MIT)
 - [SteamTools / BD.SteamClient](https://github.com/BeyondDimension/SteamClient) -- Watt Toolkit core library. Reference for cross-platform Steam path detection, appinfo.vdf format, and librarycache layout.
-- [TinyWiiBackupManager](https://github.com/mq1/TinyWiiBackupManager) -- Rust game backup manager. Inspired the workspace architecture, egui state patterns, and HTTP client design. (GPL-3.0)
+- [TinyWiiBackupManager](https://github.com/mq1/TinyWiiBackupManager) -- Rust game backup manager. Inspired the workspace architecture, GUI state patterns, and HTTP client design. (GPL-3.0)
 
 No code from these projects is incorporated into Vapourfly. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
 

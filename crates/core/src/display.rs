@@ -2,7 +2,7 @@
 //!
 //! Presentation helpers used by CLI and GUI so wording stays consistent.
 
-use crate::models::{JunkMode, JunkSignal};
+use crate::models::{JunkMode, JunkSignal, JunkSignalKind};
 
 /// Mask a Steam ID, showing only the last 4 characters.
 pub fn mask_id(id: &str) -> String {
@@ -36,10 +36,19 @@ pub fn format_junk_mode(mode: &JunkMode) -> &'static str {
     }
 }
 
+/// Human label for a missing junk signal kind (never Debug).
+pub fn format_junk_signal_kind(kind: &JunkSignalKind) -> &'static str {
+    match kind {
+        JunkSignalKind::Playtime => "Playtime",
+        JunkSignalKind::CompletionTime => "Completion time",
+        JunkSignalKind::Rating => "Rating",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{HltbSource, JunkSignal, RatingSource};
+    use crate::models::{HltbSource, JunkSignal, JunkSignalKind, RatingSource};
 
     #[test]
     fn mask_id_keeps_last_four() {
@@ -61,5 +70,18 @@ mod tests {
             source: RatingSource::Rawg,
         });
         assert!(s.contains("1.5"));
+    }
+
+    #[test]
+    fn junk_signal_kind_is_human() {
+        assert_eq!(
+            format_junk_signal_kind(&JunkSignalKind::CompletionTime),
+            "Completion time"
+        );
+        assert_eq!(
+            format_junk_signal_kind(&JunkSignalKind::Playtime),
+            "Playtime"
+        );
+        assert_eq!(format_junk_signal_kind(&JunkSignalKind::Rating), "Rating");
     }
 }

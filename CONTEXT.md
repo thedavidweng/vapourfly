@@ -7,13 +7,6 @@ resolved during design, it lands here immediately.
 Architectural decisions that are hard to reverse, surprising without context,
 and the result of a real trade-off live in `docs/adr/`.
 
-## Status of this document
-
-The original PRD (Python CLI, GUI as non-goal, writes to `localconfig.vdf`)
-was **stale**. The Rust codebase is the source of truth. This glossary
-describes the project as it actually is. The PRD has been rewritten as
-[PRD.md](PRD.md) to match the codebase and the decisions recorded here.
-
 ## Core artifacts
 
 ### Playlist
@@ -41,9 +34,9 @@ Vapourfly side, it is a Playlist.
 
 **Write surface decision:** `cloud-storage-namespace-1.json` is the *only* file
 Vapourfly will ever modify. `localconfig.vdf` is read-only forever (parsed for
-playtime and per-app state, never written). Vapourfly stays within the PRD's
-feature scope; editing per-app Steam settings (tags, launch options, controller
-configs) is explicitly out of scope. See [ADR-0001](docs/adr/0001-cloud-storage-only-write-surface.md).
+playtime and per-app state, never written). Editing per-app Steam settings
+(tags, launch options, controller configs) is explicitly out of scope. See
+[ADR-0001](docs/adr/0001-cloud-storage-only-write-surface.md).
 
 ### Dynamic Template
 
@@ -54,18 +47,6 @@ behind each template. The canonical templates are `deck-session` and
 NotJunk + ProtonAtLeast Gold + ControllerSupportFull + HltbMaxMinutes);
 `finish-it` evaluates the library and emits an explicit-AppID Playlist (games
 whose playtime is 0.5–1.25× HLTB main story).
-
-**`playlist-radio` is removed.** It was a strictly weaker version of
-Discover-with-seed. Discover now owns the entire "seed-based similar picks"
-surface. This is a breaking change: the `collections dynamic playlist-radio`
-CLI command and the corresponding GUI entry are removed. See
-[ADR-0005](docs/adr/0005-discover-absorbs-playlist-radio.md).
-
-**`mood` is removed as a Dynamic Template.** It is replaced by Editorial Mood
-(see below) — a fundamentally different concept. The old mood template was a
-transparent tag/genre filter; Editorial Moods are named, curated playlists
-with hidden selection criteria, like Spotify's editorial playlists. See
-[ADR-0004](docs/adr/0004-editorial-mood-replaces-tag-filter.md).
 
 A Dynamic Template is not itself a Playlist or a Collection. It is a generator.
 
@@ -84,7 +65,7 @@ Chinese) are a UI/localization concern, not part of the domain model:
 
 | Canonical name | Hidden criteria |
 |---|---|
-| Today's Biggest Hits | Owned games with a recent popularity surge — on sale (discount_percent > 0) and/or rising current player count and/or rising recent review activity. Helps the user find owned games with active player communities right now (e.g. a Battlefield title that just went on sale). May require fetching current player count data not yet cached. |
+| Today's Biggest Hits | Owned games currently on sale (`discount_percent > 0`). Games without Steam Store price data are excluded. |
 | Indie Rising | Indie (IGDB theme / Steam Store type) + high rating + recent |
 | Friday Party | Steam Store categories: Co-op / Local Multiplayer / Party |
 | Deck Guardians | ProtonDB Platinum/Gold + full controller + short HLTB |
@@ -94,9 +75,8 @@ Chinese) are a UI/localization concern, not part of the domain model:
 
 An Editorial Mood compiles to a Playlist (manual AppID list, evaluated against
 the current library). It is a generator, like a Dynamic Template, but the
-criteria are opaque to the user. The old `collections dynamic mood` CLI command
-is replaced by `collections mood <name>` (or equivalent), listing available
-moods and compiling the selected one.
+criteria are opaque to the user. The CLI surface is `collections mood [name]`.
+See [ADR-0004](docs/adr/0004-editorial-mood-replaces-tag-filter.md).
 
 ### Discover
 
@@ -107,9 +87,9 @@ non-junk non-hidden games (excluding Application/Tool/DLC), and scores by:
 seed IGDB-similar membership (+5.0) + taste overlap (normalized) + high rating
 (+0.25). Output is a Manual Playlist with `created_by: "vapourfly"`.
 
-Discover owns the entire "similar picks" surface — there is no separate
-Playlist Radio concept. Same shape as a Dynamic Template: a generator, not an
-artifact.
+Discover owns the entire "similar picks" surface. Same shape as a Dynamic
+Template: a generator, not an artifact. See
+[ADR-0005](docs/adr/0005-discover-absorbs-playlist-radio.md).
 
 ### Generator playlist slot
 
@@ -151,13 +131,13 @@ Evaluated from three signals — **playtime**, **completion time** (HLTB),
 - **Aggressive**: low playtime + at least one other low signal, no minimum
   data count.
 
-Default is the canonical mode. The PRD's original "hard AND of all three
-signals" model is **dropped** — it fails to classify most games because HLTB
-and RAWG coverage is incomplete. Manual overrides (`force_include`,
-`force_exclude`, manual HLTB, manual rating) take precedence over signals.
-A Junk decision is explainable: it carries matched signals, missing signals,
-and a confidence score (fraction of signals available). A Game's junk flag is
-a derived, explainable decision — not a permanent property of the game itself.
+Default is the canonical mode. A hard AND of all three signals is not used —
+it fails to classify most games because HLTB and RAWG coverage is incomplete.
+Manual overrides (`force_include`, `force_exclude`, manual HLTB, manual rating)
+take precedence over signals. A Junk decision is explainable: it carries
+matched signals, missing signals, and a confidence score (fraction of signals
+available). A Game's junk flag is a derived, explainable decision — not a
+permanent property of the game itself.
 
 ### Recommendation
 
@@ -166,7 +146,8 @@ engine from the current library. Seven weighted signals combine additively:
 
 - `low_playtime` (+2.0): playtime under 120 min.
 - `deck_compatible` (Native +2.0 / Platinum +1.5 / Gold +1.0, deck mode only).
-- `time_match` (+1.5): HLTB main story fits the requested session length.
+- `time_match` (+1.5): a known main-story completion time (HLTB, falling back
+  to IGDB time-to-beat) fits the requested session length.
 - `high_rating` (+1.0): RAWG ≥ 4.0 or IGDB ≥ 80.
 - `taste_similarity` (+1.0): keyword overlap with the user's taste vector > 5%.
 - `recently_played_penalty` (−1.0): played within 14 days.
@@ -193,15 +174,15 @@ exist in the code:
 - **Hydrate** — apply cache entries (including stale) onto Game records
   (`hydrate_from_cache`).
 
-**Default (ADR-0009, supersedes ADR-0002):** workflows (junk / recommend /
-playlist / discover / dynamic / editorial mood) and the GUI library scan go
-through `workflow::prepare`, which is **cache-only plus bounded fetches** —
-it never does bulk network work, so results render in seconds at any
-library size. The bounded fetches are the owned-games name map (one request,
-only with a configured Steam Web API key) and missing Playlist entry prices
-during match. Freshness comes from TTLs plus background/explicit
-repopulation, not from fetch-at-evaluation. `--offline` / offline mode still
-forces zero network, including the bounded fetches. See
+**Default (ADR-0009):** workflows (junk / recommend / playlist / discover /
+dynamic / editorial mood) and the GUI library scan go through
+`workflow::prepare`, which is **cache-only plus bounded fetches** — it never
+does bulk network work, so results render in seconds at any library size. The
+bounded fetches are the owned-games name map (one request, only with a
+configured Steam Web API key) and missing Playlist entry prices during match.
+Freshness comes from TTLs plus background/explicit repopulation, not from
+fetch-at-evaluation. `--offline` / offline mode still forces zero network,
+including the bounded fetches. See
 [ADR-0009](docs/adr/0009-instant-first-paint-hydration.md).
 
 **Failure semantics:** a per-game fetch failure degrades gracefully — that
@@ -216,13 +197,10 @@ a recommendation, it just may be less informed.
 A compact, copy-pasteable string encoding a Playlist for sharing. Format:
 `VF1:<compressed-binary-payload>`. The payload carries the playlist's
 `content` (manual AppID list or rules tree) plus `name` and `description`,
-encoded as a compact binary format with compression — not the previous
-base64url(JSON).
+encoded as a compact binary format with compression.
 
-**No backward compatibility.** The previous `VF1:<base64url(JSON)>` format is
-replaced outright. Existing VF1 codes will fail to decode under the new
-decoder. Accepted because v0.1.0 has few users. The `VF1:` prefix is retained
-(the `1` is now the format generation, not the JSON-encoding version). See
+The previous `VF1:<base64url(JSON)>` format is not accepted. The `VF1:`
+prefix is retained; the `1` is the format generation. See
 [ADR-0003](docs/adr/0003-compact-binary-share-codes.md).
 
 A Share Code decodes back into a PlaylistFile that can be imported, matched,
