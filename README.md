@@ -14,7 +14,7 @@ For the current CLI/GUI feature contract, see
 
 ## Supported Platforms
 
-- macOS (Apple Silicon and Intel)
+- macOS (Apple Silicon pre-built; Intel from source)
 - Linux (x86_64)
 - Windows (x86_64)
 

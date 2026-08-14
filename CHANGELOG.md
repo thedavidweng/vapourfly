@@ -35,7 +35,7 @@ format, removed playlist-radio / old mood template, hydration is cache-first
 - Collections: card grid with poster collages and an **Export all** action (native save dialog).
 - `--ui-demo` mode: fully isolated demo data (no real Steam I/O, no CDN fetches, deterministic placeholder art).
 - Background job runner: junk preview, recommendations, discover, dynamic, mood, and playlist match all run off the UI thread with staleness-checked job tickets.
-- GitHub Release workflow: tag `v*` builds CLI + GUI archives for macOS (arm64/x86_64), Linux x86_64, and Windows x86_64.
+- GitHub Release workflow: tag `v*` builds CLI + GUI archives for macOS arm64, Linux x86_64, and Windows x86_64.
 
 #### CLI
 

@@ -20,8 +20,6 @@ jobs:
         include:
           - os: macos-latest
             artifact: vapourfly-macos-aarch64
-          - os: macos-13
-            artifact: vapourfly-macos-x86_64
           - os: ubuntu-latest
             artifact: vapourfly-linux-x86_64
           - os: windows-latest
