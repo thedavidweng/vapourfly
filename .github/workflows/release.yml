@@ -38,7 +38,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             cmake clang g++ pkg-config \
-            libxkbcommon-dev libwayland-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev \
+            libwayland-dev \
             libx11-dev libxrandr-dev libxi-dev \
             libxcursor-dev libxinerama-dev \
             libgl1-mesa-dev libasound2-dev \

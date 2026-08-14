@@ -32,8 +32,10 @@ Open** the first time — these builds are not notarized.
 Linux runtime libraries:
 
 ```bash
-sudo apt install libxkbcommon0 libwayland-client0 libx11-6 libasound2t64 \
-  || sudo apt install libxkbcommon0 libwayland-client0 libx11-6 libasound2
+sudo apt install libxkbcommon0 libxkbcommon-x11-0 libxcb1 \
+  libwayland-client0 libx11-6 libasound2t64 \
+  || sudo apt install libxkbcommon0 libxkbcommon-x11-0 libxcb1 \
+  libwayland-client0 libx11-6 libasound2
 ```
 
 ### From Source
@@ -43,8 +45,9 @@ first:
 
 ```bash
 sudo apt install cmake clang g++ pkg-config \
-  libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev \
-  libxcursor-dev libxinerama-dev libgl1-mesa-dev libasound2-dev libssl-dev
+  libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libwayland-dev \
+  libx11-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev \
+  libgl1-mesa-dev libasound2-dev libssl-dev
 ```
 
 ```bash
