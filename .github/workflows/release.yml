@@ -28,7 +28,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Linux GUI build dependencies
         if: runner.os == 'Linux'
@@ -49,7 +49,7 @@ jobs:
           toolchain: ${{ env.VAPOURFLY_CI_TOOLCHAIN }}
 
       - name: Cache cargo registry and target
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -84,7 +84,7 @@ jobs:
           Compress-Archive -Path $stage -DestinationPath "$stage.zip"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: ${{ matrix.artifact }}
           path: |
@@ -95,10 +95,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           path: dist
           merge-multiple: true
