@@ -143,5 +143,5 @@ Available rule operators: `ProtonAtLeast`, `HltbMaxMinutes`,
 
 ## GUI Smoke Test
 
-The interactive GUI checklist lives in [gui-smoke-test.md](gui-smoke-test.md).
+The interactive GUI checklist lives in [gui-smoke-test.md](../gui-smoke-test.md).
 Run it with `--ui-demo` and at 1024px / 1280px / 1440px before a release.

@@ -1,9 +1,30 @@
-# CLI Reference
+# Command Reference
 
 Full command reference for the `vapourfly` CLI.
 
+If you are learning the tool or trying to accomplish a specific task, start
+with a guide instead -- each one walks a scenario end to end with real
+output:
+
+- First contact: [Getting started](../tutorials/getting-started.md)
+- Flag and remove games you will never play:
+  [Purge junk](../how-to/purge-junk.md) (`junk`)
+- Picks that fit your available time: [Plan a Deck session](../how-to/plan-deck-session.md)
+  (`recommend`, `collections dynamic`)
+- Curated lists, share codes, Steam collections:
+  [Share and sync playlists](../how-to/share-and-sync-playlists.md)
+  (`playlist`, `sync collection`)
+- Zero-network operation: [Work offline](../how-to/work-offline.md)
+  (`--offline`, `cache`)
+- Recovery from an unwanted write:
+  [Back up and restore](../how-to/back-up-and-restore.md) (`backup`)
+- Unlocking IGDB/RAWG/Steam Web API data:
+  [Configure API credentials](../how-to/configure-api-credentials.md)
+  (`settings set steam_api_key`, `sources`)
+
 For CLI/GUI parity and current feature status, see
-[FEATURES.md](FEATURES.md).
+[FEATURES.md](FEATURES.md). For what happens to Steam files on writes, see
+[STEAM_FILE_SAFETY.md](STEAM_FILE_SAFETY.md).
 
 ## Global Flags
 

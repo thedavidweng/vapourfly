@@ -4,7 +4,7 @@
 **定位**：像 Spotify 歌单一样玩转 Steam 库的智能管理 + 发现工具
 **核心理念**：像 Nike Vaporfly 一样轻盈快速飞越你的 Steam 游戏库（Vapour = 蒸汽，Fly = 飞一样浏览推荐和游戏单）
 
-领域语言定义在 [CONTEXT.md](CONTEXT.md)。不可逆的架构决策记录在 [docs/adr/](docs/adr/)。CLI/GUI 功能契约见 [docs/FEATURES.md](docs/FEATURES.md)。
+领域语言定义在 [CONTEXT.md](CONTEXT.md)。不可逆的架构决策记录在 [docs/adr/](docs/adr/)。CLI/GUI 功能契约见 [docs/reference/FEATURES.md](docs/reference/FEATURES.md)。
 
 ## 问题与机会
 

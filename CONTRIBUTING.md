@@ -55,8 +55,8 @@ cargo check -p vapourfly-api --no-default-features
 ```
 
 Domain language lives in [CONTEXT.md](CONTEXT.md). Architecture decisions live
-in [docs/adr/](docs/adr/). Update [docs/FEATURES.md](docs/FEATURES.md) and
-[docs/CLI.md](docs/CLI.md) when a user-facing contract changes.
+in [docs/adr/](docs/adr/). Update [docs/reference/FEATURES.md](docs/reference/FEATURES.md) and
+[docs/reference/COMMANDS.md](docs/reference/COMMANDS.md) when a user-facing contract changes.
 
 ## Pull Request Guidelines
 

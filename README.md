@@ -8,7 +8,7 @@ Vapourfly helps you organize, categorize, and curate your Steam library. Define 
 
 v0.2.0. Expect breaking changes until v1.0.
 For the current CLI/GUI feature contract, see
-[docs/FEATURES.md](docs/FEATURES.md).
+[docs/reference/FEATURES.md](docs/reference/FEATURES.md).
 
 ![Library](docs/screenshots/library.png)
 
@@ -85,7 +85,7 @@ Vapourfly modifies your Steam configuration files. To protect your data:
 - **No Steam process interference.** Vapourfly refuses to write if Steam is detected as actively running. Close Steam first, or use `--allow-steam-running` only when you understand the risk.
 - **Atomic writes.** Changes are written to a temporary file, fsynced, and renamed over the target. If anything fails after the backup is created, an automatic restore is attempted.
 
-See [docs/STEAM_FILE_SAFETY.md](docs/STEAM_FILE_SAFETY.md) for the full write target and backup strategy.
+See [docs/reference/STEAM_FILE_SAFETY.md](docs/reference/STEAM_FILE_SAFETY.md) for the full write target and backup strategy.
 
 ## Backup and Restore
 
@@ -127,7 +127,7 @@ vapourfly doctor
 vapourfly sources status
 ```
 
-See [docs/API_SOURCES.md](docs/API_SOURCES.md) for details on each data source.
+See [docs/reference/API_SOURCES.md](docs/reference/API_SOURCES.md) for details on each data source.
 
 ## Offline Mode
 
@@ -345,18 +345,44 @@ Export sanitized diagnostics for bug reports:
 vapourfly diagnostics export --out diagnostics.json
 ```
 
-See [docs/PRIVACY.md](docs/PRIVACY.md) for what is included and redacted.
+See [docs/reference/PRIVACY.md](docs/reference/PRIVACY.md) for what is included and redacted.
 
 ## Documentation
 
-- [docs/FEATURES.md](docs/FEATURES.md) -- Current feature contract for CLI/GUI parity
-- [docs/CLI.md](docs/CLI.md) -- Full command reference with examples
-- [docs/STEAM_FILE_SAFETY.md](docs/STEAM_FILE_SAFETY.md) -- Write targets, backup strategy, and atomic writes
-- [docs/API_SOURCES.md](docs/API_SOURCES.md) -- IGDB, RAWG, ProtonDB, PCGW, HLTB, Steam Store, and Steam Web API
-- [docs/PRIVACY.md](docs/PRIVACY.md) -- Local-first design, redaction, and data handling
-- [docs/gui-smoke-test.md](docs/gui-smoke-test.md) -- Manual GUI smoke checklist
+Organized by [Diátaxis](https://diataxis.fr/) -- the
+[documentation index](docs/README.md) has the full map.
+
+**Tutorials**
+
+- [Getting started](docs/tutorials/getting-started.md) -- guided first pass: doctor, scan, collections
+
+**How-to guides**
+
+- [Purge junk from your library](docs/how-to/purge-junk.md)
+- [Plan a Deck session](docs/how-to/plan-deck-session.md)
+- [Share and sync playlists](docs/how-to/share-and-sync-playlists.md)
+- [Work offline](docs/how-to/work-offline.md)
+- [Back up and restore Steam files](docs/how-to/back-up-and-restore.md)
+- [Configure API credentials](docs/how-to/configure-api-credentials.md)
+
+**Reference**
+
+- [Command reference (COMMANDS.md)](docs/reference/COMMANDS.md) -- every command, flag, and output format
+- [Feature matrix (FEATURES.md)](docs/reference/FEATURES.md) -- CLI/GUI capability contract
+- [Steam file safety](docs/reference/STEAM_FILE_SAFETY.md) -- write targets, backups, atomic writes
+- [API sources](docs/reference/API_SOURCES.md) -- IGDB, RAWG, ProtonDB, PCGW, HLTB, Steam Store, Steam Web API
+- [Privacy](docs/reference/PRIVACY.md) -- local-first design, redaction, diagnostics contents
+
+**Explanation**
+
+- [How junk classification works](docs/explanation/junk-classification.md)
+- [How library hydration works](docs/explanation/hydration-model.md)
+
+**Project**
+
 - [CONTEXT.md](CONTEXT.md) -- Domain glossary
 - [docs/adr/](docs/adr/) -- Architecture decision records
+- [docs/gui-smoke-test.md](docs/gui-smoke-test.md) -- Manual GUI smoke checklist (contributors)
 
 ## License
 
