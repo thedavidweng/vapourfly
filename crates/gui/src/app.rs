@@ -579,6 +579,7 @@ pub(crate) const PROTON_FILTER_TIERS: &[ProtonTier] = &[
     ProtonTier::Native,
 ];
 
+#[cfg(test)]
 pub(crate) fn cycle_proton_filter(current: Option<ProtonTier>) -> Option<ProtonTier> {
     match current {
         None => PROTON_FILTER_TIERS.first().copied(),
