@@ -5,15 +5,18 @@ use gpui::{
     px,
 };
 use gpui_component::{
-    Disableable, Sizable, StyledExt,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     h_flex,
     input::Input,
+    notification::Notification,
     scroll::ScrollableElement,
+    switch::Switch,
     v_flex,
 };
 
+use super::dialogs::{AlertSpec, open_alert};
 use super::shared::section;
 use crate::app::open_url_in_browser;
 
@@ -29,20 +32,25 @@ impl GuiRoot {
             .gap_3()
             .overflow_y_scrollbar()
             .child(div().text_xl().font_semibold().child("Settings"))
-            .child(section("Appearance", cx, |_cx| {
-                h_flex()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_sm()
-                            .child(format!("Theme: {}", self.app.theme_mode.label())),
-                    )
-                    .child(Button::new("set-theme").small().label("Toggle").on_click({
+            // Theme mode is owned by the title bar toggle + the ToggleTheme
+            // action; this section only carries the reduce-motion preference.
+            .child(section("Appearance", cx, |cx| {
+                Switch::new("settings.reduce-motion")
+                    .checked(super::motion::reduce_motion(cx))
+                    .label("Reduce motion")
+                    .disabled(self.app.ui_demo)
+                    .on_click({
                         let entity = entity.clone();
-                        move |_, window, cx| {
-                            entity.update(cx, |this, cx| this.toggle_theme(window, cx));
+                        move |checked: &bool, _window, cx| {
+                            entity.update(cx, |this, cx| {
+                                if this.app.ui_demo {
+                                    return;
+                                }
+                                super::motion::set_reduce_motion(*checked, cx);
+                                cx.notify();
+                            });
                         }
-                    }))
+                    })
                     .into_any_element()
             }))
             .child(section("Configuration", cx, |_| {
@@ -56,7 +64,8 @@ impl GuiRoot {
                             .child(
                                 Button::new("pick-steam")
                                     .xsmall()
-                                    .label("Browse")
+                                    .icon(Icon::new(IconName::FolderClosed))
+                                    .tooltip("Browse for Steam directory")
                                     .on_click({
                                         let entity = entity.clone();
                                         move |_, window, cx| {
@@ -112,10 +121,11 @@ impl GuiRoot {
                             .child(div().w(px(140.)).text_xs().child("Steam Web API key"))
                             .child(Input::new(&self.api_key_input).small().w(px(300.)))
                             .child(
-                                Button::new("apikey-help")
+                                Button::new("settings.api-key-help")
                                     .xsmall()
                                     .ghost()
-                                    .label("Get a free key")
+                                    .icon(Icon::new(IconName::ExternalLink))
+                                    .tooltip("Open Steam Web API key page")
                                     .on_click(|_, _, _| {
                                         open_url_in_browser(
                                             "https://steamcommunity.com/dev/apikey",
@@ -130,13 +140,27 @@ impl GuiRoot {
                                 Button::new("save-settings")
                                     .small()
                                     .primary()
-                                    .label("Save Settings")
+                                    .label("Save settings")
                                     .disabled(self.app.ui_demo)
                                     .on_click({
                                         let entity = entity.clone();
-                                        move |_, _, cx| {
+                                        move |_, window, cx| {
                                             entity.update(cx, |this, cx| {
                                                 this.app.save_settings();
+                                                // Success surfaces as a toast;
+                                                // failures keep the inline text.
+                                                let saved = this
+                                                    .app
+                                                    .settings_save_msg
+                                                    .as_deref()
+                                                    .is_some_and(|m| m.starts_with("Saved"));
+                                                if saved {
+                                                    window.push_notification(
+                                                        Notification::success("Settings saved"),
+                                                        cx,
+                                                    );
+                                                    this.app.settings_save_msg = None;
+                                                }
                                                 cx.notify();
                                             });
                                         }
@@ -165,6 +189,7 @@ impl GuiRoot {
                                 Button::new(SharedString::from(format!("acct-{id}")))
                                     .xsmall()
                                     .label("Use")
+                                    .tooltip("Use this account")
                                     .on_click(move |_, window, cx| {
                                         entity.update(cx, |this, cx| {
                                             this.app.account_edit = id.clone();
@@ -219,7 +244,7 @@ impl GuiRoot {
                     .child(
                         Button::new("diag-export")
                             .small()
-                            .label("Export diagnostics")
+                            .label("Export diagnostics…")
                             .on_click({
                                 let entity = entity.clone();
                                 move |_, _, cx| {
@@ -257,7 +282,7 @@ impl GuiRoot {
     pub(crate) fn backups(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
         let backups = self.app.backups.clone();
-        section("Backups", cx, move |_| {
+        section("Backups", cx, move |cx| {
             v_flex()
                 .gap_1()
                 .children(backups.iter().map(|b| {
@@ -269,16 +294,59 @@ impl GuiRoot {
                         .child(
                             Button::new(SharedString::from(path.display().to_string()))
                                 .xsmall()
-                                .label("Restore")
+                                .icon(Icon::new(IconName::Undo))
+                                .tooltip("Restore this backup")
                                 .disabled(self.app.ui_demo)
-                                .on_click(move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.app.begin_backup_restore(path.clone());
-                                        cx.notify();
-                                    });
+                                .on_click({
+                                    let entity = entity.clone();
+                                    let path = path.clone();
+                                    move |_, window, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            // Demo mode never writes: gate
+                                            // before any dialog opens.
+                                            if this.app.ui_demo {
+                                                return;
+                                            }
+                                            let name = path
+                                                .file_name()
+                                                .map(|n| n.to_string_lossy().into_owned())
+                                                .unwrap_or_else(|| path.display().to_string());
+                                            open_alert(
+                                                &entity,
+                                                window,
+                                                cx,
+                                                AlertSpec {
+                                                    title: format!("Restore backup “{name}”?"),
+                                                    lines: vec![
+                                                        path.display().to_string(),
+                                                        "Steam files are replaced; a fresh \
+                                                         backup is taken first"
+                                                            .into(),
+                                                    ],
+                                                    verb: "Restore".into(),
+                                                },
+                                                {
+                                                    let path = path.clone();
+                                                    move |this, cx| {
+                                                        this.app.begin_backup_restore(path.clone());
+                                                        cx.notify();
+                                                    }
+                                                },
+                                            );
+                                        });
+                                    }
                                 }),
                         )
                 }))
+                .when(backups.is_empty(), |this| {
+                    this.child(
+                        h_flex()
+                            .gap_2()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(Icon::new(IconName::Inbox))
+                            .child(div().text_sm().child("No backups yet")),
+                    )
+                })
                 .into_any_element()
         })
     }

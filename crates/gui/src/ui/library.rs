@@ -1,27 +1,53 @@
 //! Library view: filters, virtualized game rows, insights rail.
 
 use gpui::{
-    ClipboardItem, Context, Entity, Hsla, InteractiveElement, IntoElement, ParentElement, Styled,
-    div, prelude::*, px, uniform_list,
+    Action, App, ClipboardItem, Context, ElementId, Entity, Hsla, InteractiveElement, IntoElement,
+    ParentElement, Styled, Window, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Sizable, StyledExt, WindowExt,
+    ActiveTheme, Icon, IconName, Selectable, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::Input,
+    menu::{ContextMenuExt, DropdownMenu},
+    notification::Notification,
+    select::Select,
     tab::{Tab, TabBar},
     v_flex,
 };
 use vapourfly_core::models::Game;
 
-use super::shared::{hx, insight_tile};
+use super::{
+    actions::{CopyAppId, OpenStorePage, SimilarGames},
+    shared::{hx, insight_tile},
+};
 use crate::app::{
-    ARTWORK_PALETTE, LibraryInsights, LibraryScope, LibrarySort, QuickView, View,
-    cycle_proton_filter, format_playtime, game_card_detail, game_primary_badge,
-    game_shows_deck_badge, proton_tier_label, relative_time_ago, sort_label,
+    ARTWORK_PALETTE, LibraryInsights, LibraryScope, LibrarySort, QuickView, View, format_playtime,
+    game_card_detail, game_primary_badge, game_shows_deck_badge, open_url_in_browser,
+    relative_time_ago,
 };
 
 use crate::ui::GuiRoot;
+
+/// Toolbar command: toggle the Steam Deck compatibility filter.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = vapourfly, no_json)]
+pub(crate) struct ToggleDeckFilter;
+
+/// Toolbar command: toggle the full-controller-support filter.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = vapourfly, no_json)]
+pub(crate) struct ToggleControllerFilter;
+
+/// Toolbar command: toggle junk exclusion.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = vapourfly, no_json)]
+pub(crate) struct ToggleHideJunkFilter;
+
+/// Toolbar command: toggle hidden-game exclusion.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = vapourfly, no_json)]
+pub(crate) struct ToggleExcludeHiddenFilter;
 
 impl GuiRoot {
     pub(crate) fn library(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -46,6 +72,7 @@ impl GuiRoot {
             .unwrap_or(&[]);
         let installed = all.iter().filter(|g| g.installed).count();
         let playtime: u32 = all.iter().map(|g| g.playtime_minutes.unwrap_or(0)).sum();
+        let scanning = self.app.loading;
 
         v_flex()
             .id("library")
@@ -59,54 +86,128 @@ impl GuiRoot {
                         v_flex()
                             .child(div().text_xl().font_semibold().child("Library"))
                             .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(if self.app.loading {
-                                        "Scanning…".into()
-                                    } else if !ready {
-                                        "Preparing library…".into()
-                                    } else {
-                                        format!(
-                                            "{total} shown · {installed} installed · {}",
-                                            format_playtime(playtime)
+                                h_flex()
+                                    .gap_1()
+                                    .items_center()
+                                    .when(scanning || !ready, |this| {
+                                        this.child(
+                                            Icon::new(IconName::LoaderCircle)
+                                                .small()
+                                                .text_color(cx.theme().muted_foreground),
                                         )
-                                    }),
+                                    })
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(if scanning {
+                                                "Scanning…".into()
+                                            } else if !ready {
+                                                "Preparing library…".into()
+                                            } else {
+                                                format!(
+                                                    "{total} shown · {installed} installed · {}",
+                                                    format_playtime(playtime)
+                                                )
+                                            }),
+                                    ),
                             ),
                     )
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(Button::new("refresh").small().label("Refresh").on_click({
-                                let entity = entity.clone();
-                                move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.app.start_scan();
-                                        this.arm_poll(cx);
-                                        cx.notify();
-                                    });
-                                }
-                            }))
-                            .child(Button::new("junk-open").small().label("Junk…").on_click({
-                                let entity = entity.clone();
-                                move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.app.show_junk_panel = true;
-                                        cx.notify();
-                                    });
-                                }
-                            })),
+                            // While scanning the label is replaced by a
+                            // spinner (`loading`), which reads differently
+                            // from a disabled control: work is happening.
+                            .child(
+                                Button::new("library.refresh")
+                                    .small()
+                                    .label("Refresh")
+                                    .loading_icon(Icon::new(IconName::LoaderCircle))
+                                    .loading(scanning)
+                                    .on_click({
+                                        let entity = entity.clone();
+                                        move |_, _, cx| {
+                                            entity.update(cx, |this, cx| {
+                                                this.app.start_scan();
+                                                this.arm_poll(cx);
+                                                cx.notify();
+                                            });
+                                        }
+                                    }),
+                            )
+                            .child(
+                                Button::new("library.junk")
+                                    .small()
+                                    .label("Junk…")
+                                    .on_click({
+                                        let entity = entity.clone();
+                                        move |_, _, cx| {
+                                            entity.update(cx, |this, cx| {
+                                                this.app.show_junk_panel = true;
+                                                cx.notify();
+                                            });
+                                        }
+                                    }),
+                            ),
                     ),
             )
             .child(
                 h_flex()
                     .gap_3()
-                    .child(Input::new(&self.search).cleanable(true).small().w(px(280.)))
+                    .child(
+                        Input::new(&self.search)
+                            .prefix(Icon::new(IconName::Search).small())
+                            .cleanable(true)
+                            .small()
+                            .w(px(280.)),
+                    )
                     .child(self.scope_tabs(cx)),
             )
             .child(self.library_filters(cx))
             .child(self.quick_chips(cx))
-            .child(if ready {
+            .child(if !ready {
+                div()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                Icon::new(IconName::LoaderCircle)
+                                    .text_color(cx.theme().muted_foreground),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("Preparing hydrated library snapshot…"),
+                            ),
+                    )
+                    .into_any_element()
+            } else if total == 0 {
+                div()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(
+                                Icon::new(IconName::Inbox).text_color(cx.theme().muted_foreground),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("No games match your filters."),
+                            ),
+                    )
+                    .into_any_element()
+            } else {
                 let insights = self.app.library_insights(&games);
                 let rows = shown.len().min(self.app.library_visible_count);
                 let entity = entity.clone();
@@ -163,30 +264,28 @@ impl GuiRoot {
                         .child(rail)
                         .into_any_element()
                 }
-            } else {
-                div()
-                    .flex_1()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Preparing hydrated library snapshot…"),
-                    )
-                    .into_any_element()
             })
             .when(ready && total > self.app.library_visible_count, |this| {
+                // A stale snapshot re-prepare (or a scan) keeps the button in
+                // its loading state instead of looking dead.
+                let busy = self.app.loading || self.app.prepare_job_id.is_some();
                 this.child(
-                    Button::new("load-more")
-                        .label("Load more")
-                        .on_click(move |_, _, cx| {
-                            entity.update(cx, |this, cx| {
-                                this.app.library_visible_count =
-                                    this.app.library_visible_count.saturating_add(48);
-                                cx.notify();
-                            });
-                        }),
+                    h_flex().justify_center().child(
+                        Button::new("library.load-more")
+                            .label(if busy { "Loading…" } else { "Load more" })
+                            .loading_icon(Icon::new(IconName::LoaderCircle))
+                            .loading(busy)
+                            .on_click({
+                                let entity = entity.clone();
+                                move |_, _, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.app.library_visible_count =
+                                            this.app.library_visible_count.saturating_add(48);
+                                        cx.notify();
+                                    });
+                                }
+                            }),
+                    ),
                 )
             })
     }
@@ -225,7 +324,7 @@ impl GuiRoot {
         }
         let (top, _) = ARTWORK_PALETTE[(id as usize) % ARTWORK_PALETTE.len()];
         h_flex()
-            .id(("lib-row", id as usize))
+            .id(("library.row", id))
             .h(px(56.))
             .px_2()
             .gap_3()
@@ -257,45 +356,48 @@ impl GuiRoot {
                     )
                     .child(div().text_xs().text_color(muted).child(meta.join(" · "))),
             )
+            // The buttons only dispatch; the behavior lives once in the
+            // row's `on_action` handlers below, so click and context-menu
+            // paths can never drift apart.
             .child(
-                Button::new(("disc", id as usize))
+                Button::new((ElementId::from(("library.row-action", id)), "similar"))
                     .xsmall()
                     .ghost()
-                    .label("Similar")
+                    .icon(Icon::new(IconName::Replace))
+                    .tooltip("Similar games")
                     .on_click({
                         let entity = entity.clone();
-                        move |_, _, cx| {
-                            entity.update(cx, |this, cx| {
-                                this.app.discover_seed = id.to_string();
-                                this.app.current_view = View::Discover;
-                                this.app.start_discover_generate();
-                                this.arm_poll(cx);
-                                cx.notify();
-                            });
-                        }
+                        move |_, _, cx| seed_discover_from(&entity, id, cx)
                     }),
             )
             .child(
-                Button::new(("copy", id as usize))
+                Button::new((ElementId::from(("library.row-action", id)), "copy"))
                     .xsmall()
                     .ghost()
-                    .label("Copy ID")
-                    .on_click(move |_, window, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(id.to_string()));
-                        window.push_notification(format!("Copied {id}"), cx);
-                    }),
+                    .icon(Icon::new(IconName::Copy))
+                    .tooltip("Copy App ID")
+                    .on_click(move |_, window, cx| copy_app_id(id, window, cx)),
             )
             .child(
-                Button::new(("store", id as usize))
+                Button::new((ElementId::from(("library.row-action", id)), "store"))
                     .xsmall()
                     .ghost()
-                    .label("Store")
-                    .on_click(move |_, _, _| {
-                        crate::app::open_url_in_browser(&format!(
-                            "https://store.steampowered.com/app/{id}"
-                        ));
-                    }),
+                    .icon(Icon::new(IconName::ExternalLink))
+                    .tooltip("Open store page")
+                    .on_click(move |_, _, _| open_store_page(id)),
             )
+            .on_action({
+                let entity = entity.clone();
+                move |_: &SimilarGames, _, cx| seed_discover_from(&entity, id, cx)
+            })
+            .on_action(move |a: &CopyAppId, window, cx| copy_app_id(a.0, window, cx))
+            .on_action(move |a: &OpenStorePage, _, _| open_store_page(a.0))
+            .context_menu(move |menu, _, _| {
+                menu.menu("Similar games", Box::new(SimilarGames(id)))
+                    .menu("Copy App ID", Box::new(CopyAppId(id)))
+                    .separator()
+                    .menu("Open store page", Box::new(OpenStorePage(id)))
+            })
     }
 
     pub(crate) fn scope_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -304,7 +406,7 @@ impl GuiRoot {
             .position(|s| *s == self.app.library_scope)
             .unwrap_or(0);
         let entity = cx.entity();
-        TabBar::new("scope")
+        TabBar::new("library.scope")
             .segmented()
             .small()
             .selected_index(selected)
@@ -344,21 +446,52 @@ impl GuiRoot {
 
     pub(crate) fn library_filters(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
+        let deck = self.app.filter_deck_compatible;
+        let controller = self.app.filter_controller_full;
+        let hide_junk = self.app.filter_not_junk;
+        let exclude_hidden = self.app.filter_not_hidden;
         v_flex()
+            .id("library.filters")
             .gap_2()
+            // The collapsed "More filters" menu dispatches these actions;
+            // handling them here (an ancestor of the trigger) keeps every
+            // toggle's body in one place.
+            .on_action(cx.listener(|this, _: &ToggleDeckFilter, _, cx| {
+                this.app.filter_deck_compatible = !this.app.filter_deck_compatible;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ToggleControllerFilter, _, cx| {
+                this.app.filter_controller_full = !this.app.filter_controller_full;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ToggleHideJunkFilter, _, cx| {
+                this.app.filter_not_junk = !this.app.filter_not_junk;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ToggleExcludeHiddenFilter, _, cx| {
+                this.app.filter_not_hidden = !this.app.filter_not_hidden;
+                cx.notify();
+            }))
             .child(
                 h_flex()
                     .gap_2()
-                    .child(self.sort_cycle(cx))
                     .child(
-                        Button::new("sort-dir")
+                        // Select's own element id is derived from its state
+                        // entity, so the domain id lives on the wrapper.
+                        div()
+                            .id("library.sort-select")
+                            .child(Select::new(&self.library_sort_select).small().w(px(200.))),
+                    )
+                    .child(
+                        Button::new("library.sort-direction")
                             .small()
-                            .when(self.app.library_sort_desc, |b| b.primary())
-                            .label(if self.app.library_sort_desc {
-                                "Descending"
+                            .ghost()
+                            .icon(Icon::new(if self.app.library_sort_desc {
+                                IconName::SortDescending
                             } else {
-                                "Ascending"
-                            })
+                                IconName::SortAscending
+                            }))
+                            .tooltip("Toggle sort direction")
                             .on_click({
                                 let entity = entity.clone();
                                 move |_, _, cx| {
@@ -370,87 +503,33 @@ impl GuiRoot {
                             }),
                     )
                     .child(
-                        Button::new("deck-filter")
-                            .small()
-                            .when(self.app.filter_deck_compatible, |b| b.primary())
-                            .label("Steam Deck")
-                            .on_click({
-                                let entity = entity.clone();
-                                move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.app.filter_deck_compatible =
-                                            !this.app.filter_deck_compatible;
-                                        cx.notify();
-                                    });
-                                }
-                            }),
+                        div()
+                            .id("library.tier-select")
+                            .child(Select::new(&self.library_tier_select).small().w(px(150.))),
                     )
                     .child(
-                        Button::new("ctrl-filter")
+                        Button::new("library.more-filters")
                             .small()
-                            .when(self.app.filter_controller_full, |b| b.primary())
-                            .label("Full controller")
-                            .on_click({
-                                let entity = entity.clone();
-                                move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.app.filter_controller_full =
-                                            !this.app.filter_controller_full;
-                                        cx.notify();
-                                    });
-                                }
-                            }),
-                    )
-                    .child(
-                        Button::new("junk-ex")
-                            .small()
-                            .when(self.app.filter_not_junk, |b| b.primary())
-                            .label("Hide junk")
-                            .on_click({
-                                let entity = entity.clone();
-                                move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.app.filter_not_junk = !this.app.filter_not_junk;
-                                        cx.notify();
-                                    });
-                                }
-                            }),
-                    )
-                    .child(
-                        Button::new("hidden-ex")
-                            .small()
-                            .when(self.app.filter_not_hidden, |b| b.primary())
-                            .label("Exclude hidden")
-                            .on_click({
-                                let entity = entity.clone();
-                                move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.app.filter_not_hidden = !this.app.filter_not_hidden;
-                                        cx.notify();
-                                    });
-                                }
-                            }),
-                    )
-                    .child(
-                        Button::new("proton-filter")
-                            .small()
-                            .when(self.app.filter_proton_tier.is_some(), |b| b.primary())
-                            .label(format!(
-                                "Proton {}",
-                                self.app
-                                    .filter_proton_tier
-                                    .map(proton_tier_label)
-                                    .unwrap_or("Any")
-                            ))
-                            .on_click({
-                                let entity = entity.clone();
-                                move |_, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        this.app.filter_proton_tier =
-                                            cycle_proton_filter(this.app.filter_proton_tier);
-                                        cx.notify();
-                                    });
-                                }
+                            .ghost()
+                            .icon(Icon::new(IconName::EllipsisVertical))
+                            .tooltip("More filters")
+                            .dropdown_menu(move |menu, _, _| {
+                                menu.menu_with_check("Steam Deck", deck, Box::new(ToggleDeckFilter))
+                                    .menu_with_check(
+                                        "Full controller",
+                                        controller,
+                                        Box::new(ToggleControllerFilter),
+                                    )
+                                    .menu_with_check(
+                                        "Hide junk",
+                                        hide_junk,
+                                        Box::new(ToggleHideJunkFilter),
+                                    )
+                                    .menu_with_check(
+                                        "Exclude hidden",
+                                        exclude_hidden,
+                                        Box::new(ToggleExcludeHiddenFilter),
+                                    )
                             }),
                     ),
             )
@@ -502,38 +581,10 @@ impl GuiRoot {
             )
     }
 
-    pub(crate) fn sort_cycle(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let entity = cx.entity();
-        Button::new("sort")
-            .small()
-            .label(format!(
-                "Sort: {}{}",
-                sort_label(self.app.library_sort_by),
-                if self.app.library_sort_desc {
-                    " ↓"
-                } else {
-                    " ↑"
-                }
-            ))
-            .on_click(move |_, _, cx| {
-                entity.update(cx, |this, cx| {
-                    this.app.library_sort_by = match this.app.library_sort_by {
-                        LibrarySort::InstalledThenPlaytime => LibrarySort::Name,
-                        LibrarySort::Name => LibrarySort::Playtime,
-                        LibrarySort::Playtime => LibrarySort::Hltb,
-                        LibrarySort::Hltb => LibrarySort::Rating,
-                        LibrarySort::Rating => LibrarySort::AppId,
-                        LibrarySort::AppId => LibrarySort::InstalledThenPlaytime,
-                    };
-                    cx.notify();
-                });
-            })
-    }
-
     pub(crate) fn quick_chips(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
         let current = self.app.library_quick_view;
-        h_flex().gap_1().children(
+        h_flex().id("library.quick-chips").gap_1().children(
             [
                 QuickView::All,
                 QuickView::Cozy,
@@ -544,10 +595,18 @@ impl GuiRoot {
             .into_iter()
             .map(move |qv| {
                 let entity = entity.clone();
-                Button::new(qv.label())
+                let active = current == qv;
+                Button::new((ElementId::from("library.quick-chip"), qv.label()))
                     .small()
-                    .when(current == qv, |b| b.primary())
+                    .ghost()
+                    .selected(active)
                     .label(qv.label())
+                    // Editorial chips carry their fixed palette tint as
+                    // the selected fill; `All` stays on the theme accent.
+                    .when(active, |b| match quick_chip_tint(qv) {
+                        Some((bg, fg)) => b.bg(hx(bg)).text_color(hx(fg)),
+                        None => b,
+                    })
                     .on_click(move |_, window, cx| {
                         entity.update(cx, |this, cx| {
                             this.app.apply_quick_view(qv);
@@ -572,7 +631,7 @@ impl GuiRoot {
         };
         let bar_w = (160.0 * frac).clamp(0.0, 160.0);
         v_flex()
-            .id("insights")
+            .id("library.insights")
             .w(px(220.))
             .min_w(px(220.))
             .gap_2()
@@ -636,10 +695,20 @@ impl GuiRoot {
             )
             .child(div().text_xs().font_semibold().child("Recent activity"))
             .child(if insights.recent.is_empty() {
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("No recent activity")
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .child(
+                        Icon::new(IconName::Inbox)
+                            .small()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("No recent activity"),
+                    )
                     .into_any_element()
             } else {
                 v_flex()
@@ -674,7 +743,7 @@ impl GuiRoot {
                             )
                     }))
                     .child(
-                        Button::new("view-history")
+                        Button::new("library.view-history")
                             .xsmall()
                             .ghost()
                             .label("View full history")
@@ -697,4 +766,37 @@ impl GuiRoot {
                 ))
             })
     }
+}
+
+/// Editorial palette entry for a quick-view chip; `All` is neutral.
+fn quick_chip_tint(qv: QuickView) -> Option<(crate::theme::Rgb, crate::theme::Rgb)> {
+    match qv {
+        QuickView::All => None,
+        QuickView::Cozy => Some(crate::theme::tint(2)),
+        QuickView::StoryRich => Some(crate::theme::tint(4)),
+        QuickView::GreatOnDeck => Some(crate::theme::tint(3)),
+        QuickView::ShortSessions => Some(crate::theme::tint(1)),
+    }
+}
+
+/// Shared body for the row copy affordance: clipboard write plus toast.
+fn copy_app_id(app_id: u32, window: &mut Window, cx: &mut App) {
+    cx.write_to_clipboard(ClipboardItem::new_string(app_id.to_string()));
+    window.push_notification(Notification::success(format!("Copied {app_id}")), cx);
+}
+
+/// Shared body for the row store affordance.
+fn open_store_page(app_id: u32) {
+    open_url_in_browser(&format!("https://store.steampowered.com/app/{app_id}"));
+}
+
+/// Shared body for the row discover affordance: seed Discover and switch views.
+fn seed_discover_from(entity: &Entity<GuiRoot>, app_id: u32, cx: &mut App) {
+    entity.update(cx, |this, cx| {
+        this.app.discover_seed = app_id.to_string();
+        this.app.current_view = View::Discover;
+        this.app.start_discover_generate();
+        this.arm_poll(cx);
+        cx.notify();
+    });
 }

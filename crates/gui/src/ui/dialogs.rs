@@ -303,10 +303,6 @@ fn open_playlist_chooser(root: WeakEntity<GuiRoot>, window: &mut Window, cx: &mu
 type AlertCallback = std::rc::Rc<dyn Fn(&mut GuiRoot, &mut Context<GuiRoot>)>;
 
 /// A one-off confirmation for non-dry-run flows (backup restore, sync…).
-///
-/// Consumed by the Settings restore flow and view work packages; unused
-/// until those land.
-#[allow(dead_code)]
 pub(crate) struct AlertSpec {
     pub title: String,
     pub lines: Vec<String>,
@@ -316,7 +312,6 @@ pub(crate) struct AlertSpec {
 
 /// Open an alert-style confirm dialog. `on_ok` runs only when the user
 /// confirms; Escape and the overlay dismiss without side effects.
-#[allow(dead_code)]
 pub(crate) fn open_alert(
     entity: &Entity<GuiRoot>,
     window: &mut Window,

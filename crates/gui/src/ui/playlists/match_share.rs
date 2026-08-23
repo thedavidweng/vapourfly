@@ -2,12 +2,15 @@
 
 use gpui::{ClipboardItem, Context, IntoElement, ParentElement, Styled, div, prelude::*};
 use gpui_component::{
-    ActiveTheme, Sizable,
+    ActiveTheme, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
+    notification::Notification,
     tab::{Tab, TabBar},
+    tag::Tag,
     v_flex,
 };
+use vapourfly_core::models::{PlaylistContent, PlaylistFile};
 
 use crate::app::{PlaylistMatchTab, PlaylistShareTab, empty_value_label};
 
@@ -24,7 +27,7 @@ impl GuiRoot {
         v_flex()
             .gap_2()
             .child(
-                TabBar::new("match-sub")
+                TabBar::new("pl.match-tab")
                     .segmented()
                     .small()
                     .selected_index(tab)
@@ -58,15 +61,14 @@ impl GuiRoot {
                     };
                     v_flex()
                         .gap_2()
-                        .child(div().text_sm().child(format!(
-                            "Owned {} · missing {} · played {} · unplayed {} · hidden {} · junk {}",
-                            report.owned.len(),
-                            report.missing.len(),
-                            report.played.len(),
-                            report.unplayed.len(),
-                            report.hidden.len(),
-                            report.junk.len()
-                        )))
+                        .child(h_flex().flex_wrap().gap_2().children([
+                            report_pill("Owned", report.owned.len(), Tag::secondary()),
+                            report_pill("Missing", report.missing.len(), Tag::warning()),
+                            report_pill("Played", report.played.len(), Tag::success()),
+                            report_pill("Unplayed", report.unplayed.len(), Tag::info()),
+                            report_pill("Hidden", report.hidden.len(), Tag::warning()),
+                            report_pill("Junk", report.junk.len(), Tag::danger()),
+                        ]))
                         .when_some(report.completion_price.clone(), |this, price| {
                             this.child(
                                 div()
@@ -101,7 +103,7 @@ impl GuiRoot {
         v_flex()
             .gap_2()
             .child(
-                TabBar::new("share-tab")
+                TabBar::new("pl.share-tab")
                     .segmented()
                     .small()
                     .selected_index(tab)
@@ -124,13 +126,17 @@ impl GuiRoot {
             .child(match self.app.playlist_share_tab {
                 PlaylistShareTab::ShareCode => h_flex()
                     .gap_2()
+                    .flex_wrap()
                     .child(
-                        Button::new("share-copy")
+                        Button::new("pl.share-copy")
                             .small()
+                            .icon(IconName::Copy)
                             .label("Copy VF1")
+                            .tooltip("Copy share code to clipboard")
                             .on_click({
                                 let entity = entity.clone();
-                                move |_, _window, cx| {
+                                move |_, window, cx| {
+                                    let mut copied_summary: Option<String> = None;
                                     entity.update(cx, |this, cx| {
                                         match this.app.build_playlist_from_edit_fields() {
                                             Ok(pf) => {
@@ -143,8 +149,7 @@ impl GuiRoot {
                                                         cx.write_to_clipboard(
                                                             ClipboardItem::new_string(code),
                                                         );
-                                                        this.app.success_msg =
-                                                            Some("Share code copied.".into());
+                                                        copied_summary = Some(vf1_summary(&pf));
                                                     }
                                                     Err(e) => this.app.error = Some(e.to_string()),
                                                 }
@@ -153,11 +158,19 @@ impl GuiRoot {
                                         }
                                         cx.notify();
                                     });
+                                    if let Some(summary) = copied_summary {
+                                        window.push_notification(
+                                            Notification::success(format!(
+                                                "Share code copied · {summary}"
+                                            )),
+                                            cx,
+                                        );
+                                    }
                                 }
                             }),
                     )
                     .child(
-                        Button::new("share-import-toggle")
+                        Button::new("pl.share-import-toggle")
                             .small()
                             .when(self.app.playlist_show_import, |b| b.primary())
                             .label("Import VF1")
@@ -174,7 +187,7 @@ impl GuiRoot {
                     )
                     .when(self.app.playlist_show_import, |this| {
                         this.child(
-                            Button::new("share-paste")
+                            Button::new("pl.share-paste")
                                 .small()
                                 .label("Paste and import")
                                 .on_click({
@@ -237,4 +250,25 @@ impl GuiRoot {
                     .into_any_element(),
             })
     }
+}
+
+/// Renders one match-report summary pill with its count trailing on the
+/// right.
+fn report_pill(label: &'static str, count: usize, pill: Tag) -> impl IntoElement {
+    pill.small().child(
+        h_flex()
+            .items_center()
+            .gap_1()
+            .child(div().child(label))
+            .child(div().font_medium().child(count.to_string())),
+    )
+}
+
+/// One-line human summary of what a VF1 share code encodes.
+fn vf1_summary(pf: &PlaylistFile) -> String {
+    let scope = match &pf.playlist.content {
+        PlaylistContent::Manual { app_ids } => format!("{} games", app_ids.len()),
+        PlaylistContent::Rules { rules } => format!("{} rules", rules.len()),
+    };
+    format!("'{}' · {scope}", pf.playlist.name)
 }

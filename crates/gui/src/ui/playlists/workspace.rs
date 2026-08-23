@@ -2,7 +2,7 @@
 
 use gpui::{App, Context, IntoElement, ParentElement, Styled, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Sizable,
+    ActiveTheme, Icon, IconName, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     input::Input,
@@ -12,7 +12,7 @@ use gpui_component::{
 use vapourfly_core::models::{JunkMode, PlaylistContent};
 
 use crate::app::{
-    ARTWORK_PALETTE, PlaylistDetailTab, empty_value_label, format_playtime, playlist_avg_hltb,
+    ARTWORK_PALETTE, PlaylistDetailTab, format_playtime, playlist_avg_hltb,
     playlist_content_type_label, playlist_cover_app_id, playlist_game_count,
 };
 
@@ -89,6 +89,18 @@ impl GuiRoot {
         let avg = games
             .as_ref()
             .and_then(|g| playlist_avg_hltb(&content, self.app.playlist_match_report.as_ref(), g));
+        // Join only the segments that have a value; placeholders in the
+        // middle of a dot-separated line read like debug output.
+        let mut meta = vec![
+            playlist_content_type_label(&content).to_string(),
+            format!(
+                "{} games",
+                playlist_game_count(&content, self.app.playlist_match_report.as_ref())
+            ),
+        ];
+        if let Some(avg) = avg {
+            meta.push(format!("avg HLTB {}", format_playtime(avg)));
+        }
         h_flex()
             .gap_3()
             .child(div().w(px(88.)).h(px(48.)).rounded(px(6.)).bg(hx(top)))
@@ -108,16 +120,7 @@ impl GuiRoot {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(format!(
-                                "{} · {} games · avg HLTB {}",
-                                playlist_content_type_label(&content),
-                                playlist_game_count(
-                                    &content,
-                                    self.app.playlist_match_report.as_ref()
-                                ),
-                                avg.map(format_playtime)
-                                    .unwrap_or_else(|| empty_value_label().into()),
-                            )),
+                            .child(meta.join(" · ")),
                     ),
             )
     }
@@ -156,29 +159,58 @@ impl GuiRoot {
                     ),
             )
             .child(Input::new(&self.playlist_csv_input).small().w_full())
-            .child(
-                h_flex().gap_2().children(
-                    self.app
-                        .prepared_games(JunkMode::Default)
-                        .into_iter()
-                        .flat_map(|games| games.iter().cloned().collect::<Vec<_>>())
-                        .filter(|g| {
-                            self.app.playlist_game_search.is_empty()
-                                || g.name
-                                    .to_lowercase()
-                                    .contains(&self.app.playlist_game_search.to_lowercase())
-                                || g.app_id.to_string().contains(&self.app.playlist_game_search)
-                        })
-                        .take(12)
-                        .map(|g| {
-                            let entity = entity.clone();
-                            let id = g.app_id;
-                            let on = ids.contains(&id);
-                            Button::new(("addg", id as usize))
-                                .small()
-                                .when(on, |b| b.primary())
-                                .label(g.name)
-                                .on_click(move |_, window, cx| {
+            .child({
+                let candidates: Vec<_> = self
+                    .app
+                    .prepared_games(JunkMode::Default)
+                    .into_iter()
+                    .flat_map(|games| games.iter().cloned().collect::<Vec<_>>())
+                    .filter(|g| {
+                        self.app.playlist_game_search.is_empty()
+                            || g.name
+                                .to_lowercase()
+                                .contains(&self.app.playlist_game_search.to_lowercase())
+                            || g.app_id.to_string().contains(&self.app.playlist_game_search)
+                    })
+                    .take(12)
+                    .collect();
+                if candidates.is_empty() {
+                    // Empty state: either nothing is loaded yet (fresh view or
+                    // a brand-new playlist) or the prepared library has no
+                    // match for the current search.
+                    let message = if ids.is_empty() && self.app.playlist_last_import.is_none() {
+                        "No playlist loaded — select one from the rail, or press New."
+                    } else {
+                        "No matching games — adjust the search, or scan and prepare your library."
+                    };
+                    h_flex()
+                        .gap_2()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(Icon::new(IconName::Inbox))
+                        .child(div().text_sm().child(message))
+                } else {
+                    h_flex().gap_2().children(candidates.into_iter().map(|g| {
+                        let entity = entity.clone();
+                        let id = g.app_id;
+                        let on = ids.contains(&id);
+                        // Membership toggles: adding is Plus, removing is
+                        // Delete. Removal just flips membership again, so it
+                        // stays quiet (no danger tint, no confirmation).
+                        Button::new(("addg", id as usize))
+                            .small()
+                            .when(on, |b| b.primary())
+                            .icon(if on {
+                                IconName::Delete
+                            } else {
+                                IconName::Plus
+                            })
+                            .tooltip(if on {
+                                "Remove from playlist"
+                            } else {
+                                "Add games"
+                            })
+                            .label(g.name)
+                            .on_click(move |_, window, cx| {
                                     entity.update(cx, |this, cx| {
                                         let mut set: Vec<u32> = this
                                             .app
@@ -205,8 +237,8 @@ impl GuiRoot {
                                         cx.notify();
                                     });
                                 })
-                        }),
-                ),
-            )
+                    }))
+                }
+            })
     }
 }

@@ -1,24 +1,35 @@
 //! Junk triage panel.
 
 use gpui::{
-    Context, InteractiveElement, IntoElement, ParentElement, Styled, div, prelude::*, px,
+    Context, InteractiveElement, IntoElement, ParentElement, Styled, div, prelude::*, rems,
     uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Disableable, Sizable, StyledExt,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
-    h_flex, v_flex,
+    h_flex,
+    tab::{Tab, TabBar},
+    tag::Tag,
+    v_flex,
 };
 
 use crate::app::{JunkModeChoice, PendingAction};
 
 use crate::ui::GuiRoot;
 
+/// Mode choices in display order for the segmented mode switcher.
+const JUNK_MODES: [JunkModeChoice; 3] = [
+    JunkModeChoice::Default,
+    JunkModeChoice::Strict,
+    JunkModeChoice::Aggressive,
+];
+
 impl GuiRoot {
     pub(crate) fn junk_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
         let selected = self.app.junk_selected.len();
+        let preview_loading = self.app.junk_preview_loading;
         v_flex()
             .id("junk")
             .size_full()
@@ -28,7 +39,7 @@ impl GuiRoot {
                     .justify_between()
                     .child(div().text_xl().font_semibold().child("Junk cleanup"))
                     .child(
-                        Button::new("junk-back")
+                        Button::new("junk.back")
                             .ghost()
                             .label("Back to Library")
                             .on_click({
@@ -42,41 +53,41 @@ impl GuiRoot {
                             }),
                     ),
             )
-            .child(
-                h_flex().gap_2().children(
-                    [
-                        JunkModeChoice::Default,
-                        JunkModeChoice::Strict,
-                        JunkModeChoice::Aggressive,
-                    ]
-                    .into_iter()
-                    .map(|mode| {
+            .child({
+                let active_ix = JUNK_MODES
+                    .iter()
+                    .position(|mode| *mode == self.app.junk_mode)
+                    .unwrap_or(0);
+                TabBar::new("junk.mode")
+                    .segmented()
+                    .small()
+                    .selected_index(active_ix)
+                    .on_click({
                         let entity = entity.clone();
-                        let active = self.app.junk_mode == mode;
-                        Button::new(mode.label())
-                            .small()
-                            .when(active, |b| b.primary())
-                            .label(mode.label())
-                            .on_click(move |_, _, cx| {
+                        move |ix, _, cx| {
+                            if let Some(mode) = JUNK_MODES.get(*ix).copied() {
                                 entity.update(cx, |this, cx| {
                                     this.app.junk_mode = mode;
                                     cx.notify();
                                 });
-                            })
-                    }),
-                ),
-            )
+                            }
+                        }
+                    })
+                    .children(JUNK_MODES.iter().map(|mode| Tab::new().label(mode.label())))
+            })
             .child(
                 h_flex()
                     .gap_2()
                     .child(
-                        Button::new("junk-preview")
-                            .primary()
-                            .label(if self.app.junk_preview_loading {
-                                "Previewing…"
+                        Button::new("junk.preview")
+                            .outline()
+                            .icon(if preview_loading {
+                                IconName::LoaderCircle
                             } else {
-                                "Preview"
+                                IconName::Eye
                             })
+                            .label("Preview")
+                            .disabled(preview_loading)
                             .on_click({
                                 let entity = entity.clone();
                                 move |_, _, cx| {
@@ -89,7 +100,7 @@ impl GuiRoot {
                             }),
                     )
                     .child(
-                        Button::new("junk-show-all")
+                        Button::new("junk.show-all")
                             .small()
                             .when(self.app.junk_show_all_evaluated, |b| b.primary())
                             .label("Show all evaluated")
@@ -105,9 +116,11 @@ impl GuiRoot {
                             }),
                     )
                     .child(
-                        Button::new("junk-all")
+                        Button::new("junk.select-all")
                             .small()
+                            .ghost()
                             .label("Select all junk")
+                            .tooltip("Select all candidates")
                             .on_click({
                                 let entity = entity.clone();
                                 move |_, _, cx| {
@@ -124,19 +137,26 @@ impl GuiRoot {
                                 }
                             }),
                     )
-                    .child(Button::new("junk-clear").small().label("Clear").on_click({
-                        let entity = entity.clone();
-                        move |_, _, cx| {
-                            entity.update(cx, |this, cx| {
-                                this.app.junk_selected.clear();
-                                cx.notify();
-                            });
-                        }
-                    }))
                     .child(
-                        Button::new("junk-apply")
+                        Button::new("junk.select-clear")
                             .small()
-                            .label(format!("Apply {selected} selected"))
+                            .ghost()
+                            .label("Clear")
+                            .tooltip("Clear selection")
+                            .on_click({
+                                let entity = entity.clone();
+                                move |_, _, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.app.junk_selected.clear();
+                                        cx.notify();
+                                    });
+                                }
+                            }),
+                    )
+                    .child(
+                        Button::new("junk.apply")
+                            .small()
+                            .label("Apply to collection…")
                             .disabled(selected == 0 || self.app.ui_demo)
                             .on_click({
                                 let entity = entity.clone();
@@ -150,9 +170,10 @@ impl GuiRoot {
                             }),
                     )
                     .child(
-                        Button::new("junk-hide")
+                        Button::new("junk.hide")
                             .small()
-                            .label(format!("Hide {selected}"))
+                            .outline()
+                            .label("Hide…")
                             .disabled(selected == 0 || self.app.ui_demo)
                             .on_click({
                                 let entity = entity.clone();
@@ -167,14 +188,19 @@ impl GuiRoot {
                     ),
             )
             .child(
-                div()
+                h_flex()
+                    .justify_between()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child(format!(
-                        "Evaluated {} · selected {selected} · {}",
-                        self.app.junk_results.len(),
-                        self.app.junk_mode.label()
-                    )),
+                    .child(div().child(format!("Detection mode: {}", self.app.junk_mode.label())))
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .child(
+                                div().child(format!("Evaluated {}", self.app.junk_results.len())),
+                            )
+                            .child(div().child(format!("Selected {selected}"))),
+                    ),
             )
             .child({
                 let rows: Vec<_> = self
@@ -185,59 +211,118 @@ impl GuiRoot {
                     .cloned()
                     .collect();
                 let n = rows.len();
-                uniform_list(
-                    "junk-rows",
-                    n,
-                    cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                        let visible: Vec<_> = this
-                            .app
-                            .junk_results
-                            .iter()
-                            .filter(|d| this.app.junk_show_all_evaluated || d.is_junk)
-                            .cloned()
-                            .collect();
-                        range
-                            .filter_map(|ix| visible.get(ix).cloned())
-                            .map(|d| {
-                                let entity = cx.entity();
-                                let id = d.app_id;
-                                let checked = this.app.junk_selected.contains(&id);
-                                h_flex()
-                                    .id(("junk-row", id as usize))
-                                    .h(px(40.))
-                                    .gap_2()
-                                    .child(
-                                        Checkbox::new(("junk-cb", id as usize))
-                                            .checked(checked)
-                                            .on_click(move |_, _, cx| {
-                                                entity.update(cx, |this, cx| {
-                                                    if this.app.junk_selected.contains(&id) {
-                                                        this.app.junk_selected.remove(&id);
-                                                    } else {
-                                                        this.app.junk_selected.insert(id);
-                                                    }
-                                                    cx.notify();
-                                                });
-                                            }),
-                                    )
-                                    .child(div().w(px(72.)).text_xs().child(id.to_string()))
-                                    .child(div().flex_1().text_sm().child(d.name.clone()))
-                                    .child(div().w(px(64.)).text_xs().child(if d.is_junk {
-                                        "Junk"
-                                    } else {
-                                        "Keep"
-                                    }))
-                                    .child(
-                                        div()
-                                            .w(px(80.))
-                                            .text_xs()
-                                            .child(format!("{:.0}%", d.confidence * 100.0)),
-                                    )
-                            })
-                            .collect()
-                    }),
-                )
-                .flex_1()
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .when(n == 0, |this| {
+                        this.child(
+                            v_flex()
+                                .flex_1()
+                                .items_center()
+                                .justify_center()
+                                .gap_2()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(Icon::new(IconName::Inbox).size_6())
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .child("No candidates match the current mode"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .child("Try another detection mode or run Preview."),
+                                ),
+                        )
+                    })
+                    .when(n > 0, |this| {
+                        this.child({
+                            div().flex().flex_row().flex_1().min_h_0().child(
+                                uniform_list(
+                                    "junk-rows",
+                                    n,
+                                    cx.processor(
+                                        |this, range: std::ops::Range<usize>, _window, cx| {
+                                            let visible: Vec<_> = this
+                                                .app
+                                                .junk_results
+                                                .iter()
+                                                .filter(|d| {
+                                                    this.app.junk_show_all_evaluated || d.is_junk
+                                                })
+                                                .cloned()
+                                                .collect();
+                                            range
+                                                .filter_map(|ix| visible.get(ix).cloned())
+                                                .map(|d| {
+                                                    let entity = cx.entity();
+                                                    let id = d.app_id;
+                                                    let checked =
+                                                        this.app.junk_selected.contains(&id);
+                                                    h_flex()
+                                                        .id(("junk-row", id as usize))
+                                                        .h_10()
+                                                        .items_center()
+                                                        .gap_2()
+                                                        .child(
+                                                            Checkbox::new(("junk-cb", id as usize))
+                                                                .checked(checked)
+                                                                .on_click(move |_, _, cx| {
+                                                                    entity.update(
+                                                                        cx,
+                                                                        |this, cx| {
+                                                                            if this
+                                                                                .app
+                                                                                .junk_selected
+                                                                                .contains(&id)
+                                                                            {
+                                                                                this.app
+                                                                                    .junk_selected
+                                                                                    .remove(&id);
+                                                                            } else {
+                                                                                this.app
+                                                                                    .junk_selected
+                                                                                    .insert(id);
+                                                                            }
+                                                                            cx.notify();
+                                                                        },
+                                                                    );
+                                                                }),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .w(rems(4.5))
+                                                                .text_xs()
+                                                                .child(id.to_string()),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .flex_1()
+                                                                .text_sm()
+                                                                .child(d.name.clone()),
+                                                        )
+                                                        .child(div().w_16().child(if d.is_junk {
+                                                            Tag::warning().small().child("Junk")
+                                                        } else {
+                                                            Tag::secondary().small().child("Keep")
+                                                        }))
+                                                        .child(div().w_20().child(
+                                                            Tag::secondary().small().child(
+                                                                format!(
+                                                                    "{:.0}%",
+                                                                    d.confidence * 100.0
+                                                                ),
+                                                            ),
+                                                        ))
+                                                })
+                                                .collect()
+                                        },
+                                    ),
+                                )
+                                .flex_1(),
+                            )
+                        })
+                    })
             })
     }
 }

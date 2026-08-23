@@ -14,7 +14,6 @@ pub mod discover;
 pub mod junk;
 pub mod library;
 pub mod motion;
-mod overlays;
 pub mod playlists;
 pub mod recommend;
 pub mod root;

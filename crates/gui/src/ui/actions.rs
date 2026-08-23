@@ -143,12 +143,13 @@ pub(crate) fn apply_root_handlers(el: Div, cx: &mut Context<GuiRoot>) -> Div {
     .on_action(cx.listener(|this, _: &ToggleTheme, window, cx| {
         this.toggle_theme(window, cx);
     }))
-    .on_action(cx.listener(|this, _: &ToggleSidebar, window, _cx| {
+    .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
         let width: f32 = window.viewport_size().width.into();
         let effective = this
             .sidebar_collapsed
             .unwrap_or(crate::theme::is_compact_sidebar(width));
         this.sidebar_collapsed = Some(!effective);
+        cx.notify();
     }))
     .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
         this.search.read(cx).focus_handle(cx).focus(window);
