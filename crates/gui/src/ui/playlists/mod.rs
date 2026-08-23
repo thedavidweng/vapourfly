@@ -73,20 +73,7 @@ impl GuiRoot {
                                         let entity = entity.clone();
                                         move |_, _, cx| {
                                             entity.update(cx, |this, cx| {
-                                                match this.app.build_playlist_from_edit_fields() {
-                                                    Ok(pf) => match this.app.store_playlist(&pf) {
-                                                        Ok(()) => {
-                                                            this.app.success_msg = Some(format!(
-                                                                "Saved {}",
-                                                                pf.playlist.id
-                                                            ));
-                                                            this.app.refresh_playlist_store_ids();
-                                                        }
-                                                        Err(e) => this.app.error = Some(e),
-                                                    },
-                                                    Err(e) => this.app.error = Some(e),
-                                                }
-                                                cx.notify();
+                                                this.save_playlist_from_editor(cx);
                                             });
                                         }
                                     }),
@@ -214,5 +201,23 @@ impl GuiRoot {
                         });
                     })
             }))
+    }
+}
+
+impl GuiRoot {
+    /// Commit the playlist editor into the store (Save button and the
+    /// cmd-s action share this path).
+    pub(crate) fn save_playlist_from_editor(&mut self, cx: &mut Context<Self>) {
+        match self.app.build_playlist_from_edit_fields() {
+            Ok(pf) => match self.app.store_playlist(&pf) {
+                Ok(()) => {
+                    self.app.success_msg = Some(format!("Saved {}", pf.playlist.id));
+                    self.app.refresh_playlist_store_ids();
+                }
+                Err(e) => self.app.error = Some(e),
+            },
+            Err(e) => self.app.error = Some(e),
+        }
+        cx.notify();
     }
 }

@@ -25,6 +25,10 @@ mod stack_contract {
             !src.contains(&banned),
             "entry must not start that immediate-mode toolkit app"
         );
+        assert!(
+            src.contains("with_assets(gpui_component_assets::Assets)"),
+            "entry must register the icon asset bundle so IconName SVGs resolve"
+        );
     }
 
     #[test]

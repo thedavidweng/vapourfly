@@ -36,7 +36,7 @@ impl GuiRoot {
         });
         let entity = cx.entity();
 
-        v_flex()
+        let shell = v_flex()
             .size_full()
             .bg(hx(tokens.canvas))
             .text_color(hx(tokens.text_primary))
@@ -71,7 +71,8 @@ impl GuiRoot {
             })
             .when(self.app.playlist_chooser != PlaylistChooser::None, |this| {
                 this.child(self.chooser_overlay(entity.clone(), cx))
-            })
+            });
+        super::actions::apply_root_handlers(shell, cx)
     }
 
     pub(crate) fn top_chrome(

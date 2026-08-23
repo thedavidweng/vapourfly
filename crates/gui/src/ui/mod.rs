@@ -4,13 +4,16 @@
 //! and the retained input entities. Shared presentation helpers are in
 //! [`shared`], the token bridge in [`appearance`].
 
+pub mod actions;
 pub mod appearance;
 pub mod chrome;
 pub mod collections;
 pub mod data_sources;
+pub mod dialogs;
 pub mod discover;
 pub mod junk;
 pub mod library;
+pub mod motion;
 mod overlays;
 pub mod playlists;
 pub mod recommend;
