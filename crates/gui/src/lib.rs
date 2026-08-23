@@ -29,33 +29,43 @@ mod stack_contract {
 
     #[test]
     fn library_and_junk_use_virtualized_uniform_list() {
-        let src = include_str!("ui.rs");
+        let library = include_str!("ui/library.rs");
         assert!(
-            src.contains("uniform_list("),
+            library.contains("uniform_list("),
             "library-scale collections must use gpui uniform_list"
         );
-        assert!(src.contains("\"library-rows\""), "library list id");
-        assert!(src.contains("\"junk-rows\""), "junk table id");
+        assert!(library.contains("\"library-rows\""), "library list id");
+        let junk = include_str!("ui/junk.rs");
+        assert!(junk.contains("\"junk-rows\""), "junk table id");
+        assert!(
+            junk.contains("uniform_list("),
+            "junk table must stay virtualized"
+        );
     }
 
     #[test]
     fn jobs_repaint_through_job_wake_and_poll_resets() {
-        let src = include_str!("ui.rs");
+        let root = include_str!("ui/root.rs");
         assert!(
-            src.contains("JobWake::new()"),
+            root.contains("JobWake::new()"),
             "RepaintHook must signal JobWake so JobSlots wake the entity"
         );
         assert!(
-            src.contains("this.poll_armed = false"),
+            root.contains("this.poll_armed = false"),
             "idle poll loop must reset poll_armed so later jobs re-arm"
         );
+        assert!(root.contains("playlist_name_input"));
+        assert!(root.contains("playlist_id_input"));
+        assert!(root.contains("playlist_desc_input"));
+        assert!(root.contains("playlist_csv_input"));
+    }
+
+    #[test]
+    fn backup_restore_keeps_dedicated_route() {
+        let settings = include_str!("ui/settings.rs");
         assert!(
-            src.contains("begin_backup_restore"),
+            settings.contains("begin_backup_restore"),
             "backup restore must not go through start_dry_run"
         );
-        assert!(src.contains("playlist_name_input"));
-        assert!(src.contains("playlist_id_input"));
-        assert!(src.contains("playlist_desc_input"));
-        assert!(src.contains("playlist_csv_input"));
     }
 }
