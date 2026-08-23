@@ -7,7 +7,8 @@
 //! actions bubble from the focused surface up to that container.
 
 use gpui::{
-    App, Context, Div, Focusable as _, InteractiveElement as _, KeyBinding, Menu, MenuItem, actions,
+    Action, App, Context, Div, Focusable as _, InteractiveElement as _, KeyBinding, Menu, MenuItem,
+    actions,
 };
 
 use super::root::GuiRoot;
@@ -32,6 +33,22 @@ actions!(
         Quit,
     ]
 );
+
+/// Row-scoped command: copy a game's app id to the clipboard. Handled on
+/// the row element so the payload never needs to reach the root handler.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = vapourfly, no_json)]
+pub(crate) struct CopyAppId(pub u32);
+
+/// Row-scoped command: use a game as the Discover seed.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = vapourfly, no_json)]
+pub(crate) struct SimilarGames(pub u32);
+
+/// Row-scoped command: open the game's Steam store page.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = vapourfly, no_json)]
+pub(crate) struct OpenStorePage(pub u32);
 
 /// Bind the default shortcuts. Global context: Vapourfly commands stay
 /// live regardless of which surface holds focus.
