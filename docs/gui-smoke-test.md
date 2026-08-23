@@ -209,3 +209,30 @@ Shell defaults to the light desktop token theme (warm canvas, white cards, orchi
 - The left sidebar highlights the currently selected view.
 - The Refresh button re-scans and updates the Library poster grid.
 - Light shell, macOS-style top chrome, and monochrome line icons remain consistent across destinations.
+
+## Component-adoption pass (2026-08-23)
+
+New interactive checks covering the gpui-component refactor:
+
+### 11. Commands and menus
+1. Press `cmd-1`…`cmd-7` — each navigates to the matching destination (Discover, Library, Recommendations, Playlists, Collections, Data Sources, Settings).
+2. Open the macOS **View** menu and pick a destination — same navigation result.
+3. `cmd-r` triggers the library refresh; `cmd-f` focuses the library search; `cmd-j` opens Junk; `cmd-b` toggles the sidebar; `cmd-shift-t` switches theme.
+4. `cmd-s` on the Playlists editor saves the playlist.
+
+### 12. Library controls
+1. Sort is a **Select** dropdown — choose "Name" and confirm rows reorder; the reverse-sync keeps the dropdown consistent after quick-view chip changes.
+2. Proton tier is a **Select** ("Any"… "Platinum").
+3. The **More filters** button (⋮) opens a check-item menu for deck/controller/hide-junk/exclude-hidden; toggling updates row visibility immediately.
+4. Row actions: hover shows Replace/Copy/ExternalLink icon buttons with tooltips; right-click opens a context menu with the same three commands; Copy pushes a "Copied …" notification.
+5. With filters that match nothing, an Inbox-style empty state appears.
+
+### 13. Dialogs and gates
+1. Junk → select candidates → **Apply to collection…** — the confirm dialog names the action, shows the dry-run diff when ready, Escape dismisses without writing, and the verb button commits through the backup-first path.
+2. In `--ui-demo`, the dialog's verb button stays disabled (write gate).
+3. Playlists rail right-click offers Open / Sync… / Export…; Sync… asks to confirm, then runs the dry-run flow.
+
+### 14. Motion and reduce motion
+1. Banners and dialogs fade in briefly (~200 ms); sidebar collapse animates closed→open smoothly.
+2. Settings → Appearance → enable **Reduce motion**, repeat step 1 — transitions become instant.
+3. Relaunch — the reduce-motion preference persists.
