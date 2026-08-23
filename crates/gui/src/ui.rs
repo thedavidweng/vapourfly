@@ -431,7 +431,6 @@ impl GuiRoot {
                 h_flex()
                     .flex_1()
                     .min_h_0()
-                    .items_start()
                     .child(self.sidebar(cx))
                     .child(
                         v_flex()
@@ -548,7 +547,12 @@ impl GuiRoot {
         Sidebar::left()
             .collapsible(false)
             .w(px(SIDEBAR_WIDTH))
-            .header(SidebarHeader::new().child(div().text_sm().font_semibold().child("Library")))
+            // Brand slot; the active page is already shown in the title bar
+            // breadcrumb, and the version lives in the sidebar footer.
+            .header(
+                SidebarHeader::new()
+                    .child(div().text_sm().font_semibold().child("Vapourfly")),
+            )
             .footer(
                 SidebarFooter::new().child(
                     div()
@@ -644,7 +648,8 @@ impl GuiRoot {
 
         v_flex()
             .id("library")
-            .size_full()
+            .flex_1()
+            .min_h_0()
             .gap_3()
             .child(
                 h_flex()
@@ -740,7 +745,16 @@ impl GuiRoot {
                         .child(rail)
                         .into_any_element()
                 } else {
-                    h_flex()
+                    // `h_flex()` centers on the cross axis (`h_flex()` is
+                    // `flex().flex_row().items_center()`), which collapses the
+                    // uniform_list to zero height: a virtual list measures its
+                    // content height as 0, and centered children keep their
+                    // content size instead of stretching to the row height.
+                    // Use a plain flex row (default cross-axis stretch) so the
+                    // virtual list fills the available height.
+                    div()
+                        .flex()
+                        .flex_row()
                         .flex_1()
                         .min_h_0()
                         .gap_4()
@@ -790,15 +804,24 @@ impl GuiRoot {
         let (badge, _, _) = game_primary_badge(&game);
         let detail = game_card_detail(&game);
         let play = format_playtime(game.playtime_minutes.unwrap_or(0));
-        let last = game
-            .last_played_unix
-            .map(relative_time_ago)
-            .unwrap_or_else(|| empty_value_label().into());
+        let last = game.last_played_unix.map(relative_time_ago);
         let deck = if game_shows_deck_badge(&game) {
-            "Deck"
+            Some("Deck")
         } else {
-            empty_value_label()
+            None
         };
+        // Join only the segments that have a value; raw `None` placeholders in
+        // the middle of a dot-separated line read like debug output.
+        let mut meta: Vec<String> = vec![badge.into(), play];
+        if let Some(deck) = deck {
+            meta.push(deck.into());
+        }
+        if let Some(last) = &last {
+            meta.push(last.clone());
+        }
+        if !detail.is_empty() {
+            meta.push(detail);
+        }
         let (top, _) = ARTWORK_PALETTE[(id as usize) % ARTWORK_PALETTE.len()];
         h_flex()
             .id(("lib-row", id as usize))
@@ -835,7 +858,7 @@ impl GuiRoot {
                         div()
                             .text_xs()
                             .text_color(muted)
-                            .child(format!("{badge} · {play} · {deck} · {last} · {detail}")),
+                            .child(meta.join(" · ")),
                     ),
             )
             .child(
@@ -1464,7 +1487,9 @@ impl GuiRoot {
                             .id(("disc", pick.app_id as usize))
                             .h(px(44.))
                             .gap_3()
-                            .child(div().w(px(64.)).text_xs().child(format!("{:.0}%", pick.score * 100.0)))
+                            .child(
+                                div().w(px(64.)).text_xs().child(format!("{:.1} pts", pick.score)),
+                            )
                             .child(div().flex_1().text_sm().child(pick.name.clone()))
                             .child(div().text_xs().text_color(cx.theme().muted_foreground).child(
                                 pick.reasons.first().map_or_else(
@@ -1597,6 +1622,22 @@ impl GuiRoot {
                             .and_then(|games| games.iter().find(|g| g.app_id == rec.app_id))
                             .map(GameSummary::from)
                             .unwrap_or_default();
+                        // Composite score is a weight sum, not a percentage;
+                        // show it as points. Metadata segments join only when
+                        // present so no raw `None` placeholders appear.
+                        let mut meta: Vec<String> = vec![
+                            format!("{:.1} pts", rec.score),
+                            format_playtime(summary.playtime_minutes),
+                        ];
+                        if let Some(hltb) = summary.hltb_minutes {
+                            meta.push(format_playtime(hltb));
+                        }
+                        if let Some(rating) = summary.rating_0_5 {
+                            meta.push(format!("{rating:.1}/5"));
+                        }
+                        if let Some(tier) = summary.proton_tier {
+                            meta.push(proton_tier_label(tier).to_string());
+                        }
                         v_flex()
                             .id(("rec-top", rec.app_id as usize))
                             .w(px(220.))
@@ -1612,23 +1653,7 @@ impl GuiRoot {
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(format!(
-                                        "{:.0}% · {} · {} · rating {} · {}",
-                                        rec.score * 100.0,
-                                        format_playtime(summary.playtime_minutes),
-                                        summary
-                                            .hltb_minutes
-                                            .map(format_playtime)
-                                            .unwrap_or_else(|| empty_value_label().into()),
-                                        summary
-                                            .rating_0_5
-                                            .map(|r| format!("{r:.1}"))
-                                            .unwrap_or_else(|| empty_value_label().into()),
-                                        summary
-                                            .proton_tier
-                                            .map(|t| format!("{t:?}"))
-                                            .unwrap_or_else(|| empty_value_label().into()),
-                                    )),
+                                    .child(meta.join(" · ")),
                             )
                     }))
             })
@@ -1649,7 +1674,7 @@ impl GuiRoot {
                                         div()
                                             .w(px(48.))
                                             .text_xs()
-                                            .child(format!("{:.0}%", rec.score * 100.0)),
+                                            .child(format!("{:.1}", rec.score)),
                                     )
                                     .child(div().flex_1().text_sm().child(rec.name.clone()))
                                     .child(
