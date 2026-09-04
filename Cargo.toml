@@ -22,7 +22,7 @@ clap = { version = "4", features = ["derive"] }
 toml = "1"
 ureq = "3"
 winreg = "0.56"
-serial_test = "3"
+serial_test = "4"
 gpui = "0.2.2"
 gpui-component = "0.5.1"
 rfd = "0.15"
