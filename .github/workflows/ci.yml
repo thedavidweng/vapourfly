@@ -21,7 +21,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Linux GUI build dependencies
         if: runner.os == 'Linux'
@@ -37,13 +37,13 @@ jobs:
             libssl-dev
 
       - name: Install Rust ${{ env.VAPOURFLY_CI_TOOLCHAIN }}
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
         with:
           toolchain: ${{ env.VAPOURFLY_CI_TOOLCHAIN }}
           components: rustfmt, clippy
 
       - name: Cache cargo registry and target
-        uses: actions/cache@v6.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -64,7 +64,7 @@ jobs:
 
       - name: Install cargo-deny
         if: runner.os == 'Linux'
-        uses: taiki-e/install-action@cargo-deny
+        uses: taiki-e/install-action@f1dd293276342cf06b423f44b1c7c9312a2d2ecb # cargo-deny
 
       - name: cargo deny check
         if: runner.os == 'Linux'
