@@ -29,6 +29,16 @@ allow = [
     "NCSA",
     "MPL-2.0",
     "CDLA-Permissive-2.0",
+    "LicenseRef-bzip2-1.0.6",
+]
+
+# libbz2-rs-sys declares license = "bzip2-1.0.6" (not an SPDX id). Map it to a
+# LicenseRef so cargo-deny can evaluate the real bzip2 license file contents.
+[[licenses.clarify]]
+crate = "libbz2-rs-sys"
+expression = "LicenseRef-bzip2-1.0.6"
+license-files = [
+    { path = "LICENSE", hash = 0x6022ceaf },
 ]
 
 [sources]
