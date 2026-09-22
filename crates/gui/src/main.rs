@@ -2,11 +2,10 @@
 
 use std::path::PathBuf;
 
-use gpui_kit::{
-    App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px,
-    size,
-};
 use gpui_kit::component::Root;
+use gpui_kit::{
+    App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size,
+};
 use vapourfly_gui::ui::GuiRoot;
 
 fn main() {

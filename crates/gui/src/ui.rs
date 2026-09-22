@@ -3,10 +3,6 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use gpui_kit::{
-    App, AppContext, ClipboardItem, Context, Entity, Hsla, InteractiveElement, IntoElement,
-    ParentElement, SharedString, Styled, Window, div, prelude::*, px, rgb, uniform_list,
-};
 use gpui_kit::component::{
     ActiveTheme, Colorize, Disableable, Sizable, StyledExt, Theme, ThemeMode as GpuiThemeMode,
     TitleBar, WindowExt,
@@ -19,6 +15,10 @@ use gpui_kit::component::{
     tab::{Tab, TabBar},
     tag::Tag,
     v_flex,
+};
+use gpui_kit::{
+    App, AppContext, ClipboardItem, Context, Entity, Hsla, InteractiveElement, IntoElement,
+    ParentElement, SharedString, Styled, Window, div, prelude::*, px, rgb, uniform_list,
 };
 use vapourfly_core::dynamic::DynamicTemplate;
 use vapourfly_core::models::{Game, JunkMode, PlaylistContent, PlaylistRule, ProtonTier};
@@ -2746,11 +2746,14 @@ impl GuiRoot {
                                         .h(px(22.))
                                         .rounded(px(3.))
                                         .bg(hx(top))
-                                        .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, _| {
-                                            if !offline {
-                                                crate::app::open_url_in_browser(&uri);
-                                            }
-                                        })
+                                        .on_mouse_down(
+                                            gpui_kit::MouseButton::Left,
+                                            move |_, _, _| {
+                                                if !offline {
+                                                    crate::app::open_url_in_browser(&uri);
+                                                }
+                                            },
+                                        )
                                 }),
                             ))
                             .when(c.is_hidden_collection, |this| {
@@ -3517,7 +3520,11 @@ fn insight_tile(label: &str, value: String, cx: &App) -> impl IntoElement {
         .child(div().text_xs().font_semibold().child(value))
 }
 
-fn section(title: &str, cx: &App, body: impl FnOnce(&App) -> gpui_kit::AnyElement) -> impl IntoElement {
+fn section(
+    title: &str,
+    cx: &App,
+    body: impl FnOnce(&App) -> gpui_kit::AnyElement,
+) -> impl IntoElement {
     v_flex()
         .gap_2()
         .p_3()
