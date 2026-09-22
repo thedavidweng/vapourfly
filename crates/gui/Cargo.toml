@@ -6,8 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-gpui = { workspace = true }
-gpui-component = { workspace = true }
+gpui-kit = { workspace = true }
 rfd = { workspace = true }
 vapourfly-core = { path = "../core" }
 vapourfly-api = { path = "../api" }

@@ -3,11 +3,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use gpui::{
-    App, AppContext, ClipboardItem, Context, Entity, Hsla, InteractiveElement, IntoElement,
-    ParentElement, SharedString, Styled, Window, div, prelude::*, px, rgb, uniform_list,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Colorize, Disableable, Sizable, StyledExt, Theme, ThemeMode as GpuiThemeMode,
     TitleBar, WindowExt,
     button::{Button, ButtonVariants},
@@ -19,6 +15,10 @@ use gpui_component::{
     tab::{Tab, TabBar},
     tag::Tag,
     v_flex,
+};
+use gpui_kit::{
+    App, AppContext, ClipboardItem, Context, Entity, Hsla, InteractiveElement, IntoElement,
+    ParentElement, SharedString, Styled, Window, div, prelude::*, px, rgb, uniform_list,
 };
 use vapourfly_core::dynamic::DynamicTemplate;
 use vapourfly_core::models::{Game, JunkMode, PlaylistContent, PlaylistRule, ProtonTier};
@@ -545,7 +545,7 @@ impl GuiRoot {
             .copied()
             .filter(|v| matches!(v, View::DataSources | View::Settings))
             .collect();
-        Sidebar::left()
+        Sidebar::new("library-sidebar")
             .collapsible(false)
             .w(px(SIDEBAR_WIDTH))
             .header(SidebarHeader::new().child(div().text_sm().font_semibold().child("Library")))
@@ -809,7 +809,7 @@ impl GuiRoot {
             .border_b_1()
             .border_color(border)
             .when(selected, |this| this.bg(stripe))
-            .on_mouse_down(gpui::MouseButton::Left, {
+            .on_mouse_down(gpui_kit::MouseButton::Left, {
                 let entity = entity.clone();
                 move |_, _, cx| {
                     entity.update(cx, |this, cx| {
@@ -2746,11 +2746,14 @@ impl GuiRoot {
                                         .h(px(22.))
                                         .rounded(px(3.))
                                         .bg(hx(top))
-                                        .on_mouse_down(gpui::MouseButton::Left, move |_, _, _| {
-                                            if !offline {
-                                                crate::app::open_url_in_browser(&uri);
-                                            }
-                                        })
+                                        .on_mouse_down(
+                                            gpui_kit::MouseButton::Left,
+                                            move |_, _, _| {
+                                                if !offline {
+                                                    crate::app::open_url_in_browser(&uri);
+                                                }
+                                            },
+                                        )
                                 }),
                             ))
                             .when(c.is_hidden_collection, |this| {
@@ -3517,7 +3520,11 @@ fn insight_tile(label: &str, value: String, cx: &App) -> impl IntoElement {
         .child(div().text_xs().font_semibold().child(value))
 }
 
-fn section(title: &str, cx: &App, body: impl FnOnce(&App) -> gpui::AnyElement) -> impl IntoElement {
+fn section(
+    title: &str,
+    cx: &App,
+    body: impl FnOnce(&App) -> gpui_kit::AnyElement,
+) -> impl IntoElement {
     v_flex()
         .gap_2()
         .p_3()

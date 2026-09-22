@@ -13,8 +13,8 @@ mod stack_contract {
     fn entry_bootstraps_gpui_component_init_and_root() {
         let src = include_str!("main.rs");
         assert!(
-            src.contains("gpui_component::init(cx)"),
-            "entry must call gpui_component::init before opening windows"
+            src.contains("gpui_kit::init(cx)"),
+            "entry must call gpui_kit::init before opening windows"
         );
         assert!(
             src.contains("Root::new(view, window, cx)"),
