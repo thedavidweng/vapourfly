@@ -2,11 +2,11 @@
 
 use std::path::PathBuf;
 
-use gpui::{
-    App, AppContext, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px,
+use gpui_kit::{
+    App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px,
     size,
 };
-use gpui_component::Root;
+use gpui_kit::component::Root;
 use vapourfly_gui::ui::GuiRoot;
 
 fn main() {
@@ -18,8 +18,8 @@ fn main() {
     let ui_demo = args.iter().any(|a| a == "--ui-demo");
     let offline = args.iter().any(|a| a == "--offline");
 
-    Application::new().run(move |cx: &mut App| {
-        gpui_component::init(cx);
+    gpui_kit::application().run(move |cx: &mut App| {
+        gpui_kit::init(cx);
         let bounds = Bounds::centered(None, size(px(1440.), px(960.)), cx);
         cx.open_window(
             WindowOptions {
