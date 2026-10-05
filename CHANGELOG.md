@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Controller support and Steam Deck mode** in the GUI. Steam Deck controls and Xbox-style gamepads navigate the whole app: the D-pad or left stick moves focus (card by card in the Library), A selects, B goes back, LB / RB switch pages, the right stick and triggers scroll, Y jumps to search, Start opens Settings and Select toggles the sidebar. A button-hint footer appears while the controller is in use, and Settings → Controller shows the connected pad. On SteamOS, text fields open Steam's on-screen keyboard; in Game Mode the window is fullscreen at 1280×800, the Library hero is shorter, and the write dialog warns that Steam must be closed first. `--deck` simulates a Deck; `VAPOURFLY_NO_GAMEPAD=1` turns controller input off.
 - `scripts/install-steamos.sh` and a `.desktop` entry: installs the Linux release to `~/.local` and adds it to Steam as a non-Steam game. Linux builds now need `libudev`.
+- Project website in `site/`, deployed to GitHub Pages by `.github/workflows/pages.yml` when `site/` changes on `main`.
 
 ### Changed
 

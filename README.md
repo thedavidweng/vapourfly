@@ -4,6 +4,8 @@ A local-first CLI and desktop GUI for managing Steam game libraries like Spotify
 
 Vapourfly helps you organize, categorize, and curate your Steam library. Define collections with expressive queries, detect junk, get recommendations, and keep your library tidy -- all without touching Steam's UI.
 
+Website: <https://thedavidweng.github.io/vapourfly/>
+
 ## Status
 
 v0.2.0. Expect breaking changes until v1.0.

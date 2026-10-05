@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vapourfly — Your Steam library, curated</title>
+  <meta name="description" content="Vapourfly is a free, open-source, local-first desktop app and CLI that organizes your Steam library like playlists. Made for desktop and Steam Deck.">
+  <meta name="theme-color" content="#171d25">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="assets/fonts/Figtree-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="assets/css/site.css">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Vapourfly — Your Steam library, curated">
+  <meta property="og:description" content="Playlists, recommendations and junk cleanup for the Steam library you already own. Free and open source, for desktop and Steam Deck.">
+  <meta property="og:image" content="https://thedavidweng.github.io/vapourfly/assets/img/og.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <script defer src="assets/js/site.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<!-- Global header -->
+<header class="gh">
+  <div class="gh__inner">
+    <button class="gh__menu" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="mobile-menu"><span></span><span></span><span></span></button>
+    <a class="gh__logo" href="./" aria-label="Vapourfly home">
+      <img src="assets/img/mark.svg" alt="" width="44" height="44">
+      <span class="gh__word">VAPOURFLY</span>
+    </a>
+    <nav class="gh__nav" aria-label="Primary">
+      <a class="is-active" href="./">Overview</a>
+      <a href="#features">Features</a>
+      <a href="https://github.com/thedavidweng/vapourfly/tree/main/docs">Docs</a>
+      <a href="https://github.com/thedavidweng/vapourfly">GitHub</a>
+    </nav>
+    <div class="gh__actions">
+      <a class="gh__install" href="#download"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1v8.6l2.8-2.8 1 1L8 12.4 4.2 7.8l1-1L8 9.6V1h0ZM2 13h12v2H2z" fill="currentColor"/></svg>Download Vapourfly</a>
+      <a class="gh__link" href="https://github.com/thedavidweng/vapourfly/releases">v0.2.0</a>
+      <span class="gh__sep">|</span>
+      <a class="gh__link" href="https://github.com/thedavidweng/vapourfly/blob/main/CHANGELOG.md">changelog</a>
+    </div>
+  </div>
+</header>
+
+<div class="mobile-menu" id="mobile-menu" hidden>
+  <a href="./">Overview</a>
+  <a href="#features">Features</a>
+  <a href="#deck">Steam Deck</a>
+  <a href="#specs">Tech Specs</a>
+  <a href="https://github.com/thedavidweng/vapourfly/tree/main/docs">Docs</a>
+  <a href="https://github.com/thedavidweng/vapourfly">GitHub</a>
+  <a class="mobile-menu__cta" href="#download">Download Vapourfly</a>
+</div>
+
+<!-- Sticky navigation: section bar + product bar -->
+<div class="sn" id="sn">
+  <div class="sn__inner">
+    <nav class="sn__tabs" aria-label="Sections">
+      <div class="sn__tab sn__tab--drop">
+        <button type="button" aria-expanded="false">Browse<svg viewBox="0 0 10 6" aria-hidden="true"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button>
+        <div class="sn__menu">
+          <a href="#library">Library</a>
+          <a href="#moods">Editorial Moods</a>
+          <a href="#features">Core features</a>
+          <a href="#safety">Write safety</a>
+        </div>
+      </div>
+      <div class="sn__tab sn__tab--drop">
+        <button type="button" aria-expanded="false">Guides<svg viewBox="0 0 10 6" aria-hidden="true"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button>
+        <div class="sn__menu">
+          <a href="https://github.com/thedavidweng/vapourfly/blob/main/docs/tutorials/getting-started.md">Getting started</a>
+          <a href="https://github.com/thedavidweng/vapourfly/blob/main/docs/how-to/purge-junk.md">Purge junk from your library</a>
+          <a href="https://github.com/thedavidweng/vapourfly/blob/main/docs/how-to/plan-deck-session.md">Plan a Deck session</a>
+          <a href="https://github.com/thedavidweng/vapourfly/blob/main/docs/how-to/share-and-sync-playlists.md">Share and sync playlists</a>
+          <a href="https://github.com/thedavidweng/vapourfly/blob/main/docs/how-to/work-offline.md">Work offline</a>
+          <a href="https://github.com/thedavidweng/vapourfly/blob/main/docs/how-to/back-up-and-restore.md">Back up and restore</a>
+        </div>
+      </div>
+      <div class="sn__tab sn__tab--drop">
+        <button type="button" aria-expanded="false">Reference<svg viewBox="0 0 10 6" aria-hidden="true"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button>
+        <div class="sn__menu">
+          <a href="https://github.com/thedavidweng/vapourfly/blob/main/docs/reference/COMMANDS.md">Command reference</a>
+          <a href="https://github.com/thedavidweng/vapourfly/blob/main/docs/reference/FEATURES.md">Feature matrix</a>
+          <a href="https://github.com/thedavidweng/vapourfly/blob/main/docs/reference/STEAM_FILE_SAFETY.md">Steam file safety</a>
+          <a href="https://github.com/thedavidweng/vapourfly/blob/main/docs/reference/API_SOURCES.md">Data sources</a>
+          <a href="https://github.com/thedavidweng/vapourfly/blob/main/docs/reference/PRIVACY.md">Privacy</a>
+        </div>
+      </div>
+      <a class="sn__tab" href="https://github.com/thedavidweng/vapourfly/releases">Releases</a>
+      <a class="sn__tab" href="https://github.com/thedavidweng/vapourfly/issues">Support</a>
+    </nav>
+    <form class="sn__search" role="search" action="https://github.com/search" method="get">
+      <input type="hidden" name="type" value="code">
+      <input class="sn__q" type="search" name="q" placeholder="Search the docs" aria-label="Search the Vapourfly docs" data-prefix="repo:thedavidweng/vapourfly path:docs ">
+      <button type="submit" aria-label="Search"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12.7 12.7 17 17" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+    </form>
+  </div>
+  <nav class="hb" aria-label="Vapourfly">
+    <div class="hb__inner">
+      <a href="#top">Vapourfly</a>
+      <a href="#library">Library</a>
+      <a href="#moods">Moods</a>
+      <a href="#deck">Steam Deck</a>
+      <a href="#features">Features</a>
+      <a href="#specs">Tech Specs</a>
+      <a href="https://github.com/thedavidweng/vapourfly/blob/main/docs/tutorials/getting-started.md">Getting Started</a>
+    </div>
+  </nav>
+</div>
+
+<main id="main" class="page">
+
+  <!-- Hero -->
+  <section class="hero" id="top" aria-labelledby="hero-title">
+    <div class="hero__art" aria-hidden="true">
+      <span class="hero__blob hero__blob--a"></span>
+      <span class="hero__blob hero__blob--b"></span>
+      <span class="hero__blob hero__blob--c"></span>
+    </div>
+    <figure class="hero__shot">
+      <img src="assets/img/desktop-library.webp" srcset="assets/img/desktop-library-960.webp 960w, assets/img/desktop-library.webp 1440w" sizes="(max-width: 900px) 100vw, 760px" width="1440" height="921" alt="The Vapourfly Library view, with a Continue playing hero and a shelf of recently played games." fetchpriority="high">
+    </figure>
+    <div class="hero__copy">
+      <div class="hero__badge"><img src="assets/img/mark.svg" alt="" width="22" height="22">VAPOURFLY</div>
+      <h1 class="hero__title" id="hero-title"><span>YOUR LIBRARY</span><span>CURATED</span></h1>
+    </div>
+  </section>
+
+  <section class="band" aria-label="Summary">
+    <p class="band__line">Playlists, picks and cleanup for the Steam library you already own</p>
+  </section>
+
+  <!-- Moods carousel -->
+  <section class="rail" id="moods" aria-labelledby="moods-title">
+    <div class="rail__head">
+      <h2 class="rail__title" id="moods-title">VAPOURFLY EDITORIAL MOODS</h2>
+      <a class="rail__all" href="https://github.com/thedavidweng/vapourfly/blob/main/CONTEXT.md#editorial-mood">View All</a>
+    </div>
+    <div class="rail__wrap">
+      <button class="rail__arrow rail__arrow--prev" type="button" aria-label="Previous moods" disabled><svg viewBox="0 0 12 20" aria-hidden="true"><path d="M10 2 2 10l8 8" fill="none" stroke="currentColor" stroke-width="2.4"/></svg></button>
+      <ul class="rail__track" role="list">
+        <li class="mood" style="--c1:#d9573c;--c2:#5e1c1a"><div class="mood__art"><span>Today’s Biggest Hits</span></div><p>Games you own that are on sale right now.</p></li>
+        <li class="mood" style="--c1:#43a37f;--c2:#13362e"><div class="mood__art"><span>Indie Rising</span></div><p>Recent, well-rated indies waiting in your backlog.</p></li>
+        <li class="mood" style="--c1:#d76b9a;--c2:#4a1b38"><div class="mood__art"><span>Friday Party</span></div><p>Co-op, local multiplayer and party games.</p></li>
+        <li class="mood" style="--c1:#4e86c4;--c2:#17263f"><div class="mood__art"><span>Deck Guardians</span></div><p>Deck-friendly, controller-ready, quick to finish.</p></li>
+        <li class="mood" style="--c1:#d6a13b;--c2:#4d3110"><div class="mood__art"><span>Unopened Treasures</span></div><p>Highly rated games you have never launched.</p></li>
+        <li class="mood" style="--c1:#7d6bd1;--c2:#241c4f"><div class="mood__art"><span>Weekend Marathon</span></div><p>Long, acclaimed adventures for a free weekend.</p></li>
+        <li class="mood" style="--c1:#5fae4a;--c2:#1b3a17"><div class="mood__art"><span>Quick Round</span></div><p>Short sessions you can start and finish tonight.</p></li>
+      </ul>
+      <button class="rail__arrow rail__arrow--next" type="button" aria-label="Next moods"><svg viewBox="0 0 12 20" aria-hidden="true"><path d="m2 2 8 8-8 8" fill="none" stroke="currentColor" stroke-width="2.4"/></svg></button>
+    </div>
+    <div class="rail__dots" aria-hidden="true"></div>
+  </section>
+
+  <!-- Download / SKU -->
+  <section class="sku" id="download" aria-labelledby="sku-title">
+    <h2 class="sku__title" id="sku-title">Get Vapourfly</h2>
+    <div class="sku__body">
+      <figure class="sku__img">
+        <img src="assets/img/desktop-discover-960.webp" width="960" height="614" loading="lazy" alt="The Discover view, showing games that match a seed game with match percentages.">
+      </figure>
+      <div class="sku__info">
+        <div class="sku__name" data-sku-name>Vapourfly for macOS</div>
+        <div class="sku__price">Free</div>
+        <ul class="sku__list" data-sku-list>
+          <li>Desktop app and <code>vapourfly</code> command line in one download</li>
+          <li>Apple Silicon build; Intel Macs build from source</li>
+          <li>Reads your local Steam files. No account, no sign-in</li>
+          <li>Open source, MIT or Apache-2.0</li>
+        </ul>
+      </div>
+    </div>
+    <p class="sku__prompt">Select a platform below to download.</p>
+    <div class="sku__opts" role="radiogroup" aria-label="Platform">
+      <button class="sku__opt is-selected" type="button" role="radio" aria-checked="true" data-sku="mac"><b>macOS</b><span>Apple Silicon</span></button>
+      <button class="sku__opt" type="button" role="radio" aria-checked="false" data-sku="deck"><b>SteamOS</b><span>Steam Deck</span></button>
+      <button class="sku__opt" type="button" role="radio" aria-checked="false" data-sku="linux"><b>Linux</b><span>x86_64</span></button>
+      <button class="sku__opt" type="button" role="radio" aria-checked="false" data-sku="win"><b>Windows</b><span>x86_64</span></button>
+    </div>
+    <a class="pill pill--black" data-sku-cta href="https://github.com/thedavidweng/vapourfly/releases/latest/download/vapourfly-macos-aarch64.tar.gz">Download for macOS</a>
+    <p class="sku__fine" data-sku-fine>Builds are not notarized. The first time, right-click the app and choose <b>Open</b>.</p>
+    <a class="sku__more" href="https://github.com/thedavidweng/vapourfly#installation">Installation guide</a>
+  </section>
+
+  <!-- Promo cards -->
+  <section class="promos" aria-label="Highlights">
+    <a class="promo promo--warm" href="https://github.com/thedavidweng/vapourfly/blob/main/docs/reference/PRIVACY.md">
+      <div class="promo__copy">
+        <h3>Local-first by design</h3>
+        <p>Your library never leaves your machine. Flip on offline mode and Vapourfly makes zero network calls.</p>
+      </div>
+      <svg class="promo__icon" viewBox="0 0 96 96" aria-hidden="true"><rect x="22" y="40" width="52" height="40" rx="8" fill="#000"/><path d="M33 40V30a15 15 0 0 1 30 0v10" fill="none" stroke="#000" stroke-width="8"/><circle cx="48" cy="58" r="6" fill="#fff"/><rect x="45" y="60" width="6" height="11" rx="3" fill="#fff"/></svg>
+    </a>
+    <a class="promo promo--cool" href="https://github.com/thedavidweng/vapourfly">
+      <div class="promo__copy">
+        <h3>Free and open source</h3>
+        <p>Written in Rust and dual-licensed MIT or Apache-2.0. Read the code, file an issue or send a pull request.</p>
+      </div>
+      <svg class="promo__icon" viewBox="0 0 96 96" aria-hidden="true"><path fill="#000" d="M48 12a36 36 0 0 0-11.4 70.2c1.8.3 2.5-.8 2.5-1.7v-6.3c-10 2.2-12.2-4.3-12.2-4.3-1.6-4.2-4-5.3-4-5.3-3.3-2.2.2-2.2.2-2.2 3.6.3 5.5 3.7 5.5 3.7 3.2 5.5 8.5 3.9 10.6 3 .3-2.3 1.3-3.9 2.3-4.8-8-.9-16.4-4-16.4-17.8 0-3.9 1.4-7.1 3.7-9.7-.4-.9-1.6-4.6.4-9.5 0 0 3-1 9.9 3.7a34 34 0 0 1 18 0c6.9-4.7 9.9-3.7 9.9-3.7 2 4.9.7 8.6.4 9.5 2.3 2.6 3.7 5.8 3.7 9.7 0 13.9-8.4 16.9-16.4 17.8 1.3 1.1 2.4 3.3 2.4 6.7v9.9c0 1 .6 2.1 2.5 1.7A36 36 0 0 0 48 12Z"/></svg>
+    </a>
+  </section>
+
+  <!-- Steam Deck -->
+  <section class="dark deck" id="deck" aria-labelledby="deck-title">
+    <h2 class="dark__title" id="deck-title">BUILT FOR <em>GAME MODE</em></h2>
+    <p class="dark__sub">Everything Vapourfly does on the desktop, sized for Steam Deck and played with a controller.</p>
+    <figure class="deck__screen">
+      <img src="assets/img/deck-library.webp" width="1280" height="760" loading="lazy" alt="Vapourfly running at Steam Deck resolution, showing the Library view.">
+    </figure>
+    <div class="deck__lead">
+      <h3>Couch-ready, from the first launch</h3>
+      <p>In Game Mode, Vapourfly opens fullscreen at 1280&nbsp;×&nbsp;800 with large type and big targets. Add it to Steam once with the bundled installer and it sits in your library next to your games.</p>
+    </div>
+    <div class="deck__cols">
+      <div>
+        <h3>Controller first</h3>
+        <p>The D-pad moves focus card by card, A selects and B goes back. LB and RB switch pages, the right stick scrolls, and Y jumps to search.</p>
+      </div>
+      <div>
+        <h3>Steam’s own keyboard</h3>
+        <p>Text fields open the SteamOS on-screen keyboard, so naming a playlist on the couch takes seconds.</p>
+      </div>
+      <div>
+        <h3>Plan a session</h3>
+        <p>Tell Vapourfly how long you have. It picks installed, Deck-verified games that fit the time, and explains why.</p>
+      </div>
+    </div>
+    <div class="dark__cta"><a class="pill pill--accent" href="https://github.com/thedavidweng/vapourfly/blob/main/docs/how-to/use-on-steam-deck.md">Use Vapourfly on Steam Deck</a></div>
+  </section>
+
+  <!-- Library split -->
+  <section class="split" id="library" aria-labelledby="library-title">
+    <div class="split__copy">
+      <h2 id="library-title">Your Steam library, in order</h2>
+      <p>Vapourfly reads what Steam already knows — installs, playtime, hidden games and collections — and adds completion times, ratings and Deck compatibility from public sources. Then it helps you decide what to play.</p>
+    </div>
+    <div class="split__screen">
+      <img src="assets/img/desktop-playlists.webp" width="1440" height="921" loading="lazy" alt="The Playlists editor, with games in a playlist and a list of library games to add.">
+    </div>
+  </section>
+
+  <!-- Core features -->
+  <section class="core" id="features" aria-labelledby="core-title">
+    <h2 class="core__title" id="core-title">Core features that define Vapourfly</h2>
+    <div class="core__grid">
+      <article>
+        <svg viewBox="0 0 120 120" aria-hidden="true"><rect x="14" y="30" width="26" height="70" rx="4" fill="#000"/><rect x="47" y="22" width="26" height="78" rx="4" fill="#1a9fff"/><rect x="80" y="30" width="26" height="70" rx="4" fill="#000"/><rect x="51" y="86" width="18" height="5" rx="2.5" fill="#fff"/></svg>
+        <h3>Library</h3>
+        <p>Search, filter and sort every game you own. Filter by Deck compatibility, ProtonDB tier, genre, playtime or time to beat.</p>
+      </article>
+      <article>
+        <svg viewBox="0 0 120 120" aria-hidden="true"><circle cx="60" cy="62" r="42" fill="#000"/><path d="M60 30 70 62 60 94 50 62Z" fill="#fff"/><path d="M60 30 70 62H50Z" fill="#f74843"/><circle cx="60" cy="62" r="5" fill="#000"/></svg>
+        <h3>Discover</h3>
+        <p>Start from a game you love and find the ones in your library that feel the same. Or let it read your taste.</p>
+      </article>
+      <article>
+        <svg viewBox="0 0 120 120" aria-hidden="true"><path d="M34 18h52v8c0 16-14 24-18 34 4 10 18 18 18 34v8H34v-8c0-16 14-24 18-34-4-10-18-18-18-34Z" fill="#000"/><path d="M44 92c2-10 10-14 16-20 6 6 14 10 16 20Z" fill="#e8b23a"/><rect x="28" y="12" width="64" height="8" rx="4" fill="#000"/><rect x="28" y="100" width="64" height="8" rx="4" fill="#000"/></svg>
+        <h3>Recommendations</h3>
+        <p>Say how long you have. Get a ranked shortlist sized to your session, with the reasons behind every pick.</p>
+      </article>
+      <article>
+        <svg viewBox="0 0 120 120" aria-hidden="true"><rect x="12" y="26" width="58" height="10" rx="5" fill="#000"/><rect x="12" y="50" width="58" height="10" rx="5" fill="#000"/><rect x="12" y="74" width="38" height="10" rx="5" fill="#000"/><path d="M84 30v46" stroke="#000" stroke-width="9"/><path d="M84 26c10 2 18 8 20 18-6-5-12-7-20-7Z" fill="#000"/><circle cx="74" cy="80" r="15" fill="#a4d007"/><circle cx="74" cy="80" r="15" fill="none" stroke="#000" stroke-width="6"/></svg>
+        <h3>Playlists</h3>
+        <p>Build playlists by hand or from rules, match them against your library, and sync them to Steam as collections.</p>
+      </article>
+      <article>
+        <svg viewBox="0 0 120 120" aria-hidden="true"><path d="M74 14 84 18 64 66 54 62Z" fill="#000"/><path d="M38 62h46l8 44H30Z" fill="#000"/><path d="M42 62c0-8 6-12 18-12h6c12 0 18 4 18 12Z" fill="#d76b9a"/><path d="M44 74v26M56 74v26M68 74v26M80 74v26" stroke="#fff" stroke-width="3"/></svg>
+        <h3>Junk cleanup</h3>
+        <p>Find demos, tools and abandoned leftovers. Every verdict shows its signals and confidence before anything moves.</p>
+      </article>
+      <article>
+        <svg viewBox="0 0 120 120" aria-hidden="true"><rect x="10" y="40" width="54" height="40" rx="20" fill="none" stroke="#000" stroke-width="12"/><rect x="56" y="40" width="54" height="40" rx="20" fill="none" stroke="#1a9fff" stroke-width="12"/><path d="M62 40h-6a20 20 0 0 1 0 0" stroke="#000" stroke-width="12"/></svg>
+        <h3>Share codes</h3>
+        <p>Turn any playlist into a short <code>VF1:</code> code. Paste it into a chat; friends import it in one step.</p>
+      </article>
+      <article>
+        <svg viewBox="0 0 120 120" aria-hidden="true"><path d="M30 84a20 20 0 0 1 2-40 28 28 0 0 1 54 6 17 17 0 0 1 2 34Z" fill="#000"/><path d="M18 22 100 104" stroke="#fff" stroke-width="16"/><path d="M18 22 100 104" stroke="#f74843" stroke-width="8" stroke-linecap="round"/></svg>
+        <h3>Offline mode</h3>
+        <p>One switch blocks every network call. Vapourfly keeps working from its local cache.</p>
+      </article>
+      <article>
+        <svg viewBox="0 0 120 120" aria-hidden="true"><path d="M60 10 98 24v30c0 26-16 44-38 54-22-10-38-28-38-54V24Z" fill="#000"/><path d="M42 58 55 71 80 46" fill="none" stroke="#a4d007" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <h3>Backups</h3>
+        <p>Every change to Steam is backed up first, with a checksum. Restore any backup from Settings.</p>
+      </article>
+    </div>
+  </section>
+
+  <!-- Safety -->
+  <section class="dark safety" id="safety" aria-labelledby="safety-title">
+    <div class="safety__copy">
+      <h2 class="dark__title" id="safety-title">PREVIEW <em>EVERY CHANGE</em></h2>
+      <p class="dark__sub">Vapourfly writes to exactly one Steam file. It shows you the change first, backs the file up, and stays out of the way while Steam is running.</p>
+    </div>
+    <div class="term" role="img" aria-label="A terminal showing a dry-run preview of adding 19 junk games to a Steam collection, then an error when neither --dry-run nor --confirm is given.">
+      <div class="term__bar"><i></i><i></i><i></i><span>vapourfly — zsh</span></div>
+<pre class="term__body"><span class="t-p">$</span> vapourfly junk apply --collection junk --dry-run
+Junk Apply
+==========
+Collection: junk
+Junk games: 19
+
+<span class="t-d">Diff:</span>
+  Collection 'junk': <span class="t-a">created</span>
+  App IDs to add: <span class="t-a">19</span>
+  Unchanged entries: 13
+
+<span class="t-d">Dry run complete. No changes made.</span>
+<span class="t-p">$</span> vapourfly junk apply --collection junk
+<span class="t-w">Error:</span> must specify either --dry-run or --confirm
+<span class="t-p">$</span><span class="term__cursor"></span></pre>
+    </div>
+    <div class="safety__cols">
+      <div><h3>Dry run first</h3><p>Every write needs <code>--dry-run</code> or <code>--confirm</code>. In the app, a preview dialog comes first.</p></div>
+      <div><h3>Automatic backups</h3><p>A timestamped backup with a SHA-256 hash is written before any change.</p></div>
+      <div><h3>Atomic writes</h3><p>Changes go to a temporary file and are swapped in whole. If anything fails, the backup is restored.</p></div>
+      <div><h3>Steam stays safe</h3><p>Writes are refused while Steam is running, so Steam can never overwrite your edits.</p></div>
+    </div>
+  </section>
+
+  <!-- Feature trio -->
+  <section class="trio" aria-labelledby="trio-title">
+    <h2 class="trio__title" id="trio-title">Made for the way you play</h2>
+    <div class="trio__grid">
+      <div class="trio__item">
+        <img src="assets/img/desktop-junk-960.webp" width="960" height="614" loading="lazy" alt="Junk cleanup, with flagged games and their confidence.">
+        <h3>A tidier library</h3>
+        <p>Preview junk in Default, Strict or Aggressive mode, then add it to a Junk collection or hide it in Steam.</p>
+        <a class="pill pill--blue" href="https://github.com/thedavidweng/vapourfly/blob/main/docs/how-to/purge-junk.md">Clean up your library</a>
+      </div>
+      <div class="trio__item">
+        <img src="assets/img/desktop-collections-960.webp" width="960" height="614" loading="lazy" alt="Steam collections shown as cover collages.">
+        <h3>Collections, everywhere</h3>
+        <p>Vapourfly syncs to Steam collections, so what you organize shows up in Steam on every device.</p>
+        <a class="pill pill--blue" href="https://github.com/thedavidweng/vapourfly/blob/main/docs/how-to/share-and-sync-playlists.md">Share and sync playlists</a>
+      </div>
+      <div class="trio__item">
+        <img src="assets/img/desktop-settings-960.webp" width="960" height="614" loading="lazy" alt="Settings, with appearance, Steam folder and account options.">
+        <h3>A command line, too</h3>
+        <p>Every feature is in the <code>vapourfly</code> CLI with table or JSON output, ready for your scripts.</p>
+        <a class="pill pill--blue" href="https://github.com/thedavidweng/vapourfly/blob/main/docs/reference/COMMANDS.md">See every command</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Tech specs -->
+  <section class="specs" id="specs" aria-labelledby="specs-title">
+    <h2 class="specs__title" id="specs-title">Tech Specs</h2>
+    <div class="specs__tabs" role="tablist" aria-label="Edition">
+      <button type="button" role="tab" id="tab-app" aria-controls="panel-app" aria-selected="true">DESKTOP APP</button>
+      <button type="button" role="tab" id="tab-cli" aria-controls="panel-cli" aria-selected="false" tabindex="-1">COMMAND LINE</button>
+    </div>
+
+    <div class="specs__panel" id="panel-app" role="tabpanel" aria-labelledby="tab-app">
+      <table>
+        <tbody>
+          <tr class="specs__group"><th colspan="2" scope="colgroup">Platforms</th></tr>
+          <tr><th scope="row">macOS</th><td>Apple Silicon (pre-built)<br>Intel (build from source)</td></tr>
+          <tr><th scope="row">Linux</th><td>x86_64, including SteamOS on Steam Deck in Desktop Mode and Game Mode</td></tr>
+          <tr><th scope="row">Windows</th><td>x86_64</td></tr>
+          <tr class="specs__group"><th colspan="2" scope="colgroup">Display &amp; input</th></tr>
+          <tr><th scope="row">Themes</th><td>Dark (default) and light</td></tr>
+          <tr><th scope="row">Steam Deck</th><td>Fullscreen 1280 × 800 in Game Mode<br>SteamOS on-screen keyboard for text fields</td></tr>
+          <tr><th scope="row">Controllers</th><td>Steam Deck controls and Xbox-style gamepads</td></tr>
+          <tr class="specs__group"><th colspan="2" scope="colgroup">Views</th></tr>
+          <tr><th scope="row">Play</th><td>Library, Discover, Recommendations</td></tr>
+          <tr><th scope="row">Organize</th><td>Playlists, Collections, Junk cleanup</td></tr>
+          <tr><th scope="row">System</th><td>Data Sources, Settings, Backups</td></tr>
+          <tr class="specs__group"><th colspan="2" scope="colgroup">Software</th></tr>
+          <tr><th scope="row">Built with</th><td>Rust 1.96 and GPUI</td></tr>
+          <tr><th scope="row">License</th><td>MIT or Apache-2.0, at your option</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="specs__panel" id="panel-cli" role="tabpanel" aria-labelledby="tab-cli" hidden>
+      <table>
+        <tbody>
+          <tr class="specs__group"><th colspan="2" scope="colgroup">Commands</th></tr>
+          <tr><th scope="row">Setup</th><td><code>doctor</code>, <code>accounts list</code>, <code>settings</code></td></tr>
+          <tr><th scope="row">Library</th><td><code>scan</code>, <code>collections</code>, <code>junk</code>, <code>recommend</code></td></tr>
+          <tr><th scope="row">Playlists</th><td><code>playlist create | import | export | share | match | discover</code><br><code>sync collection</code></td></tr>
+          <tr><th scope="row">Maintenance</th><td><code>cache refresh</code>, <code>sources status</code>, <code>backup list | restore</code>, <code>diagnostics export</code></td></tr>
+          <tr class="specs__group"><th colspan="2" scope="colgroup">Output</th></tr>
+          <tr><th scope="row">Formats</th><td>Table or JSON</td></tr>
+          <tr><th scope="row">Playlists</th><td><code>vapourfly.playlist.v1</code> JSON and <code>VF1:</code> share codes</td></tr>
+          <tr class="specs__group"><th colspan="2" scope="colgroup">Data sources</th></tr>
+          <tr><th scope="row">No key needed</th><td>Steam Store, ProtonDB, PCGamingWiki, HowLongToBeat</td></tr>
+          <tr><th scope="row">Optional keys</th><td>IGDB, RAWG, Steam Web API</td></tr>
+          <tr class="specs__group"><th colspan="2" scope="colgroup">Safety</th></tr>
+          <tr><th scope="row">Writes</th><td><code>--dry-run</code> or <code>--confirm</code> required</td></tr>
+          <tr><th scope="row">Backups</th><td>Timestamped, SHA-256 checked, last 5 kept by default</td></tr>
+          <tr><th scope="row">Network</th><td><code>--offline</code> blocks every request</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <nav class="legal" aria-label="Legal">
+    <a href="https://github.com/thedavidweng/vapourfly/blob/main/LICENSE-MIT">MIT License</a>
+    <a href="https://github.com/thedavidweng/vapourfly/blob/main/LICENSE-APACHE">Apache License 2.0</a>
+    <a href="https://github.com/thedavidweng/vapourfly/blob/main/docs/reference/PRIVACY.md">Privacy</a>
+    <a href="https://github.com/thedavidweng/vapourfly/blob/main/SECURITY.md">Security Policy</a>
+  </nav>
+</main>
+
+<footer class="ft">
+  <div class="ft__inner">
+    <div class="ft__brand">
+      <a class="ft__logo" href="./" aria-label="Vapourfly home"><img src="assets/img/mark.svg" alt="" width="30" height="30"><span>VAPOURFLY</span></a>
+      <p>© 2026 Vapourfly contributors. Released under the MIT and Apache-2.0 licenses.</p>
+      <p>Vapourfly is an independent open-source project and is not affiliated with or endorsed by Valve Corporation. Steam, Steam Deck and SteamOS are trademarks of Valve Corporation in the US and other countries.</p>
+      <div class="ft__social">
+        <a href="https://github.com/thedavidweng/vapourfly" aria-label="Vapourfly on GitHub"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .5a11.5 11.5 0 0 0-3.6 22.4c.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0C17 4.5 18 4.8 18 4.8c.6 1.6.2 2.8.1 3 .8.8 1.2 1.9 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.1v3.1c0 .3.2.7.8.6A11.5 11.5 0 0 0 12 .5Z"/></svg></a>
+        <a href="https://github.com/thedavidweng/vapourfly/releases.atom" aria-label="Release feed"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="19" r="2.5" fill="currentColor"/><path d="M3 10a11 11 0 0 1 11 11M3 3a18 18 0 0 1 18 18" fill="none" stroke="currentColor" stroke-width="3"/></svg></a>
+      </div>
+    </div>
+    <div class="ft__cols">
+      <div><h4>VAPOURFLY</h4><a href="#features">Features</a><a href="#deck">Steam Deck</a><a href="#specs">Tech Specs</a><a href="#download">Download</a></div>
+      <div><h4>DOCS</h4><a href="https://github.com/thedavidweng/vapourfly/blob/main/docs/tutorials/getting-started.md">Getting Started</a><a href="https://github.com/thedavidweng/vapourfly/blob/main/docs/reference/COMMANDS.md">Commands</a><a href="https://github.com/thedavidweng/vapourfly/blob/main/docs/reference/FEATURES.md">Feature Matrix</a><a href="https://github.com/thedavidweng/vapourfly/blob/main/CONTEXT.md">Glossary</a></div>
+      <div><h4>LEGAL</h4><a href="https://github.com/thedavidweng/vapourfly/blob/main/docs/reference/PRIVACY.md">Privacy</a><a href="https://github.com/thedavidweng/vapourfly/blob/main/SECURITY.md">Security</a><a href="https://github.com/thedavidweng/vapourfly/blob/main/THIRD_PARTY_NOTICES.md">Notices</a></div>
+      <div><h4>MORE</h4><a href="https://github.com/thedavidweng/vapourfly/releases">Releases</a><a href="https://github.com/thedavidweng/vapourfly/issues">Report a Bug</a><a href="https://github.com/thedavidweng/vapourfly/blob/main/CONTRIBUTING.md">Contribute</a></div>
+    </div>
+  </div>
+</footer>
+</body>
+</html>
