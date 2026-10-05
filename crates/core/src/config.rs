@@ -306,6 +306,21 @@ fn load_config_file() -> Option<ConfigFile> {
     toml::from_str(&contents).ok()
 }
 
+/// The value of `field` as written in `config.toml`, ignoring CLI flags,
+/// environment variables, detection and defaults. `None` when the key is
+/// absent or the file is missing or unparseable.
+pub fn stored_config_value(field: ConfigField) -> Option<String> {
+    stored_config_value_at(field, &config_file_path()?)
+}
+
+pub(crate) fn stored_config_value_at(field: ConfigField, path: &Path) -> Option<String> {
+    match load_config_table_at(path).ok()?.get(field.as_key())? {
+        toml::Value::String(s) => Some(s.clone()),
+        toml::Value::Integer(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
 /// Resolve the Steam Web API key with the documented precedence
 /// (env `VAPOURFLY_STEAM_API_KEY` > config file), without requiring a full
 /// [`VapourflyConfig`] resolution (which needs a detectable Steam dir).
@@ -888,6 +903,26 @@ backup_retention_count = 10
         let parsed: ConfigFile = toml::from_str(&contents).unwrap();
         assert_eq!(parsed.cc.as_deref(), Some("JP"));
         assert_eq!(parsed.lang.as_deref(), Some("japanese"));
+    }
+
+    #[test]
+    fn stored_config_value_reads_only_the_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        assert_eq!(stored_config_value_at(ConfigField::Cc, &path), None);
+
+        set_config_field_at(ConfigField::Cc, "JP", &path).unwrap();
+        set_config_field_at(ConfigField::BackupRetentionCount, "9", &path).unwrap();
+
+        assert_eq!(
+            stored_config_value_at(ConfigField::Cc, &path).as_deref(),
+            Some("JP")
+        );
+        assert_eq!(
+            stored_config_value_at(ConfigField::BackupRetentionCount, &path).as_deref(),
+            Some("9")
+        );
+        assert_eq!(stored_config_value_at(ConfigField::SteamDir, &path), None);
     }
 
     #[test]

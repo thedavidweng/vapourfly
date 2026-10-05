@@ -15,7 +15,9 @@ For the current CLI/GUI feature contract, see
 ## Supported Platforms
 
 - macOS (Apple Silicon pre-built; Intel from source)
-- Linux (x86_64)
+- Linux (x86_64), including SteamOS and the Steam Deck (Desktop Mode and
+  Game Mode, with full controller support) -- see
+  [Use Vapourfly on a Steam Deck](docs/how-to/use-on-steam-deck.md)
 - Windows (x86_64)
 
 ## Installation
@@ -33,10 +35,13 @@ Linux runtime libraries:
 
 ```bash
 sudo apt install libxkbcommon0 libxkbcommon-x11-0 libxcb1 \
-  libwayland-client0 libx11-6 libasound2t64 \
+  libwayland-client0 libx11-6 libudev1 libasound2t64 \
   || sudo apt install libxkbcommon0 libxkbcommon-x11-0 libxcb1 \
-  libwayland-client0 libx11-6 libasound2
+  libwayland-client0 libx11-6 libudev1 libasound2
 ```
+
+SteamOS already ships these. On a Steam Deck, run `./install-steamos.sh`
+from the extracted Linux archive to install Vapourfly and add it to Steam.
 
 ### From Source
 
@@ -47,7 +52,7 @@ first:
 sudo apt install cmake clang g++ pkg-config \
   libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libwayland-dev \
   libx11-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev \
-  libgl1-mesa-dev libasound2-dev libssl-dev
+  libgl1-mesa-dev libasound2-dev libssl-dev libudev-dev
 ```
 
 ```bash
@@ -360,6 +365,7 @@ Organized by [Diátaxis](https://diataxis.fr/) -- the
 
 - [Purge junk from your library](docs/how-to/purge-junk.md)
 - [Plan a Deck session](docs/how-to/plan-deck-session.md)
+- [Use Vapourfly on a Steam Deck](docs/how-to/use-on-steam-deck.md)
 - [Share and sync playlists](docs/how-to/share-and-sync-playlists.md)
 - [Work offline](docs/how-to/work-offline.md)
 - [Back up and restore Steam files](docs/how-to/back-up-and-restore.md)

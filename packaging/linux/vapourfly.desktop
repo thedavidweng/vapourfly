@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Vapourfly
+GenericName=Steam Library Manager
+Comment=Organize your Steam library with playlists, smart filters and safe writes
+Exec=@BIN@
+Icon=applications-games
+Terminal=false
+Categories=Game;Utility;
+Keywords=Steam;Library;Collections;Playlists;Deck;
+StartupWMClass=vapourfly

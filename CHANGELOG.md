@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Controller support and Steam Deck mode** in the GUI. Steam Deck controls and Xbox-style gamepads navigate the whole app: the D-pad or left stick moves focus (card by card in the Library), A selects, B goes back, LB / RB switch pages, the right stick and triggers scroll, Y jumps to search, Start opens Settings and Select toggles the sidebar. A button-hint footer appears while the controller is in use, and Settings → Controller shows the connected pad. On SteamOS, text fields open Steam's on-screen keyboard; in Game Mode the window is fullscreen at 1280×800, the Library hero is shorter, and the write dialog warns that Steam must be closed first. `--deck` simulates a Deck; `VAPOURFLY_NO_GAMEPAD=1` turns controller input off.
+- `scripts/install-steamos.sh` and a `.desktop` entry: installs the Linux release to `~/.local` and adds it to Steam as a non-Steam game. Linux builds now need `libudev`.
+
+### Changed
+
+- **GUI redesign** on gpui-component 0.7 (ADR-0006). The UI is rebuilt from standard components: a grouped, collapsible sidebar; a slim title bar with sync status; segmented controls; a Filters popover and sort menu in a one-row Library toolbar; game detail sheets and context menus; toast notifications instead of banners; and a modal write-confirmation dialog with an added/removed preview. Library shows real Steam artwork (portrait capsules, hero banners and logos; local Steam cache first, then a background download) in a virtualized grid or list. Settings, Data Sources, Collections, Discover, Recommendations, and Playlists are redesigned to match. The look follows SteamOS: a darker slate sidebar headed by your Steam avatar and persona name, a lighter content panel, full-width selection bands, Steam blue and a green Play button (no indigo accent), a 16px base font with larger titles, controls and navigation, and a Library that opens on a "continue playing" hero, a Recently played shelf and a grid of portrait capsules. Play launches or installs the game through Steam. Dark is the default theme.
+- Discover can run without a seed (**Match my taste**) and exposes the pick count.
+- Playlist rule rows disable **Add** until the value is valid.
+- GUI launch flags `--theme light|dark` and `--view <page>` for review and screenshots.
+- Upgraded gpui-component / gpui-kit to 0.7.0 and rfd to 0.17.
+
+### Fixed
+
+- GUI Settings no longer writes values you did not set. The fields used to be filled from the resolved config (environment variables, the auto-detected Steam folder, defaults), and **Save changes** wrote all of them into `config.toml`. That pinned the detected Steam folder, and it could copy an API key from `VAPOURFLY_STEAM_API_KEY` into the file. Now the fields show only what is in the file, placeholders show the value that applies when a field is left empty, **Save changes** is enabled only after an edit, and saving writes only the changed keys.
+
+### Removed
+
+- The Library insights rail and **Load more** pagination (the grid is now virtualized).
+
 ## [0.2.0] - 2026-08-14
 
 First packaged release after the v0.1.0 source drop. Breaking: share-code

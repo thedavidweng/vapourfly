@@ -15,6 +15,7 @@ Start at the [top-level README](../README.md) for installation.
 
 - [Purge junk from your library](how-to/purge-junk.md) -- find never-going-to-play games and tag or hide them
 - [Plan a Deck session](how-to/plan-deck-session.md) -- get picks that fit the time you have; write them to Steam
+- [Use Vapourfly on a Steam Deck](how-to/use-on-steam-deck.md) -- install on SteamOS, add to Game Mode, controller controls, safe writes
 - [Share and sync playlists](how-to/share-and-sync-playlists.md) -- curate, share as `VF1:` codes, sync to a Steam collection
 - [Work offline](how-to/work-offline.md) -- run everything with zero network
 - [Back up and restore Steam files](how-to/back-up-and-restore.md) -- recover from an unwanted write; tune retention

@@ -1,9 +1,10 @@
 //! Light + dark design tokens (ADR-0006).
 //!
-//! Product screens ship a warm light canvas with orchid accents. The earlier
-//! desktop shell used a cool dark surface hierarchy with a violet brand
-//! accent. Both palettes are kept and switched at runtime so the app can
-//! match the reference light UI without abandoning the dark design system.
+//! Dark is the primary look: SteamOS slate surfaces (a darker sidebar beside
+//! a lighter content panel), Steam blue for selection, white for focus, and Steam
+//! green reserved for Play. Light is a cool-grey counterpart for bright rooms. The shell paints
+//! `surface` behind the sidebar and title bar and the page sits on `canvas`.
+//! Cover art supplies the color; chrome stays quiet.
 //!
 //! Theme preference persists across launches via a small GUI-only file
 //! (not domain config) — see [`ThemeMode::as_u8`] / [`ThemeMode::from_u8`].
@@ -75,6 +76,10 @@ pub struct Tokens {
     pub surface_raised: Rgb,
     pub surface_muted: Rgb,
     pub surface_sunken: Rgb,
+    /// Button fill while hovered or focused.
+    pub control_hover: Rgb,
+    /// Button fill while pressed.
+    pub control_active: Rgb,
     pub border: Rgb,
     pub border_soft: Rgb,
     pub text_primary: Rgb,
@@ -94,50 +99,55 @@ pub struct Tokens {
 
 impl Tokens {
     pub const LIGHT: Self = Self {
-        canvas: Rgb::from_rgb(250, 250, 251),
-        surface: Rgb::from_rgb(255, 255, 255),
+        canvas: Rgb::from_rgb(244, 246, 249),
+        surface: Rgb::from_rgb(230, 234, 239),
         surface_raised: Rgb::from_rgb(255, 255, 255),
-        surface_muted: Rgb::from_rgb(247, 247, 249),
-        surface_sunken: Rgb::from_rgb(243, 243, 246),
-        border: Rgb::from_rgb(224, 223, 228),
-        border_soft: Rgb::from_rgb(235, 234, 238),
-        text_primary: Rgb::from_rgb(24, 22, 29),
-        text_secondary: Rgb::from_rgb(92, 88, 101),
-        text_muted: Rgb::from_rgb(137, 132, 145),
+        surface_muted: Rgb::from_rgb(225, 230, 236),
+        surface_sunken: Rgb::from_rgb(236, 239, 243),
+        control_hover: Rgb::from_rgb(213, 219, 227),
+        control_active: Rgb::from_rgb(203, 210, 219),
+        border: Rgb::from_rgb(212, 219, 227),
+        border_soft: Rgb::from_rgb(226, 231, 237),
+        text_primary: Rgb::from_rgb(15, 23, 32),
+        text_secondary: Rgb::from_rgb(70, 82, 96),
+        text_muted: Rgb::from_rgb(112, 124, 138),
         text_inverse: Rgb::from_rgb(255, 255, 255),
-        accent: Rgb::from_rgb(139, 48, 153),
-        accent_soft: Rgb::from_rgb(248, 237, 250),
-        accent_text: Rgb::from_rgb(122, 36, 137),
-        success: Rgb::from_rgb(46, 147, 75),
-        success_soft: Rgb::from_rgb(234, 247, 236),
-        error: Rgb::from_rgb(210, 70, 76),
-        error_soft: Rgb::from_rgb(253, 238, 239),
-        warning: Rgb::from_rgb(185, 112, 20),
-        warning_soft: Rgb::from_rgb(255, 246, 229),
+        accent: Rgb::from_rgb(10, 128, 220),
+        accent_soft: Rgb::from_rgb(222, 238, 251),
+        accent_text: Rgb::from_rgb(8, 104, 184),
+        success: Rgb::from_rgb(46, 150, 58),
+        success_soft: Rgb::from_rgb(226, 243, 227),
+        error: Rgb::from_rgb(208, 52, 44),
+        error_soft: Rgb::from_rgb(252, 232, 230),
+        warning: Rgb::from_rgb(184, 122, 8),
+        warning_soft: Rgb::from_rgb(252, 242, 220),
     };
 
-    // Restored from the dark design-system shell (ADR-0006).
     pub const DARK: Self = Self {
-        canvas: Rgb::from_rgb(14, 16, 22),
-        surface: Rgb::from_rgb(18, 20, 26),
-        surface_raised: Rgb::from_rgb(26, 29, 36),
-        surface_muted: Rgb::from_rgb(34, 38, 48),
-        surface_sunken: Rgb::from_rgb(14, 16, 22),
-        border: Rgb::from_rgb(52, 58, 70),
-        border_soft: Rgb::from_rgb(42, 46, 56),
-        text_primary: Rgb::from_rgb(236, 238, 244),
-        text_secondary: Rgb::from_rgb(158, 166, 180),
-        text_muted: Rgb::from_rgb(110, 118, 132),
-        text_inverse: Rgb::from_rgb(18, 20, 26),
-        accent: Rgb::from_rgb(156, 110, 220),
-        accent_soft: Rgb::from_rgb(48, 36, 72),
-        accent_text: Rgb::from_rgb(196, 168, 255),
-        success: Rgb::from_rgb(72, 180, 120),
-        success_soft: Rgb::from_rgb(28, 52, 40),
-        error: Rgb::from_rgb(220, 90, 90),
-        error_soft: Rgb::from_rgb(56, 28, 28),
-        warning: Rgb::from_rgb(220, 170, 70),
-        warning_soft: Rgb::from_rgb(56, 44, 24),
+        canvas: Rgb::from_rgb(43, 48, 58),
+        surface: Rgb::from_rgb(33, 38, 45),
+        surface_raised: Rgb::from_rgb(55, 61, 73),
+        // Steam client values: #3d4450 field focus, #464d58 / #393f49
+        // DialogButton hover / pressed, #dcdedf and #8b929a label text.
+        surface_muted: Rgb::from_rgb(61, 68, 80),
+        surface_sunken: Rgb::from_rgb(36, 41, 50),
+        control_hover: Rgb::from_rgb(70, 77, 88),
+        control_active: Rgb::from_rgb(57, 63, 73),
+        border: Rgb::from_rgb(69, 76, 91),
+        border_soft: Rgb::from_rgb(54, 60, 72),
+        text_primary: Rgb::from_rgb(255, 255, 255),
+        text_secondary: Rgb::from_rgb(220, 222, 223),
+        text_muted: Rgb::from_rgb(139, 146, 154),
+        text_inverse: Rgb::from_rgb(255, 255, 255),
+        accent: Rgb::from_rgb(26, 159, 255),
+        accent_soft: Rgb::from_rgb(33, 64, 94),
+        accent_text: Rgb::from_rgb(102, 192, 244),
+        success: Rgb::from_rgb(89, 191, 64),
+        success_soft: Rgb::from_rgb(24, 50, 28),
+        error: Rgb::from_rgb(236, 92, 80),
+        error_soft: Rgb::from_rgb(60, 26, 26),
+        warning: Rgb::from_rgb(232, 172, 62),
+        warning_soft: Rgb::from_rgb(58, 44, 20),
     };
 }
 
@@ -222,11 +232,11 @@ pub const SP_4: f32 = 16.0;
 pub const SP_6: f32 = 24.0;
 
 pub const TOPBAR_HEIGHT: f32 = 58.0;
-pub const SIDEBAR_WIDTH: f32 = 176.0;
+pub const SIDEBAR_WIDTH: f32 = 260.0;
 /// Compact (icon-only) sidebar width, used at 1024–1179px window width.
-pub const SIDEBAR_WIDTH_COMPACT: f32 = 76.0;
+pub const SIDEBAR_WIDTH_COMPACT: f32 = 68.0;
 
-/// Below this width the sidebar shrinks to icon-only (76px).
+/// Below this width the sidebar shrinks to icon-only.
 pub const BP_COMPACT_SIDEBAR: f32 = 1180.0;
 /// Below this width the central panel padding shrinks from 24px to 16px and
 /// insight rails move below the main content.
@@ -251,9 +261,10 @@ pub fn is_compact_padding(width: f32) -> bool {
 pub fn rails_below(width: f32) -> bool {
     (1024.0..BP_DESKTOP).contains(&width)
 }
-pub const CORNER_SM: f32 = 6.0;
-pub const CORNER_MD: f32 = 10.0;
-pub const CORNER_LG: f32 = 14.0;
+// SteamOS corners are nearly square: 2px on buttons, fields and capsules.
+pub const CORNER_SM: f32 = 2.0;
+pub const CORNER_MD: f32 = 3.0;
+pub const CORNER_LG: f32 = 4.0;
 pub const CORNER_PILL: f32 = 20.0;
 
 pub const RECOMMEND_CARD_IMG_W: f32 = 220.0;

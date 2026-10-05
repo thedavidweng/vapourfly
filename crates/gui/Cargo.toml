@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 gpui-kit = { workspace = true }
 rfd = { workspace = true }
+gilrs = { workspace = true }
+ureq = { workspace = true }
 vapourfly-core = { path = "../core" }
 vapourfly-api = { path = "../api" }
 dirs = { workspace = true }

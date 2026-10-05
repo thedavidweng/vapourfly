@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use vapourfly_core::actions;
-use vapourfly_core::config::VapourflyConfig;
+use vapourfly_core::config::{ConfigField, ConfigUpdate, VapourflyConfig};
 use vapourfly_core::discover::{self, DiscoverOptions, DiscoverPick};
 use vapourfly_core::display;
 use vapourfly_core::disposition;
@@ -70,13 +70,21 @@ impl View {
     /// Canonical sidebar order. Tests lock this set and ordering.
     pub(crate) const ALL: &'static [View] = &[
         View::Library,
-        View::Collections,
+        View::Discover,
         View::Recommendations,
         View::Playlists,
-        View::Discover,
+        View::Collections,
         View::DataSources,
         View::Settings,
     ];
+
+    /// Parse a lowercase, dash-separated label (`data-sources`).
+    pub(crate) fn from_slug(slug: &str) -> Option<View> {
+        View::ALL
+            .iter()
+            .copied()
+            .find(|v| v.label().to_ascii_lowercase().replace(' ', "-") == slug)
+    }
 
     pub(crate) fn label(self) -> &'static str {
         match self {
@@ -191,17 +199,6 @@ pub(crate) struct GeneratorJobResult {
     playlist: PlaylistFile,
 }
 
-/// Lightweight modal chooser opened from Playlists action bar.
-///
-/// Discover is intentionally absent — it is a top-level view (ADR-0005/0006).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub(crate) enum PlaylistChooser {
-    #[default]
-    None,
-    Dynamic,
-    Mood,
-}
-
 /// Right-workspace tab in the Playlists master-detail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub(crate) enum PlaylistDetailTab {
@@ -209,14 +206,6 @@ pub(crate) enum PlaylistDetailTab {
     Games,
     Rules,
     Match,
-}
-
-/// Share sub-tab in the Playlists right workspace.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub(crate) enum PlaylistShareTab {
-    #[default]
-    ShareCode,
-    Json,
 }
 
 /// Match sub-tab in the Playlists right workspace.
@@ -422,8 +411,6 @@ pub(crate) struct VapourflyApp {
     pub(crate) playlist_rail_entries: Vec<(String, std::result::Result<PlaylistFile, String>)>,
     /// Selected id in the Load existing combo (empty = none).
     pub(crate) playlist_load_selected: String,
-    /// Open generator chooser (Dynamic / Mood only).
-    pub(crate) playlist_chooser: PlaylistChooser,
     /// Master-detail: active tab in the right workspace (Games/Rules/Match).
     pub(crate) playlist_detail_tab: PlaylistDetailTab,
     /// Master-detail: game search query for Add/Remove in Games tab.
@@ -448,10 +435,6 @@ pub(crate) struct VapourflyApp {
     pub(crate) playlist_rule_rating_min: String,
     /// Master-detail: pending duplicate-ID replacement (for confirm dialog).
     pub(crate) playlist_dup_id_confirm: Option<(String, PlaylistFile)>,
-    /// Master-detail: show Import sub-route panel.
-    pub(crate) playlist_show_import: bool,
-    /// Master-detail: active share tab (ShareCode / Json).
-    pub(crate) playlist_share_tab: PlaylistShareTab,
     /// Master-detail: active match sub-tab (Owned / Missing).
     pub(crate) playlist_match_sub_tab: PlaylistMatchTab,
     pub(crate) dynamic_template: String,
@@ -495,6 +478,9 @@ pub(crate) struct VapourflyApp {
     /// Steam Web API key input (plain text — the key is shown in plaintext
     /// on Steam's own creation page; only *echoes* elsewhere are masked).
     pub(crate) steam_api_key_edit: String,
+    /// The edit fields as last loaded from or saved to `config.toml`; Save
+    /// is offered only when the fields differ from it.
+    pub(crate) saved_settings: Vec<ConfigUpdate>,
     pub(crate) allow_steam_running: bool,
     pub(crate) settings_save_msg: Option<String>,
 
@@ -556,39 +542,6 @@ pub(crate) struct VapourflyApp {
     pub(crate) playlist_match_loading: bool,
 }
 
-/// Snapshot used by the Library insights rail (ADR-0006).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct LibraryInsights {
-    pub total: usize,
-    pub installed: usize,
-    pub hidden: usize,
-    pub junk: usize,
-    pub playtime: u32,
-    pub matching: usize,
-    pub backlog: usize,
-    pub recent: Vec<(u32, String, i64, u32)>,
-    pub avg_hltb_minutes: u32,
-}
-
-/// ProtonDB tiers offered by the Library advanced filter (Any is `None`).
-pub(crate) const PROTON_FILTER_TIERS: &[ProtonTier] = &[
-    ProtonTier::Bronze,
-    ProtonTier::Silver,
-    ProtonTier::Gold,
-    ProtonTier::Platinum,
-    ProtonTier::Native,
-];
-
-pub(crate) fn cycle_proton_filter(current: Option<ProtonTier>) -> Option<ProtonTier> {
-    match current {
-        None => PROTON_FILTER_TIERS.first().copied(),
-        Some(tier) => PROTON_FILTER_TIERS
-            .iter()
-            .position(|t| *t == tier)
-            .and_then(|i| PROTON_FILTER_TIERS.get(i + 1).copied()),
-    }
-}
-
 pub(crate) fn proton_tier_label(tier: ProtonTier) -> &'static str {
     match tier {
         ProtonTier::Borked => "Borked",
@@ -598,59 +551,6 @@ pub(crate) fn proton_tier_label(tier: ProtonTier) -> &'static str {
         ProtonTier::Platinum => "Platinum",
         ProtonTier::Native => "Native",
         ProtonTier::Unknown => "Unknown",
-    }
-}
-
-pub(crate) fn format_hltb_seconds(seconds: u32) -> String {
-    let hours = seconds / 3600;
-    let minutes = (seconds % 3600) / 60;
-    if hours > 0 {
-        format!("{hours}h {minutes}m")
-    } else {
-        format!("{minutes}m")
-    }
-}
-
-pub(crate) fn game_metadata_summary(game: &Game) -> String {
-    let mut parts = Vec::new();
-
-    if let Some(proton) = &game.protondb {
-        parts.push(proton_tier_label(proton.tier).to_string());
-    }
-
-    if let Some(hltb) = &game.hltb {
-        if let Some(seconds) = hltb.main_story_seconds {
-            parts.push(format_hltb_seconds(seconds));
-        }
-    }
-
-    if let Some(rating) = game
-        .rawg
-        .as_ref()
-        .and_then(|rawg| rawg.rating_0_5)
-        .or_else(|| {
-            game.igdb
-                .as_ref()
-                .and_then(|igdb| igdb.rating_0_100)
-                .map(|rating| rating / 20.0)
-        })
-    {
-        parts.push(format!("{rating:.1}/5"));
-    }
-
-    if let Some(genre) = game
-        .igdb
-        .as_ref()
-        .and_then(|igdb| igdb.genres.first())
-        .or_else(|| game.rawg.as_ref().and_then(|rawg| rawg.genres.first()))
-    {
-        parts.push(genre.clone());
-    }
-
-    if parts.is_empty() {
-        String::new()
-    } else {
-        parts.join(" | ")
     }
 }
 
@@ -1103,42 +1003,69 @@ pub(crate) fn source_refresh_enabled(
     }
 }
 
-/// Each entry is (top_block, bottom_block) — two distinct shades that make
-/// the placeholder visually identifiable without any network fetch.
+/// Each entry is a (light, deep) duotone for the generated cover shown when
+/// no Steam artwork is available — distinct per game without any network fetch.
 pub(crate) const ARTWORK_PALETTE: [(Rgb, Rgb); 8] = [
     (
-        Rgb::from_rgb(0x4C, 0x6E, 0xF0),
-        Rgb::from_rgb(0x2A, 0x4A, 0xC0),
+        Rgb::from_rgb(0x3E, 0x86, 0xA0),
+        Rgb::from_rgb(0x0C, 0x22, 0x2E),
     ),
     (
-        Rgb::from_rgb(0xE1, 0x70, 0x55),
-        Rgb::from_rgb(0xB5, 0x4A, 0x35),
+        Rgb::from_rgb(0xE0, 0x66, 0x3E),
+        Rgb::from_rgb(0x5C, 0x1E, 0x2E),
     ),
     (
-        Rgb::from_rgb(0x2E, 0xC4, 0xB6),
-        Rgb::from_rgb(0x1A, 0x9A, 0x8E),
+        Rgb::from_rgb(0x1F, 0xA5, 0x89),
+        Rgb::from_rgb(0x0B, 0x3B, 0x3F),
     ),
     (
-        Rgb::from_rgb(0xF4, 0xC4, 0x30),
-        Rgb::from_rgb(0xC0, 0x98, 0x18),
+        Rgb::from_rgb(0xD9, 0xA4, 0x3B),
+        Rgb::from_rgb(0x5A, 0x32, 0x15),
     ),
     (
-        Rgb::from_rgb(0x9B, 0x59, 0xB6),
-        Rgb::from_rgb(0x72, 0x3C, 0x8A),
+        Rgb::from_rgb(0xC4, 0x4A, 0x3A),
+        Rgb::from_rgb(0x36, 0x0E, 0x12),
     ),
     (
-        Rgb::from_rgb(0x34, 0x98, 0xDB),
-        Rgb::from_rgb(0x21, 0x70, 0xA8),
+        Rgb::from_rgb(0x55, 0x74, 0x96),
+        Rgb::from_rgb(0x12, 0x1A, 0x28),
     ),
     (
-        Rgb::from_rgb(0xE6, 0x7E, 0x22),
-        Rgb::from_rgb(0xB0, 0x5C, 0x12),
+        Rgb::from_rgb(0xB8, 0x5A, 0x78),
+        Rgb::from_rgb(0x2C, 0x10, 0x1E),
     ),
     (
-        Rgb::from_rgb(0x1A, 0xBC, 0x9C),
-        Rgb::from_rgb(0x12, 0x8E, 0x76),
+        Rgb::from_rgb(0x5A, 0xA6, 0x5A),
+        Rgb::from_rgb(0x16, 0x35, 0x1E),
     ),
 ];
+
+/// Settings edit values as config updates: trimmed, with empty meaning
+/// "remove the key so the next layer (env, detection, default) applies".
+fn settings_fields(
+    steam_dir: &str,
+    account: &str,
+    cc: &str,
+    lang: &str,
+    backup_retention: &str,
+    steam_api_key: &str,
+) -> Vec<ConfigUpdate> {
+    [
+        (ConfigField::SteamDir, steam_dir),
+        (ConfigField::Account, account),
+        (ConfigField::Cc, cc),
+        (ConfigField::Lang, lang),
+        (ConfigField::BackupRetentionCount, backup_retention),
+        (ConfigField::SteamApiKey, steam_api_key),
+    ]
+    .into_iter()
+    .map(|(field, value)| {
+        let value = value.trim();
+        (field, (!value.is_empty()).then(|| value.to_string()))
+    })
+    .collect()
+}
+
 pub(crate) fn unique_demo_root() -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1198,32 +1125,41 @@ impl VapourflyApp {
             )
         };
 
-        let steam_dir_edit = config
-            .as_ref()
-            .map(|c| c.steam_dir.to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        let account_edit = config
-            .as_ref()
-            .and_then(|c| c.account.clone())
-            .unwrap_or_default();
-
-        let steam_api_key_edit = config
-            .as_ref()
-            .and_then(|c| c.steam_api_key.clone())
-            .unwrap_or_default();
-
-        let cc_edit = config
-            .as_ref()
-            .map_or_else(|| "US".into(), |c| c.cc.clone());
-
-        let lang_edit = config
-            .as_ref()
-            .map_or_else(|| "english".into(), |c| c.lang.clone());
-
-        let backup_retention_edit = config
-            .as_ref()
-            .map_or_else(|| "5".into(), |c| c.backup_retention_count.to_string());
+        // Settings edit what is written in config.toml, not the resolved
+        // config: seeding env vars, detected paths or defaults into the
+        // fields would pin them into the file on the next save. Demo mode
+        // has no file, so it shows its in-memory config.
+        let stored = |field: ConfigField, demo: Option<String>| -> String {
+            if ui_demo {
+                demo.unwrap_or_default()
+            } else {
+                vapourfly_core::config::stored_config_value(field).unwrap_or_default()
+            }
+        };
+        let demo = config.as_ref().filter(|_| ui_demo);
+        let steam_dir_edit = stored(
+            ConfigField::SteamDir,
+            demo.map(|c| c.steam_dir.to_string_lossy().to_string()),
+        );
+        let account_edit = stored(ConfigField::Account, demo.and_then(|c| c.account.clone()));
+        let steam_api_key_edit = stored(
+            ConfigField::SteamApiKey,
+            demo.and_then(|c| c.steam_api_key.clone()),
+        );
+        let cc_edit = stored(ConfigField::Cc, demo.map(|c| c.cc.clone()));
+        let lang_edit = stored(ConfigField::Lang, demo.map(|c| c.lang.clone()));
+        let backup_retention_edit = stored(
+            ConfigField::BackupRetentionCount,
+            demo.map(|c| c.backup_retention_count.to_string()),
+        );
+        let saved_settings = settings_fields(
+            &steam_dir_edit,
+            &account_edit,
+            &cc_edit,
+            &lang_edit,
+            &backup_retention_edit,
+            &steam_api_key_edit,
+        );
 
         let has_igdb = config.as_ref().is_some_and(|c| c.has_igdb_credentials);
 
@@ -1304,7 +1240,6 @@ impl VapourflyApp {
             playlist_store_ids_loaded: false,
             playlist_rail_entries: Vec::new(),
             playlist_load_selected: String::new(),
-            playlist_chooser: PlaylistChooser::None,
             playlist_detail_tab: PlaylistDetailTab::Games,
             playlist_game_search: String::new(),
             playlist_show_advanced_json: false,
@@ -1317,8 +1252,6 @@ impl VapourflyApp {
             playlist_rule_playtime_max: String::new(),
             playlist_rule_rating_min: String::new(),
             playlist_dup_id_confirm: None,
-            playlist_show_import: false,
-            playlist_share_tab: PlaylistShareTab::ShareCode,
             playlist_match_sub_tab: PlaylistMatchTab::Owned,
             dynamic_template: DynamicTemplate::DeckSession.id().into(),
             dynamic_minutes: "90".into(),
@@ -1351,6 +1284,7 @@ impl VapourflyApp {
             lang_edit,
             backup_retention_edit,
             steam_api_key_edit,
+            saved_settings,
             allow_steam_running: false,
             settings_save_msg: None,
 
@@ -1667,7 +1601,7 @@ impl VapourflyApp {
         self.junk_results = vec![
             JunkDecision {
                 app_id: 1011,
-                name: "Demo Game 11".into(),
+                name: DEMO_GAME_NAMES[11].into(),
                 is_junk: true,
                 confidence: 1.0,
                 matched: vec![JunkSignal::LowPlaytime { minutes: 5 }],
@@ -1676,7 +1610,7 @@ impl VapourflyApp {
             },
             JunkDecision {
                 app_id: 1017,
-                name: "Demo Game 17".into(),
+                name: DEMO_GAME_NAMES[17].into(),
                 is_junk: true,
                 confidence: 0.33,
                 matched: vec![JunkSignal::LowPlaytime { minutes: 10 }],
@@ -1685,7 +1619,7 @@ impl VapourflyApp {
             },
             JunkDecision {
                 app_id: 1005,
-                name: "Demo Game 05".into(),
+                name: DEMO_GAME_NAMES[5].into(),
                 is_junk: false,
                 confidence: 0.66,
                 matched: vec![],
@@ -1698,86 +1632,255 @@ impl VapourflyApp {
         self.recommend_results = vec![
             Recommendation {
                 app_id: 1003,
-                name: "Demo Game 03".into(),
+                name: DEMO_GAME_NAMES[3].into(),
                 score: 4.5,
                 reasons: vec![
                     RecommendReason {
                         code: "low_playtime".into(),
-                        description: "Low playtime (0 min)".into(),
+                        description: "Never played".into(),
                         weight: 2.0,
                     },
                     RecommendReason {
                         code: "time_match".into(),
-                        description: "HLTB fits 120 min session".into(),
+                        description: "About 2h to beat — fits tonight".into(),
                         weight: 1.5,
                     },
                     RecommendReason {
                         code: "high_rating".into(),
-                        description: "High rating (3.9/5)".into(),
-                        weight: 1.0,
-                    },
-                ],
-            },
-            Recommendation {
-                app_id: 1008,
-                name: "Demo Game 08".into(),
-                score: 3.0,
-                reasons: vec![
-                    RecommendReason {
-                        code: "low_playtime".into(),
-                        description: "Low playtime (0 min)".into(),
-                        weight: 2.0,
-                    },
-                    RecommendReason {
-                        code: "deck_compatible".into(),
-                        description: "ProtonDB Gold".into(),
+                        description: "Rated 78 by critics".into(),
                         weight: 1.0,
                     },
                 ],
             },
             Recommendation {
                 app_id: 1012,
-                name: "Demo Game 12".into(),
-                score: 2.5,
+                name: DEMO_GAME_NAMES[12].into(),
+                score: 4.1,
                 reasons: vec![
                     RecommendReason {
-                        code: "low_playtime".into(),
-                        description: "Low playtime (0 min)".into(),
+                        code: "time_match".into(),
+                        description: "15-minute sessions".into(),
                         weight: 2.0,
                     },
                     RecommendReason {
+                        code: "high_rating".into(),
+                        description: "Rated 88 by critics".into(),
+                        weight: 1.5,
+                    },
+                    RecommendReason {
+                        code: "low_playtime".into(),
+                        description: "Never played".into(),
+                        weight: 0.6,
+                    },
+                ],
+            },
+            Recommendation {
+                app_id: 1007,
+                name: DEMO_GAME_NAMES[7].into(),
+                score: 3.6,
+                reasons: vec![
+                    RecommendReason {
+                        code: "low_playtime".into(),
+                        description: "Never played".into(),
+                        weight: 2.0,
+                    },
+                    RecommendReason {
+                        code: "deck_compatible".into(),
+                        description: "Runs well on Steam Deck".into(),
+                        weight: 1.0,
+                    },
+                ],
+            },
+            Recommendation {
+                app_id: 1016,
+                name: DEMO_GAME_NAMES[16].into(),
+                score: 3.2,
+                reasons: vec![
+                    RecommendReason {
+                        code: "low_playtime".into(),
+                        description: "Never played".into(),
+                        weight: 2.0,
+                    },
+                    RecommendReason {
+                        code: "deck_compatible".into(),
+                        description: "ProtonDB Platinum".into(),
+                        weight: 1.2,
+                    },
+                ],
+            },
+            Recommendation {
+                app_id: 1005,
+                name: DEMO_GAME_NAMES[5].into(),
+                score: 2.9,
+                reasons: vec![
+                    RecommendReason {
+                        code: "low_playtime".into(),
+                        description: "Only 15 minutes played".into(),
+                        weight: 1.8,
+                    },
+                    RecommendReason {
+                        code: "high_rating".into(),
+                        description: "Players rate it 3.5/5".into(),
+                        weight: 1.1,
+                    },
+                ],
+            },
+            Recommendation {
+                app_id: 1013,
+                name: DEMO_GAME_NAMES[13].into(),
+                score: 2.6,
+                reasons: vec![
+                    RecommendReason {
+                        code: "deck_compatible".into(),
+                        description: "ProtonDB Gold".into(),
+                        weight: 1.4,
+                    },
+                    RecommendReason {
+                        code: "low_playtime".into(),
+                        description: "45 minutes played".into(),
+                        weight: 1.2,
+                    },
+                ],
+            },
+            Recommendation {
+                app_id: 1008,
+                name: DEMO_GAME_NAMES[8].into(),
+                score: 2.2,
+                reasons: vec![
+                    RecommendReason {
                         code: "time_match".into(),
-                        description: "HLTB 15m fits session".into(),
-                        weight: 0.5,
+                        description: "Short enough to finish this week".into(),
+                        weight: 1.2,
+                    },
+                    RecommendReason {
+                        code: "low_playtime".into(),
+                        description: "1h 30m played".into(),
+                        weight: 1.0,
+                    },
+                ],
+            },
+            Recommendation {
+                app_id: 1002,
+                name: DEMO_GAME_NAMES[2].into(),
+                score: 1.9,
+                reasons: vec![
+                    RecommendReason {
+                        code: "high_rating".into(),
+                        description: "Full controller support".into(),
+                        weight: 1.0,
+                    },
+                    RecommendReason {
+                        code: "low_playtime".into(),
+                        description: "1h played".into(),
+                        weight: 0.9,
                     },
                 ],
             },
         ];
 
+        self.discover_seed = "1010".into();
         self.discover_results = vec![
             DiscoverPick {
-                app_id: 1003,
-                name: "Demo Game 03".into(),
+                app_id: 1004,
+                name: DEMO_GAME_NAMES[4].into(),
                 score: 5.2,
                 reasons: vec![discover::DiscoverReason {
                     code: "taste_overlap",
-                    description: "Taste vector overlap",
+                    description: "Same dark-fantasy action feel",
                     weight: 5.2,
                 }],
             },
             DiscoverPick {
-                app_id: 1008,
-                name: "Demo Game 08".into(),
-                score: 3.1,
+                app_id: 1000,
+                name: DEMO_GAME_NAMES[0].into(),
+                score: 4.7,
+                reasons: vec![discover::DiscoverReason {
+                    code: "taste_overlap",
+                    description: "Shares Shooter and Action",
+                    weight: 4.7,
+                }],
+            },
+            DiscoverPick {
+                app_id: 1006,
+                name: DEMO_GAME_NAMES[6].into(),
+                score: 4.1,
                 reasons: vec![discover::DiscoverReason {
                     code: "high_rating",
-                    description: "High rating bonus",
-                    weight: 3.1,
+                    description: "Critics' favourite in your backlog",
+                    weight: 4.1,
+                }],
+            },
+            DiscoverPick {
+                app_id: 1013,
+                name: DEMO_GAME_NAMES[13].into(),
+                score: 3.8,
+                reasons: vec![discover::DiscoverReason {
+                    code: "taste_overlap",
+                    description: "Similar pacing and length",
+                    weight: 3.8,
+                }],
+            },
+            DiscoverPick {
+                app_id: 1015,
+                name: DEMO_GAME_NAMES[15].into(),
+                score: 3.4,
+                reasons: vec![discover::DiscoverReason {
+                    code: "taste_overlap",
+                    description: "Players who love it also play this",
+                    weight: 3.4,
+                }],
+            },
+            DiscoverPick {
+                app_id: 1001,
+                name: DEMO_GAME_NAMES[1].into(),
+                score: 3.0,
+                reasons: vec![discover::DiscoverReason {
+                    code: "high_rating",
+                    description: "ProtonDB Platinum",
+                    weight: 3.0,
+                }],
+            },
+            DiscoverPick {
+                app_id: 1019,
+                name: DEMO_GAME_NAMES[19].into(),
+                score: 2.6,
+                reasons: vec![discover::DiscoverReason {
+                    code: "taste_overlap",
+                    description: "Fast, arcade-style sessions",
+                    weight: 2.6,
+                }],
+            },
+            DiscoverPick {
+                app_id: 1022,
+                name: DEMO_GAME_NAMES[22].into(),
+                score: 2.2,
+                reasons: vec![discover::DiscoverReason {
+                    code: "taste_overlap",
+                    description: "Synth-heavy soundtrack",
+                    weight: 2.2,
                 }],
             },
         ];
 
-        self.source_statuses = vapourfly_api::enrichment::source_status(&self.cache_dir);
+        let now = chrono::Utc::now();
+        let status = |name: &str, entries: usize, stale: usize, hours_ago: Option<i64>| {
+            vapourfly_api::enrichment::SourceStatus {
+                name: name.into(),
+                cache_entries: entries,
+                stale_entries: stale,
+                last_success: hours_ago.map(|h| now - chrono::Duration::hours(h)),
+                cache_dir_exists: entries > 0,
+            }
+        };
+        self.source_statuses = vec![
+            status("steam-store", 24, 0, Some(2)),
+            status("igdb", 22, 1, Some(5)),
+            status("protondb", 24, 3, Some(30)),
+            status("pcgw", 18, 0, Some(26)),
+            status("hltb", 16, 6, Some(170)),
+            status("rawg", 0, 0, None),
+        ];
+        self.has_igdb = true;
 
         self.detected_accounts = vec![SteamAccount {
             steam_id64: "76561198000000000".into(),
@@ -2634,62 +2737,6 @@ impl VapourflyApp {
         project_library_games(games, &filters)
     }
 
-    /// Totals, backlog, recent activity, and average HLTB for the Library rail.
-    pub(crate) fn library_insights(&self, matching: &[Game]) -> LibraryInsights {
-        let all = self
-            .scan_result
-            .as_ref()
-            .map(|s| s.games.as_slice())
-            .unwrap_or(&[]);
-        let mut recent: Vec<&Game> = all
-            .iter()
-            .filter(|g| g.last_played_unix.is_some())
-            .collect();
-        recent.sort_by(|a, b| {
-            b.last_played_unix
-                .unwrap_or(0)
-                .cmp(&a.last_played_unix.unwrap_or(0))
-        });
-        let hltb_minutes: Vec<u32> = all
-            .iter()
-            .filter_map(|g| {
-                g.hltb
-                    .as_ref()
-                    .and_then(|h| h.main_story_seconds)
-                    .map(|s| s / 60)
-            })
-            .collect();
-        LibraryInsights {
-            total: all.len(),
-            installed: all.iter().filter(|g| g.installed).count(),
-            hidden: all.iter().filter(|g| g.is_hidden).count(),
-            junk: all.iter().filter(|g| g.is_junk).count(),
-            playtime: all.iter().map(|g| g.playtime_minutes.unwrap_or(0)).sum(),
-            matching: matching.len(),
-            backlog: matching
-                .iter()
-                .filter(|g| g.playtime_minutes.unwrap_or(0) == 0)
-                .count(),
-            recent: recent
-                .into_iter()
-                .take(3)
-                .map(|g| {
-                    (
-                        g.app_id,
-                        g.name.clone(),
-                        g.last_played_unix.unwrap_or(0),
-                        g.playtime_minutes.unwrap_or(0),
-                    )
-                })
-                .collect(),
-            avg_hltb_minutes: if hltb_minutes.is_empty() {
-                0
-            } else {
-                hltb_minutes.iter().sum::<u32>() / hltb_minutes.len() as u32
-            },
-        }
-    }
-
     /// Reload source cache statuses from disk.
     pub(crate) fn reload_source_statuses(&mut self) {
         self.source_statuses = vapourfly_api::enrichment::source_status(&self.cache_dir);
@@ -3380,8 +3427,76 @@ impl VapourflyApp {
         }
     }
 
+    /// Load accounts for the sidebar profile without surfacing errors; a
+    /// missing Steam install just leaves the profile on its placeholder.
+    pub(crate) fn load_accounts_quietly(&mut self) {
+        if self.ui_demo || !self.detected_accounts.is_empty() {
+            return;
+        }
+        if let Some(steam_dir) = self.detected_steam_dir()
+            && let Ok(accounts) = detect_accounts(&steam_dir)
+        {
+            self.detected_accounts = accounts;
+        }
+    }
+
+    /// The account Vapourfly acts for: the configured one (matched by
+    /// SteamID64, account name or persona), else Steam's most recent login.
+    pub(crate) fn active_account(&self) -> Option<&SteamAccount> {
+        let preferred = self.account_edit.trim().to_lowercase();
+        let configured = (!preferred.is_empty())
+            .then(|| {
+                self.detected_accounts.iter().find(|a| {
+                    a.steam_id64 == preferred
+                        || a.account_name.to_lowercase() == preferred
+                        || a.persona_name.to_lowercase() == preferred
+                })
+            })
+            .flatten();
+        configured
+            .or_else(|| self.detected_accounts.iter().find(|a| a.most_recent))
+            .or_else(|| self.detected_accounts.first())
+    }
+
+    /// Steam's locally cached avatar for `account`, when the client has one.
+    pub(crate) fn avatar_path(&self, account: &SteamAccount) -> Option<PathBuf> {
+        if self.ui_demo {
+            return None;
+        }
+        let path = self
+            .detected_steam_dir()?
+            .join("config")
+            .join("avatarcache")
+            .join(format!("{}.png", account.steam_id64));
+        path.is_file().then_some(path)
+    }
+
+    /// The Settings edit fields as config updates (empty means unset).
+    fn settings_now(&self) -> Vec<ConfigUpdate> {
+        settings_fields(
+            &self.steam_dir_edit,
+            &self.account_edit,
+            &self.cc_edit,
+            &self.lang_edit,
+            &self.backup_retention_edit,
+            &self.steam_api_key_edit,
+        )
+    }
+
+    /// Fields the user changed since the last load or save.
+    pub(crate) fn changed_settings(&self) -> Vec<ConfigUpdate> {
+        self.settings_now()
+            .into_iter()
+            .filter(|update| !self.saved_settings.contains(update))
+            .collect()
+    }
+
+    pub(crate) fn settings_dirty(&self) -> bool {
+        !self.changed_settings().is_empty()
+    }
+
     pub(crate) fn save_settings(&mut self) {
-        use vapourfly_core::config::{ConfigField, ConfigUpdate, apply_config_updates};
+        use vapourfly_core::config::apply_config_updates;
 
         if self.ui_demo {
             self.settings_save_msg =
@@ -3389,48 +3504,27 @@ impl VapourflyApp {
             return;
         }
 
-        let mut errors: Vec<String> = Vec::new();
-        let backup_value = self.backup_retention_edit.trim();
-        let backup_update: Option<Option<String>> = if backup_value.is_empty() {
-            Some(None)
-        } else {
-            match backup_value.parse::<u32>() {
-                Ok(_) => Some(Some(backup_value.to_string())),
-                Err(_) => {
-                    errors.push("backup_retention_count: must be a non-negative integer".into());
-                    None
-                }
-            }
-        };
-
-        if !errors.is_empty() {
-            self.settings_save_msg = Some(format!("Failed to save: {}", errors.join("; ")));
+        let updates = self.changed_settings();
+        if updates.is_empty() {
+            self.settings_save_msg = Some("No changes to save.".into());
             return;
         }
-
-        let str_field = |field: ConfigField, value: &str| -> ConfigUpdate {
-            if value.is_empty() {
-                (field, None)
-            } else {
-                (field, Some(value.to_string()))
-            }
-        };
-
-        let mut updates: Vec<ConfigUpdate> = vec![
-            str_field(ConfigField::SteamDir, &self.steam_dir_edit),
-            str_field(ConfigField::Account, &self.account_edit),
-            str_field(ConfigField::Cc, &self.cc_edit),
-            str_field(ConfigField::Lang, &self.lang_edit),
-            str_field(ConfigField::SteamApiKey, self.steam_api_key_edit.trim()),
-        ];
-        if let Some(update) = backup_update {
-            updates.push((ConfigField::BackupRetentionCount, update));
+        let bad_retention = updates.iter().any(|(field, value)| {
+            *field == ConfigField::BackupRetentionCount
+                && value.as_ref().is_some_and(|v| v.parse::<u32>().is_err())
+        });
+        if bad_retention {
+            self.settings_save_msg = Some(
+                "Failed to save: backup_retention_count: must be a non-negative integer".into(),
+            );
+            return;
         }
 
         if let Err(e) = apply_config_updates(&updates) {
             self.settings_save_msg = Some(format!("Failed to save: {e}"));
             return;
         }
+        self.saved_settings = self.settings_now();
 
         let path = vapourfly_core::config::config_file_path();
         self.settings_save_msg = Some(match path {
@@ -3924,52 +4018,11 @@ impl VapourflyApp {
     }
 }
 
-pub(crate) fn game_primary_badge(game: &Game) -> (&'static str, Rgb, Rgb) {
-    if game.is_junk {
-        ("Junk", t().error_soft, t().error)
-    } else if game.is_hidden {
-        ("Hidden", t().surface_muted, t().text_secondary)
-    } else if game.installed {
-        ("Installed", t().success_soft, t().success)
-    } else {
-        ("Library", t().accent_soft, t().accent)
-    }
-}
-
 /// Deck badge when PCGW reports full controller support (hydrated cache only).
 pub(crate) fn game_shows_deck_badge(game: &Game) -> bool {
     game.pcgw
         .as_ref()
         .is_some_and(|pcgw| pcgw.controller_support == ControllerSupport::Full)
-}
-
-pub(crate) fn game_card_detail(game: &Game) -> String {
-    let metadata = game_metadata_summary(game);
-    if !metadata.is_empty() {
-        return metadata;
-    }
-
-    if !game.steam_collections.is_empty() {
-        return format!("{} collection(s)", game.steam_collections.len());
-    }
-
-    if game.installed {
-        "Ready to play".to_string()
-    } else {
-        "In your Steam library".to_string()
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn steam_poster_uri(app_id: u32) -> String {
-    format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{app_id}/library_600x900.jpg")
-}
-
-/// Steam's universally available header capsule has the landscape ratio used
-/// by the primary Library cards. Poster art remains in use for collection
-/// collages where the tall composition is more useful.
-pub(crate) fn steam_capsule_uri(app_id: u32) -> String {
-    format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{app_id}/header.jpg")
 }
 
 pub(crate) fn empty_value_label() -> &'static str {
@@ -4019,6 +4072,8 @@ pub(crate) fn format_playtime(minutes: u32) -> String {
     let mins = minutes % 60;
     if hours == 0 {
         format!("{mins}m")
+    } else if mins == 0 {
+        format!("{hours}h")
     } else {
         format!("{hours}h {mins}m")
     }
@@ -4432,14 +4487,16 @@ mod tests {
             labels,
             vec![
                 "Library",
-                "Collections",
+                "Discover",
                 "Recommendations",
                 "Playlists",
-                "Discover",
+                "Collections",
                 "Data Sources",
                 "Settings",
             ]
         );
+        assert_eq!(View::from_slug("data-sources"), Some(View::DataSources));
+        assert_eq!(View::from_slug("junk"), None);
         assert!(!labels.contains(&"Junk"));
         assert!(!labels.contains(&"Backups"));
         assert!(!labels.contains(&"Recommend"));
@@ -4472,6 +4529,7 @@ mod tests {
     #[test]
     pub(crate) fn format_playtime_hours_and_minutes() {
         assert_eq!(format_playtime(125), "2h 5m");
+        assert_eq!(format_playtime(600), "10h");
     }
 
     #[test]
@@ -4500,28 +4558,6 @@ mod tests {
     }
 
     #[test]
-    pub(crate) fn library_insights_count_backlog_and_average_hltb() {
-        let mut app = VapourflyApp::new(None, true);
-        app.populate_demo_data();
-        let matching = app.filtered_games();
-        let insights = app.library_insights(&matching);
-        assert!(insights.total > 0);
-        assert!(insights.matching <= insights.total);
-        assert_eq!(insights.matching, matching.len());
-        assert!(insights.backlog <= insights.matching);
-        assert_eq!(cycle_proton_filter(None), Some(ProtonTier::Bronze));
-        assert_eq!(cycle_proton_filter(Some(ProtonTier::Native)), None);
-    }
-
-    #[test]
-    pub(crate) fn steam_poster_uri_uses_library_poster_endpoint() {
-        assert_eq!(
-            steam_poster_uri(730),
-            "https://cdn.cloudflare.steamstatic.com/steam/apps/730/library_600x900.jpg"
-        );
-    }
-
-    #[test]
     pub(crate) fn artwork_palette_is_deterministic_by_app_id() {
         // Same app_id → same palette entry.
         assert_eq!(
@@ -4535,21 +4571,6 @@ mod tests {
             a, b,
             "adjacent app_ids should get different palette entries"
         );
-    }
-
-    #[test]
-    pub(crate) fn game_primary_badge_prioritizes_visible_state() {
-        let mut game = test_game(730, "Counter-Strike 2");
-        assert_eq!(game_primary_badge(&game).0, "Library");
-
-        game.installed = true;
-        assert_eq!(game_primary_badge(&game).0, "Installed");
-
-        game.is_hidden = true;
-        assert_eq!(game_primary_badge(&game).0, "Hidden");
-
-        game.is_junk = true;
-        assert_eq!(game_primary_badge(&game).0, "Junk");
     }
 
     #[test]
@@ -5109,19 +5130,6 @@ mod tests {
     }
 
     #[test]
-    pub(crate) fn game_card_detail_uses_collection_or_playable_state() {
-        let mut game = test_game(730, "Counter-Strike 2");
-        assert_eq!(game_card_detail(&game), "In your Steam library");
-
-        game.installed = true;
-        assert_eq!(game_card_detail(&game), "Ready to play");
-
-        game.installed = false;
-        game.steam_collections.push("favorites".into());
-        assert_eq!(game_card_detail(&game), "1 collection(s)");
-    }
-
-    #[test]
     pub(crate) fn reason_badge_prefers_human_description() {
         assert_eq!(
             reason_badge_label("taste_overlap", "Taste vector overlap"),
@@ -5181,12 +5189,50 @@ mod tests {
     #[test]
     pub(crate) fn app_settings_fields_initialized() {
         let app = VapourflyApp::new(None, false);
-        // cc and lang should have defaults
-        assert!(!app.cc_edit.is_empty());
-        assert!(!app.lang_edit.is_empty());
-        assert!(!app.backup_retention_edit.is_empty());
+        // Fields mirror config.toml, so a fresh app has nothing to save.
+        assert!(!app.settings_dirty());
         assert!(!app.allow_steam_running);
         assert!(app.settings_save_msg.is_none());
+    }
+
+    #[test]
+    fn settings_are_dirty_only_after_an_edit() {
+        let mut app = VapourflyApp::new(None, true);
+        assert!(!app.settings_dirty());
+        assert!(app.changed_settings().is_empty());
+
+        let original = app.cc_edit.clone();
+        app.cc_edit = "JP".into();
+        assert_eq!(
+            app.changed_settings(),
+            vec![(ConfigField::Cc, Some("JP".to_string()))]
+        );
+
+        app.cc_edit = format!("  {original} ");
+        assert!(!app.settings_dirty(), "whitespace alone is not a change");
+
+        app.steam_dir_edit.clear();
+        assert_eq!(
+            app.changed_settings(),
+            vec![(ConfigField::SteamDir, None)],
+            "clearing a field unsets it so detection applies again"
+        );
+    }
+
+    #[test]
+    fn settings_fields_trim_and_treat_empty_as_unset() {
+        let fields = settings_fields(" /steam ", "", "us", " ", "7", "  ");
+        assert_eq!(
+            fields,
+            vec![
+                (ConfigField::SteamDir, Some("/steam".to_string())),
+                (ConfigField::Account, None),
+                (ConfigField::Cc, Some("us".to_string())),
+                (ConfigField::Lang, None),
+                (ConfigField::BackupRetentionCount, Some("7".to_string())),
+                (ConfigField::SteamApiKey, None),
+            ]
+        );
     }
 
     #[test]
@@ -5250,18 +5296,6 @@ mod tests {
             app.discover_options_from_inputs().unwrap().seed_app_id,
             None
         );
-    }
-
-    #[test]
-    pub(crate) fn playlist_chooser_has_no_discover_variant() {
-        // Ticket 06: Dynamic + Mood only. Discover is top-level (ticket 07).
-        assert_eq!(PlaylistChooser::default(), PlaylistChooser::None);
-        let _ = PlaylistChooser::Dynamic;
-        let _ = PlaylistChooser::Mood;
-        // Compile-time exhaustiveness: only None / Dynamic / Mood.
-        match PlaylistChooser::None {
-            PlaylistChooser::None | PlaylistChooser::Dynamic | PlaylistChooser::Mood => {}
-        }
     }
 
     #[test]
@@ -5798,6 +5832,49 @@ mod tests {
     }
 
     #[test]
+    fn startup_loads_accounts_for_the_sidebar_profile() {
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
+        let mut app = VapourflyApp::new(Some(fixtures), false);
+
+        app.load_accounts_quietly();
+
+        let active = app.active_account().expect("fixture account");
+        assert_eq!(active.persona_name, "Vapourfly Fixture");
+        assert!(app.error.is_none());
+    }
+
+    #[test]
+    fn active_account_prefers_configured_then_most_recent() {
+        let account = |id: &str, name: &str, persona: &str, recent: bool| SteamAccount {
+            steam_id64: id.into(),
+            account_name: name.into(),
+            persona_name: persona.into(),
+            most_recent: recent,
+        };
+        let mut app = VapourflyApp::new(None, true);
+        app.detected_accounts = vec![
+            account("76561198000000001", "alpha", "Alpha", false),
+            account("76561198000000002", "bravo", "Bravo", true),
+        ];
+
+        app.account_edit = String::new();
+        assert_eq!(app.active_account().unwrap().account_name, "bravo");
+
+        app.account_edit = "76561198000000001".into();
+        assert_eq!(app.active_account().unwrap().account_name, "alpha");
+
+        app.account_edit = "ALPHA".into();
+        assert_eq!(app.active_account().unwrap().account_name, "alpha");
+
+        app.account_edit = "nobody".into();
+        assert_eq!(app.active_account().unwrap().account_name, "bravo");
+
+        app.detected_accounts.clear();
+        assert!(app.active_account().is_none());
+    }
+
+    #[test]
     pub(crate) fn manual_playlist_app_ids_render_as_csv_for_editing() {
         let pf = PlaylistFile {
             vapourfly_schema: VAPOURFLY_PLAYLIST_SCHEMA.into(),
@@ -6283,57 +6360,5 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&export_path).unwrap()).unwrap();
         assert_eq!(exported["version"], env!("CARGO_PKG_VERSION"));
         assert!(exported["timestamp"].is_string());
-    }
-
-    #[test]
-    pub(crate) fn game_metadata_summary_formats_cached_fields() {
-        let game = Game {
-            app_id: 730,
-            name: "Test".into(),
-            app_type: SteamAppType::Game,
-            installed: true,
-            install_dir: None,
-            library_folder: None,
-            playtime_minutes: None,
-            playtime_2wks_minutes: None,
-            playtime_disconnected_minutes: None,
-            last_played_unix: None,
-            steam_collections: Vec::new(),
-            is_hidden: false,
-            is_junk: false,
-            rawg: None,
-            pcgw: None,
-            steam_store: None,
-            protondb: Some(ProtonDbData {
-                tier: ProtonTier::Gold,
-                confidence: None,
-                score: None,
-            }),
-            hltb: Some(HltbData {
-                main_story_seconds: Some(7_200),
-                main_extra_seconds: None,
-                completionist_seconds: None,
-                source: HltbSource::IgdbGameTimeToBeat,
-            }),
-            igdb: Some(IgdbData {
-                igdb_id: 1,
-                name: "Test".into(),
-                slug: None,
-                rating_0_100: Some(80.0),
-                total_rating_0_100: None,
-                genres: vec!["RPG".into()],
-                themes: Vec::new(),
-                keywords: Vec::new(),
-                similar_game_ids: Vec::new(),
-                steam_app_id_confirmed: true,
-                time_to_beat: None,
-            }),
-        };
-
-        let summary = game_metadata_summary(&game);
-        assert!(summary.contains("Gold"));
-        assert!(summary.contains("2h 0m"));
-        assert!(summary.contains("4.0/5"));
-        assert!(summary.contains("RPG"));
     }
 }
