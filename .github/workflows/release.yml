@@ -70,12 +70,23 @@ jobs:
           stage="${{ matrix.artifact }}"
           mkdir -p "$stage"
           cp target/release/vapourfly "$stage/"
-          cp target/release/vapourfly-gui "$stage/"
           cp README.md LICENSE "$stage/"
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            version="${GITHUB_REF_NAME#v}"
+            app="$stage/Vapourfly.app"
+            mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+            cp target/release/vapourfly-gui "$app/Contents/MacOS/vapourfly-gui"
+            chmod +x "$app/Contents/MacOS/vapourfly-gui"
+            sed "s/@VERSION@/${version}/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+            cp packaging/macos/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
+            codesign --force --deep --sign - "$app"
+          else
+            cp target/release/vapourfly-gui "$stage/"
+          fi
           if [ "${{ runner.os }}" = "Linux" ]; then
             cp packaging/linux/vapourfly.desktop scripts/install-steamos.sh "$stage/"
           fi
-          tar -czf "${stage}.tar.gz" "$stage"
+          COPYFILE_DISABLE=1 tar -czf "${stage}.tar.gz" "$stage"
 
       - name: Package Windows zip
         if: runner.os == 'Windows'
