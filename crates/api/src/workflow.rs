@@ -254,7 +254,10 @@ mod tests {
 
         let result = prepare_with(&opts, &credentials, &http)
             .expect("prepare must not depend on the network");
-        assert!(!result.games.is_empty());
+        assert!(
+            !result.games.is_empty(),
+            "expected `result.games` to be non-empty"
+        );
     }
 
     #[test]

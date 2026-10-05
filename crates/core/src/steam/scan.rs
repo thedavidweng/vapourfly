@@ -344,7 +344,10 @@ mod tests {
     #[test]
     fn scan_fixture_library_returns_games() {
         let result = scan_library(&fixture_opts()).unwrap();
-        assert!(!result.games.is_empty());
+        assert!(
+            !result.games.is_empty(),
+            "expected `result.games` to be non-empty"
+        );
     }
 
     #[test]
@@ -545,7 +548,10 @@ mod tests {
         let result = scan_library(&opts).unwrap();
 
         // Should still have installed games from manifests.
-        assert!(!result.games.is_empty());
+        assert!(
+            !result.games.is_empty(),
+            "expected `result.games` to be non-empty"
+        );
         // All games should have empty collections (file is valid but empty).
         assert!(result.games.iter().all(|g| g.steam_collections.is_empty()));
         // No warning: the file exists and parses fine, it just has no entries.
@@ -564,7 +570,10 @@ mod tests {
 
         // fixtures should take precedence over steam_dir.
         assert_eq!(result.account, "vapourfly_fixture_user");
-        assert!(!result.games.is_empty());
+        assert!(
+            !result.games.is_empty(),
+            "expected `result.games` to be non-empty"
+        );
     }
 
     // -- Account override -----------------------------------------------------

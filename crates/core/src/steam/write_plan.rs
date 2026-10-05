@@ -654,7 +654,11 @@ mod tests {
 
         // No hidden entry exists, so both are new
         assert_eq!(plan.diff.hidden_app_ids_added, vec![730, 999]);
-        assert!(plan.diff.collections_changed.is_empty());
+        assert!(
+            plan.diff.collections_changed.is_empty(),
+            "{:?}",
+            plan.diff.collections_changed
+        );
         assert_eq!(plan.diff.unchanged_count, 1); // favorite untouched
     }
 
@@ -775,8 +779,16 @@ mod tests {
 
         assert_eq!(plan.target_path, path);
         // Backup/tmp names are assigned at execute time, not preview.
-        assert!(plan.backup_path.as_os_str().is_empty());
-        assert!(plan.tmp_path.as_os_str().is_empty());
+        assert!(
+            plan.backup_path.as_os_str().is_empty(),
+            "{:?}",
+            plan.backup_path.as_os_str()
+        );
+        assert!(
+            plan.tmp_path.as_os_str().is_empty(),
+            "{:?}",
+            plan.tmp_path.as_os_str()
+        );
     }
 
     #[test]
@@ -788,7 +800,11 @@ mod tests {
         let plan = generate_write_plan(&cloud, vec![], path).unwrap();
 
         assert_eq!(plan.before_sha256, plan.after_sha256);
-        assert!(plan.diff.collections_changed.is_empty());
+        assert!(
+            plan.diff.collections_changed.is_empty(),
+            "{:?}",
+            plan.diff.collections_changed
+        );
         assert!(
             plan.diff.app_ids_added.is_empty(),
             "{:?}",

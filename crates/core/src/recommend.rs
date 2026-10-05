@@ -475,7 +475,7 @@ mod tests {
         let games: Vec<Game> = vec![];
         let req = default_request();
         let result = recommend(&games, &req);
-        assert!(result.is_empty());
+        assert!(result.is_empty(), "{result:?}");
     }
 
     // -- Additional tests ----------------------------------------------------
@@ -769,7 +769,7 @@ mod tests {
 
         let games = vec![hidden, junk];
         let vector = scoring::build_taste_vector(&games);
-        assert!(vector.is_empty());
+        assert!(vector.is_empty(), "{vector:?}");
     }
 
     #[test]
@@ -787,7 +787,7 @@ mod tests {
 
         let games = vec![game];
         let vector = scoring::build_taste_vector(&games);
-        assert!(vector.is_empty());
+        assert!(vector.is_empty(), "{vector:?}");
     }
 
     #[test]

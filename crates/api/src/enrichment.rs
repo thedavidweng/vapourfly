@@ -852,7 +852,7 @@ mod tests {
 
         // Verify the enrichment succeeded via the full chain.
         assert_eq!(summary.network_fetches, 1);
-        assert!(summary.errors.is_empty());
+        assert!(summary.errors.is_empty(), "{:?}", summary.errors);
 
         // Verify game got IGDB data.
         let game = &games[0];
@@ -925,7 +925,7 @@ mod tests {
         );
 
         assert_eq!(summary.network_fetches, 1);
-        assert!(summary.errors.is_empty());
+        assert!(summary.errors.is_empty(), "{:?}", summary.errors);
 
         let store = games[0]
             .steam_store
@@ -977,7 +977,7 @@ mod tests {
         );
 
         assert_eq!(summary.network_fetches, 1);
-        assert!(summary.errors.is_empty());
+        assert!(summary.errors.is_empty(), "{:?}", summary.errors);
         assert_eq!(games[0].protondb.as_ref().unwrap().tier, ProtonTier::Gold);
 
         // Cache key derivation is owned by the enrichment module: the reader
@@ -1095,7 +1095,7 @@ mod tests {
             &http,
         );
 
-        assert!(summary.errors.is_empty());
+        assert!(summary.errors.is_empty(), "{:?}", summary.errors);
         assert_eq!(summary.network_fetches, 0);
         assert!(games[0].rawg.is_none());
         assert!(games[0].igdb.is_none());
@@ -1268,6 +1268,6 @@ mod tests {
         let cache = DiskCache::new(tmp.path());
 
         let result = resolve_missing_store_details(&[], &cache, false, "us", "english");
-        assert!(result.is_empty());
+        assert!(result.is_empty(), "{result:?}");
     }
 }

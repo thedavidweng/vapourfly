@@ -4135,10 +4135,16 @@ mod tests {
         // Collections: at least 4
         assert!(app.collections.len() >= 4);
         // Junk decisions with mixed confidence
-        assert!(!app.junk_results.is_empty());
+        assert!(
+            !app.junk_results.is_empty(),
+            "expected `app.junk_results` to be non-empty"
+        );
         assert!(app.junk_results.iter().any(|d| d.confidence < 1.0));
         // Recommendations
-        assert!(!app.recommend_results.is_empty());
+        assert!(
+            !app.recommend_results.is_empty(),
+            "expected `app.recommend_results` to be non-empty"
+        );
         // Discover results
         assert!(
             !app.discover_results.is_empty(),
@@ -4153,7 +4159,10 @@ mod tests {
             "expected `app.detected_accounts` to be non-empty"
         );
         // Backups
-        assert!(!app.backups.is_empty());
+        assert!(
+            !app.backups.is_empty(),
+            "expected `app.backups` to be non-empty"
+        );
     }
 
     /// Demo playlists must be real, loadable files with the canonical schema.
@@ -4294,7 +4303,10 @@ mod tests {
         let games_injected = app
             .prepared_games(JunkMode::Default)
             .expect("injected snapshot should serve prepared_games");
-        assert!(!games_injected.is_empty());
+        assert!(
+            !games_injected.is_empty(),
+            "expected `games_injected` to be non-empty"
+        );
         // Drop the injected snapshot so the background prepare is the source.
         app.prepared_snapshot = None;
 
@@ -4318,7 +4330,10 @@ mod tests {
             .prepared_snapshot
             .as_ref()
             .expect("snapshot should be populated after prepare");
-        assert!(!snap.games.is_empty());
+        assert!(
+            !snap.games.is_empty(),
+            "expected `snap.games` to be non-empty"
+        );
 
         // prepared_games now uses the snapshot (fast path).
         let games_snap = app
@@ -4464,7 +4479,10 @@ mod tests {
         };
         let result = scan_library(&opts).unwrap();
 
-        assert!(!result.games.is_empty());
+        assert!(
+            !result.games.is_empty(),
+            "expected `result.games` to be non-empty"
+        );
         assert_eq!(result.account, "vapourfly_fixture_user");
 
         let cs2 = result.games.iter().find(|g| g.app_id == 730).unwrap();
@@ -4831,12 +4849,15 @@ mod tests {
 
         app.apply_library_scope(LibraryScope::Installed);
         let installed = app.filtered_games();
-        assert!(!installed.is_empty());
+        assert!(
+            !installed.is_empty(),
+            "expected `installed` to be non-empty"
+        );
         assert!(installed.iter().all(|game| game.installed));
 
         app.apply_library_scope(LibraryScope::Unplayed);
         let unplayed = app.filtered_games();
-        assert!(!unplayed.is_empty());
+        assert!(!unplayed.is_empty(), "expected `unplayed` to be non-empty");
         assert!(
             unplayed
                 .iter()

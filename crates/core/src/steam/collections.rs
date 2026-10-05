@@ -152,7 +152,7 @@ mod tests {
         );
         let cloud = read_cloud_storage(path).unwrap();
         let collections = read_user_collections(&cloud).unwrap();
-        assert!(collections.is_empty());
+        assert!(collections.is_empty(), "{collections:?}");
     }
 
     #[test]
