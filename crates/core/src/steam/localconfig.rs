@@ -248,7 +248,7 @@ mod tests {
             .unwrap();
 
         if let VdfNode::Object(pairs) = apps_node {
-            assert!(pairs.is_empty());
+            assert!(pairs.is_empty(), "{pairs:?}");
         }
     }
 

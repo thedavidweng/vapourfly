@@ -142,7 +142,7 @@ mod tests {
         let hidden = find_hidden_collection(&collections).unwrap();
         assert!(hidden.is_hidden_collection);
         assert_eq!(hidden.id, "hidden");
-        assert!(hidden.app_ids.is_empty());
+        assert!(hidden.app_ids.is_empty(), "{:?}", hidden.app_ids);
     }
 
     #[test]

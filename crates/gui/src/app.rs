@@ -4140,12 +4140,18 @@ mod tests {
         // Recommendations
         assert!(!app.recommend_results.is_empty());
         // Discover results
-        assert!(!app.discover_results.is_empty());
+        assert!(
+            !app.discover_results.is_empty(),
+            "expected `app.discover_results` to be non-empty"
+        );
         // Playlist store ids (at least 5 including generated slots)
         assert!(app.playlist_store_ids.len() >= 5);
         assert!(app.playlist_store_ids.contains(&"discover".to_string()));
         // Accounts
-        assert!(!app.detected_accounts.is_empty());
+        assert!(
+            !app.detected_accounts.is_empty(),
+            "expected `app.detected_accounts` to be non-empty"
+        );
         // Backups
         assert!(!app.backups.is_empty());
     }
@@ -5199,7 +5205,11 @@ mod tests {
     fn settings_are_dirty_only_after_an_edit() {
         let mut app = VapourflyApp::new(None, true);
         assert!(!app.settings_dirty());
-        assert!(app.changed_settings().is_empty());
+        assert!(
+            app.changed_settings().is_empty(),
+            "{:?}",
+            app.changed_settings()
+        );
 
         let original = app.cc_edit.clone();
         app.cc_edit = "JP".into();
@@ -5341,7 +5351,11 @@ mod tests {
         assert!(dir.path().join("discover.json").is_file());
         assert!(app.discover_last_playlist.is_some());
         // Empty library → empty results, but still a written slot.
-        assert!(app.discover_results.is_empty());
+        assert!(
+            app.discover_results.is_empty(),
+            "{:?}",
+            app.discover_results
+        );
         assert_eq!(app.playlist_edit_id, "discover");
     }
 
@@ -5989,10 +6003,26 @@ mod tests {
         app.playlist_id_auto = false;
         let before = app.playlist_edit_generation;
         app.reset_playlist_editor();
-        assert!(app.playlist_edit_name.is_empty());
-        assert!(app.playlist_edit_id.is_empty());
-        assert!(app.playlist_edit_description.is_empty());
-        assert!(app.playlist_edit_app_ids.is_empty());
+        assert!(
+            app.playlist_edit_name.is_empty(),
+            "{:?}",
+            app.playlist_edit_name
+        );
+        assert!(
+            app.playlist_edit_id.is_empty(),
+            "{:?}",
+            app.playlist_edit_id
+        );
+        assert!(
+            app.playlist_edit_description.is_empty(),
+            "{:?}",
+            app.playlist_edit_description
+        );
+        assert!(
+            app.playlist_edit_app_ids.is_empty(),
+            "{:?}",
+            app.playlist_edit_app_ids
+        );
         assert!(app.playlist_id_auto);
         assert_eq!(app.playlist_edit_generation, before.wrapping_add(1));
         app.apply_playlist_name_edit("Fresh List".into());
@@ -6183,7 +6213,7 @@ mod tests {
             WriteOp::UpsertCollection { id, added, removed } => {
                 assert_eq!(id, "deck-shortlist");
                 assert_eq!(added, &vec![730, 427520]);
-                assert!(removed.is_empty());
+                assert!(removed.is_empty(), "{removed:?}");
             }
             WriteOp::AddToHidden { .. } => panic!("expected collection upsert"),
         }

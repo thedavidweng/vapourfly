@@ -446,7 +446,7 @@ mod tests {
         assert_eq!(cv.id, "my-games");
         assert_eq!(cv.name, "My Games");
         assert_eq!(cv.added, vec![440, 730]); // sorted
-        assert!(cv.removed.is_empty());
+        assert!(cv.removed.is_empty(), "{:?}", cv.removed);
     }
 
     #[test]
@@ -465,7 +465,7 @@ mod tests {
         let cv: CollectionValue = serde_json::from_str(entry.value.as_ref().unwrap()).unwrap();
         assert_eq!(cv.added, vec![440, 730]);
         // removed is always [] for full-set writes
-        assert!(cv.removed.is_empty());
+        assert!(cv.removed.is_empty(), "{:?}", cv.removed);
     }
 
     #[test]
@@ -603,7 +603,11 @@ mod tests {
         assert_eq!(plan.diff.collections_changed[0].id, "rpg");
         assert_eq!(plan.diff.collections_changed[0].action, "created");
         assert_eq!(plan.diff.app_ids_added, vec![220, 440]);
-        assert!(plan.diff.app_ids_removed.is_empty());
+        assert!(
+            plan.diff.app_ids_removed.is_empty(),
+            "{:?}",
+            plan.diff.app_ids_removed
+        );
         assert_eq!(plan.diff.unchanged_count, 1); // favorite untouched
     }
 
@@ -626,7 +630,11 @@ mod tests {
 
         assert_eq!(plan.diff.collections_changed[0].action, "updated");
         assert_eq!(plan.diff.app_ids_added, vec![440]);
-        assert!(plan.diff.app_ids_removed.is_empty());
+        assert!(
+            plan.diff.app_ids_removed.is_empty(),
+            "{:?}",
+            plan.diff.app_ids_removed
+        );
     }
 
     #[test]
@@ -781,9 +789,21 @@ mod tests {
 
         assert_eq!(plan.before_sha256, plan.after_sha256);
         assert!(plan.diff.collections_changed.is_empty());
-        assert!(plan.diff.app_ids_added.is_empty());
-        assert!(plan.diff.app_ids_removed.is_empty());
-        assert!(plan.diff.hidden_app_ids_added.is_empty());
+        assert!(
+            plan.diff.app_ids_added.is_empty(),
+            "{:?}",
+            plan.diff.app_ids_added
+        );
+        assert!(
+            plan.diff.app_ids_removed.is_empty(),
+            "{:?}",
+            plan.diff.app_ids_removed
+        );
+        assert!(
+            plan.diff.hidden_app_ids_added.is_empty(),
+            "{:?}",
+            plan.diff.hidden_app_ids_added
+        );
         assert_eq!(plan.diff.unchanged_count, 1); // favorite
         assert_eq!(plan.diff.skipped_deleted_count, 0);
     }

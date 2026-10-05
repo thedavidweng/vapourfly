@@ -267,7 +267,7 @@ mod tests {
         let details = client.fetch_appdetails(440, "us", "english").unwrap();
         assert!(details.is_free);
         assert!(details.price_overview.is_none());
-        assert!(details.genres.is_empty());
+        assert!(details.genres.is_empty(), "{:?}", details.genres);
         assert_eq!(details.developers, vec!["Valve"]);
     }
 

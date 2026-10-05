@@ -573,7 +573,7 @@ mod tests {
 
         let pf = compile_editorial_mood(EditorialMood::QuickRound, &[hidden, junk], 25);
         match pf.playlist.content {
-            PlaylistContent::Manual { app_ids } => assert!(app_ids.is_empty()),
+            PlaylistContent::Manual { app_ids } => assert!(app_ids.is_empty(), "{app_ids:?}"),
             _ => panic!("expected manual"),
         }
     }

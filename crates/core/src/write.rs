@@ -221,7 +221,10 @@ mod tests {
             target,
         )
         .unwrap();
-        assert!(!plan.after_content.is_empty());
+        assert!(
+            !plan.after_content.is_empty(),
+            "expected `plan.after_content` to be non-empty"
+        );
         assert!(
             !plan.diff.hidden_app_ids_added.is_empty() || plan.after_sha256 != plan.before_sha256
         );
