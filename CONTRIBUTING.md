@@ -4,7 +4,7 @@ Thank you for your interest in contributing to Vapourfly.
 
 ## Clean-Room Policy
 
-Vapourfly is a MIT/Apache-2.0 licensed project. **Do not copy code from GPL-licensed projects.** This includes (but is not limited to) Depressurizer, SteamTools, or any other GPL-licensed Steam library managers.
+Vapourfly is licensed under AGPL-3.0-only, and the maintainer must be able to relicense every line of it (see [License and CLA](#license-and-cla)). **Do not copy code from GPL- or AGPL-licensed projects**, even though their licenses are compatible with Vapourfly's: third-party copyleft code cannot be relicensed. This includes (but is not limited to) Depressurizer, SteamTools, TinyWiiBackupManager, or any other GPL-licensed Steam library managers. Code under permissive licenses (MIT, Apache-2.0, BSD) is acceptable only with its license notice and a mention in the pull request.
 
 If you have previously read GPL-licensed source code for similar functionality, you must disclose this before contributing related code. We may ask you to implement features through a clean-room process: one person describes the behavior (without sharing code), and another person implements it from that description alone.
 
@@ -82,6 +82,10 @@ Use GitHub Issues for bug reports and feature requests. Include:
 - OS and Rust version.
 - Relevant log output (redact any Steam credentials or personal paths).
 
-## License
+## License and CLA
 
-By contributing, you agree that your contributions will be dual-licensed under MIT and Apache-2.0.
+Vapourfly is licensed under the [GNU AGPL v3.0 only](LICENSE). Before your first pull request can be merged, you must sign the [Contributor License Agreement](CLA.md). The CLA bot comments on your pull request with instructions; reply with the sentence it asks for. You sign once, and it covers all of your contributions.
+
+The CLA lets the maintainer relicense contributions, including under other open source or commercial terms. You keep the copyright in your work.
+
+The Vapourfly name and logo are covered by the [trademark policy](TRADEMARKS.md).

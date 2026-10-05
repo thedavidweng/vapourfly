@@ -7,8 +7,8 @@ Takes about 5 minutes. You need the `vapourfly` CLI installed and Steam
 installed on this machine. If you have not installed it yet, see the
 [README](../../README.md#installation) first.
 
-> Output blocks in the guides were captured from real runs of vapourfly
-> 0.2.0 on macOS against an 865-game library. Home paths, account names,
+> Output blocks in the guides were captured from real runs of a
+> pre-release build on macOS against an 865-game library. Home paths, account names,
 > and SteamIDs are lightly redacted; everything else is verbatim.
 
 ## Step 1: Check your setup

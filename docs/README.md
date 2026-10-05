@@ -37,8 +37,8 @@ Start at the [top-level README](../README.md) for installation.
 
 ## About the examples
 
-Output blocks in the tutorials and guides were captured from real runs of
-vapourfly 0.2.0 on macOS against an 865-game library. Where a capture
+Output blocks in the tutorials and guides were captured from real runs of a
+pre-release build on macOS against an 865-game library. Where a capture
 contained personal data (home paths, account names, SteamIDs), it is
 redacted inline and marked; everything else is verbatim. Commands whose
 output is not shown are either read-only with self-evident output or

@@ -159,7 +159,8 @@ The [documentation index](docs/README.md) lists everything. Highlights:
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Domain terms are defined in
+See [CONTRIBUTING.md](CONTRIBUTING.md). Contributors sign the
+[CLA](CLA.md) on their first pull request. Domain terms are defined in
 [CONTEXT.md](CONTEXT.md), and design decisions are recorded in
 [docs/adr/](docs/adr/). Report security issues as described in
 [SECURITY.md](SECURITY.md).
@@ -176,5 +177,8 @@ code from these projects is included. See
 
 ## License
 
-Licensed under either the [MIT license](LICENSE-MIT) or the
-[Apache License 2.0](LICENSE-APACHE), at your option.
+Vapourfly is licensed under the
+[GNU Affero General Public License v3.0 only](LICENSE) (`AGPL-3.0-only`).
+
+"Vapourfly" and its logo are covered by the [trademark policy](TRADEMARKS.md).
+Forks are welcome but must use a different name.
