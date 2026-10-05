@@ -88,19 +88,19 @@ mod tests {
     #[test]
     fn missing_file_returns_empty() {
         let cache = parse_librarycache(Path::new("/nonexistent/cache.json")).unwrap();
-        assert!(cache.is_empty());
+        assert!(cache.is_empty(), "{cache:?}");
     }
 
     #[test]
     fn empty_array_returns_empty() {
         let cache = parse_librarycache_json("[]").unwrap();
-        assert!(cache.is_empty());
+        assert!(cache.is_empty(), "{cache:?}");
     }
 
     #[test]
     fn invalid_json_returns_empty() {
         let cache = parse_librarycache_json("not json at all").unwrap();
-        assert!(cache.is_empty());
+        assert!(cache.is_empty(), "{cache:?}");
     }
 
     #[test]

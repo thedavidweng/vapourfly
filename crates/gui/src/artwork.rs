@@ -321,6 +321,10 @@ mod tests {
         assert_eq!(store.header(42), None);
         assert_eq!(store.portrait(42), None);
         assert!(store.inner.borrow().queue.is_none());
-        assert!(store.inner.borrow().inflight.is_empty());
+        assert!(
+            store.inner.borrow().inflight.is_empty(),
+            "{:?}",
+            store.inner.borrow().inflight
+        );
     }
 }

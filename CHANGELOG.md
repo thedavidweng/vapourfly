@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Playlist rule rows disable **Add** until the value is valid.
 - GUI launch flags `--theme light|dark` and `--view <page>` for review and screenshots.
 - Upgraded gpui-component / gpui-kit to 0.7.0 and rfd to 0.17.
+- Rust toolchain and MSRV raised to 1.99; `rust-toolchain.toml` now installs `rustfmt` and `clippy`. All dependencies are on their latest releases (gpui-kit 0.7.1). The vendored `wayland-scanner` patch is removed: upstream 0.31.11 ships the quick-xml 0.41 fix.
 
 ### Fixed
 

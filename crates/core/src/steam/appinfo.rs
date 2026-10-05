@@ -352,14 +352,14 @@ mod tests {
         let mut cursor = Cursor::new(data);
         let wanted = HashSet::from([99]);
         let names = parse_appinfo_file(&mut cursor, &wanted).unwrap();
-        assert!(names.is_empty());
+        assert!(names.is_empty(), "{names:?}");
     }
 
     #[test]
     fn lookup_missing_file_returns_empty() {
         let names =
             lookup_appinfo_names(Path::new("/nonexistent/steam"), &HashSet::from([1])).unwrap();
-        assert!(names.is_empty());
+        assert!(names.is_empty(), "{names:?}");
     }
 
     #[test]

@@ -47,7 +47,7 @@ from the extracted Linux archive to install Vapourfly and add it to Steam.
 
 ### From Source
 
-Vapourfly targets **Rust 1.96**. On Linux, install the GUI build dependencies
+Vapourfly targets **Rust 1.99**. On Linux, install the GUI build dependencies
 first:
 
 ```bash

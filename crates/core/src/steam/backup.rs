@@ -553,7 +553,7 @@ mod tests {
         fs::write(&target, "[]").unwrap();
 
         let backups = list_backups(&target).unwrap();
-        assert!(backups.is_empty());
+        assert!(backups.is_empty(), "{backups:?}");
     }
 
     #[test]
@@ -807,7 +807,7 @@ mod tests {
 
         // Verify the backup contains the original content (not the updated content).
         let backups = list_backups(&target).unwrap();
-        assert!(!backups.is_empty());
+        assert!(!backups.is_empty(), "expected `backups` to be non-empty");
         let backup_content: CloudStorageFile =
             serde_json::from_str(&fs::read_to_string(&backups[0].path).unwrap()).unwrap();
         let (_, entry) = backup_content
@@ -854,7 +854,7 @@ mod tests {
 
         // Restore from the backup created during execute_write_plan.
         let backups = list_backups(&target).unwrap();
-        assert!(!backups.is_empty());
+        assert!(!backups.is_empty(), "expected `backups` to be non-empty");
         restore_backup(&backups[0].path, &target).unwrap();
 
         // Verify original content is back.

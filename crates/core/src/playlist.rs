@@ -1172,8 +1172,8 @@ mod tests {
         let report = match_playlist(&pf, &games, &std::collections::HashMap::new()).unwrap();
         assert_eq!(report.owned, vec![1]);
         assert_eq!(report.played, vec![1]);
-        assert!(report.unplayed.is_empty());
-        assert!(report.missing.is_empty());
+        assert!(report.unplayed.is_empty(), "{:?}", report.unplayed);
+        assert!(report.missing.is_empty(), "{:?}", report.missing);
     }
 
     #[test]
@@ -1181,7 +1181,7 @@ mod tests {
         let games: Vec<Game> = vec![];
         let pf = make_manual_playlist("test", "Test", vec![730]);
         let report = match_playlist(&pf, &games, &std::collections::HashMap::new()).unwrap();
-        assert!(report.owned.is_empty());
+        assert!(report.owned.is_empty(), "{:?}", report.owned);
         assert_eq!(report.missing, vec![730]);
     }
 

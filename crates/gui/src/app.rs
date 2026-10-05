@@ -4135,19 +4135,34 @@ mod tests {
         // Collections: at least 4
         assert!(app.collections.len() >= 4);
         // Junk decisions with mixed confidence
-        assert!(!app.junk_results.is_empty());
+        assert!(
+            !app.junk_results.is_empty(),
+            "expected `app.junk_results` to be non-empty"
+        );
         assert!(app.junk_results.iter().any(|d| d.confidence < 1.0));
         // Recommendations
-        assert!(!app.recommend_results.is_empty());
+        assert!(
+            !app.recommend_results.is_empty(),
+            "expected `app.recommend_results` to be non-empty"
+        );
         // Discover results
-        assert!(!app.discover_results.is_empty());
+        assert!(
+            !app.discover_results.is_empty(),
+            "expected `app.discover_results` to be non-empty"
+        );
         // Playlist store ids (at least 5 including generated slots)
         assert!(app.playlist_store_ids.len() >= 5);
         assert!(app.playlist_store_ids.contains(&"discover".to_string()));
         // Accounts
-        assert!(!app.detected_accounts.is_empty());
+        assert!(
+            !app.detected_accounts.is_empty(),
+            "expected `app.detected_accounts` to be non-empty"
+        );
         // Backups
-        assert!(!app.backups.is_empty());
+        assert!(
+            !app.backups.is_empty(),
+            "expected `app.backups` to be non-empty"
+        );
     }
 
     /// Demo playlists must be real, loadable files with the canonical schema.
@@ -4288,7 +4303,10 @@ mod tests {
         let games_injected = app
             .prepared_games(JunkMode::Default)
             .expect("injected snapshot should serve prepared_games");
-        assert!(!games_injected.is_empty());
+        assert!(
+            !games_injected.is_empty(),
+            "expected `games_injected` to be non-empty"
+        );
         // Drop the injected snapshot so the background prepare is the source.
         app.prepared_snapshot = None;
 
@@ -4312,7 +4330,10 @@ mod tests {
             .prepared_snapshot
             .as_ref()
             .expect("snapshot should be populated after prepare");
-        assert!(!snap.games.is_empty());
+        assert!(
+            !snap.games.is_empty(),
+            "expected `snap.games` to be non-empty"
+        );
 
         // prepared_games now uses the snapshot (fast path).
         let games_snap = app
@@ -4458,7 +4479,10 @@ mod tests {
         };
         let result = scan_library(&opts).unwrap();
 
-        assert!(!result.games.is_empty());
+        assert!(
+            !result.games.is_empty(),
+            "expected `result.games` to be non-empty"
+        );
         assert_eq!(result.account, "vapourfly_fixture_user");
 
         let cs2 = result.games.iter().find(|g| g.app_id == 730).unwrap();
@@ -4825,12 +4849,15 @@ mod tests {
 
         app.apply_library_scope(LibraryScope::Installed);
         let installed = app.filtered_games();
-        assert!(!installed.is_empty());
+        assert!(
+            !installed.is_empty(),
+            "expected `installed` to be non-empty"
+        );
         assert!(installed.iter().all(|game| game.installed));
 
         app.apply_library_scope(LibraryScope::Unplayed);
         let unplayed = app.filtered_games();
-        assert!(!unplayed.is_empty());
+        assert!(!unplayed.is_empty(), "expected `unplayed` to be non-empty");
         assert!(
             unplayed
                 .iter()
@@ -5199,7 +5226,11 @@ mod tests {
     fn settings_are_dirty_only_after_an_edit() {
         let mut app = VapourflyApp::new(None, true);
         assert!(!app.settings_dirty());
-        assert!(app.changed_settings().is_empty());
+        assert!(
+            app.changed_settings().is_empty(),
+            "{:?}",
+            app.changed_settings()
+        );
 
         let original = app.cc_edit.clone();
         app.cc_edit = "JP".into();
@@ -5341,7 +5372,11 @@ mod tests {
         assert!(dir.path().join("discover.json").is_file());
         assert!(app.discover_last_playlist.is_some());
         // Empty library → empty results, but still a written slot.
-        assert!(app.discover_results.is_empty());
+        assert!(
+            app.discover_results.is_empty(),
+            "{:?}",
+            app.discover_results
+        );
         assert_eq!(app.playlist_edit_id, "discover");
     }
 
@@ -5989,10 +6024,26 @@ mod tests {
         app.playlist_id_auto = false;
         let before = app.playlist_edit_generation;
         app.reset_playlist_editor();
-        assert!(app.playlist_edit_name.is_empty());
-        assert!(app.playlist_edit_id.is_empty());
-        assert!(app.playlist_edit_description.is_empty());
-        assert!(app.playlist_edit_app_ids.is_empty());
+        assert!(
+            app.playlist_edit_name.is_empty(),
+            "{:?}",
+            app.playlist_edit_name
+        );
+        assert!(
+            app.playlist_edit_id.is_empty(),
+            "{:?}",
+            app.playlist_edit_id
+        );
+        assert!(
+            app.playlist_edit_description.is_empty(),
+            "{:?}",
+            app.playlist_edit_description
+        );
+        assert!(
+            app.playlist_edit_app_ids.is_empty(),
+            "{:?}",
+            app.playlist_edit_app_ids
+        );
         assert!(app.playlist_id_auto);
         assert_eq!(app.playlist_edit_generation, before.wrapping_add(1));
         app.apply_playlist_name_edit("Fresh List".into());
@@ -6183,7 +6234,7 @@ mod tests {
             WriteOp::UpsertCollection { id, added, removed } => {
                 assert_eq!(id, "deck-shortlist");
                 assert_eq!(added, &vec![730, 427520]);
-                assert!(removed.is_empty());
+                assert!(removed.is_empty(), "{removed:?}");
             }
             WriteOp::AddToHidden { .. } => panic!("expected collection upsert"),
         }

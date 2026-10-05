@@ -571,7 +571,7 @@ mod tests {
     #[test]
     fn parse_appmanifests_no_steamapps_returns_empty() {
         let manifests = parse_appmanifests(Path::new("/nonexistent")).unwrap();
-        assert!(manifests.is_empty());
+        assert!(manifests.is_empty(), "{manifests:?}");
     }
 
     // -- round-trip: detect_accounts -> parse_appmanifests -------------------
@@ -587,7 +587,7 @@ mod tests {
 
         // Library folders
         let folders = detect_library_folders(&dir).unwrap();
-        assert!(!folders.is_empty());
+        assert!(!folders.is_empty(), "expected `folders` to be non-empty");
 
         // App manifests from primary library
         let manifests = parse_appmanifests(&folders[0]).unwrap();

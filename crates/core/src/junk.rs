@@ -392,7 +392,7 @@ mod tests {
             &JunkMode::Default,
             &default_overrides(),
         );
-        assert!(decisions.is_empty());
+        assert!(decisions.is_empty(), "{decisions:?}");
     }
 
     // -- Additional edge-case tests -----------------------------------------
@@ -493,8 +493,16 @@ mod tests {
 
         // Missing file → empty defaults (does not wipe when used consistently)
         let missing = load_manual_overrides_or_default(&dir.join("no-such-overrides.json"));
-        assert!(missing.force_include.is_empty());
-        assert!(missing.force_exclude.is_empty());
+        assert!(
+            missing.force_include.is_empty(),
+            "{:?}",
+            missing.force_include
+        );
+        assert!(
+            missing.force_exclude.is_empty(),
+            "{:?}",
+            missing.force_exclude
+        );
         assert_eq!(overrides.manual_hltb.get(&4), Some(&3600));
         assert!((overrides.manual_rating.get(&5).unwrap() - 3.5).abs() < f32::EPSILON);
 

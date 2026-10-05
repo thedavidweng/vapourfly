@@ -113,7 +113,7 @@ mod tests {
             WriteOp::UpsertCollection { id, added, removed } => {
                 assert_eq!(id, "junk");
                 assert_eq!(added, vec![1, 2, 3]);
-                assert!(removed.is_empty());
+                assert!(removed.is_empty(), "{removed:?}");
             }
             _ => panic!("expected upsert"),
         }
