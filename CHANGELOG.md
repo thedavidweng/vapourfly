@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-04
+
 ### Added
 
 - **Controller support and Steam Deck mode** in the GUI. Steam Deck controls and Xbox-style gamepads navigate the whole app: the D-pad or left stick moves focus (card by card in the Library), A selects, B goes back, LB / RB switch pages, the right stick and triggers scroll, Y jumps to search, Start opens Settings and Select toggles the sidebar. A button-hint footer appears while the controller is in use, and Settings → Controller shows the connected pad. On SteamOS, text fields open Steam's on-screen keyboard; in Game Mode the window is fullscreen at 1280×800, the Library hero is shorter, and the write dialog warns that Steam must be closed first. `--deck` simulates a Deck; `VAPOURFLY_NO_GAMEPAD=1` turns controller input off.
@@ -21,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GUI launch flags `--theme light|dark` and `--view <page>` for review and screenshots.
 - Upgraded gpui-component / gpui-kit to 0.7.0 and rfd to 0.17.
 - Rust toolchain and MSRV raised to 1.99; `rust-toolchain.toml` now installs `rustfmt` and `clippy`. All dependencies are on their latest releases (gpui-kit 0.7.1). The vendored `wayland-scanner` patch is removed: upstream 0.31.11 ships the quick-xml 0.41 fix.
+- README rewritten as a short overview; per-command detail now lives only in the docs. The Linux dependency lists now include fontconfig.
 
 ### Fixed
 
@@ -213,6 +216,7 @@ Initial release of Vapourfly — a local-first CLI/GUI tool for managing Steam g
 - IGDB enrichment requires credentials; games without credentials fall back to cache.
 - `cargo deny check` requires `cargo-deny` installed separately.
 
-[Unreleased]: https://github.com/thedavidweng/vapourfly/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/thedavidweng/vapourfly/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/thedavidweng/vapourfly/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/thedavidweng/vapourfly/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/thedavidweng/vapourfly/releases/tag/v0.1.0

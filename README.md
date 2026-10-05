@@ -1,60 +1,65 @@
 # Vapourfly
 
-A local-first CLI and desktop GUI for managing Steam game libraries like Spotify playlists.
+Manage your Steam library like Spotify playlists. Vapourfly is a local-first
+CLI and desktop GUI for organizing, filtering, and cleaning up a Steam library
+without going through Steam's own UI.
 
-Vapourfly helps you organize, categorize, and curate your Steam library. Define collections with expressive queries, detect junk, get recommendations, and keep your library tidy -- all without touching Steam's UI.
+- **Playlists**: manual or rule-based (installed, genre, HLTB length, ProtonDB
+  tier, rating, and more), shareable as compact `VF1:` codes, and syncable to
+  Steam collections.
+- **Discover, Recommendations, and Moods**: similar-game picks, session-length
+  recommendations, and curated playlists generated from your own library.
+- **Junk cleanup**: explainable detection of games you are unlikely to play,
+  with one-step move to a collection or Steam's hidden list.
+- **Safe writes**: every change to Steam files needs a dry run or explicit
+  confirmation, and a backup is taken first.
 
 Website: <https://thedavidweng.github.io/vapourfly/>
 
-## Status
-
-v0.2.0. Expect breaking changes until v1.0.
-For the current CLI/GUI feature contract, see
-[docs/reference/FEATURES.md](docs/reference/FEATURES.md).
-
 ![Library](docs/screenshots/library.png)
 
-## Supported Platforms
+Vapourfly is pre-1.0. Expect breaking changes between minor versions.
 
-- macOS (Apple Silicon pre-built; Intel from source)
-- Linux (x86_64), including SteamOS and the Steam Deck (Desktop Mode and
-  Game Mode, with full controller support) -- see
-  [Use Vapourfly on a Steam Deck](docs/how-to/use-on-steam-deck.md)
-- Windows (x86_64)
+## Platforms
 
-## Installation
+- macOS (Apple Silicon builds; Intel from source)
+- Linux x86_64, including SteamOS and the Steam Deck in Desktop Mode and Game
+  Mode ([Steam Deck guide](docs/how-to/use-on-steam-deck.md))
+- Windows x86_64
+
+## Install
 
 ### Pre-built binaries
 
-Download CLI + GUI archives from
-[GitHub Releases](https://github.com/thedavidweng/vapourfly/releases).
+Download the archive for your platform from
+[GitHub Releases](https://github.com/thedavidweng/vapourfly/releases). Each
+archive contains `vapourfly` (CLI) and `vapourfly-gui` (desktop app). Put the
+CLI on your `PATH`.
 
-Each archive contains `vapourfly` (CLI) and `vapourfly-gui` (desktop app).
-Put the CLI on your `PATH`. macOS Gatekeeper may require **Right-click →
-Open** the first time — these builds are not notarized.
+macOS builds are not notarized, so Gatekeeper may require **Right-click →
+Open** on first launch.
 
-Linux runtime libraries:
+On Linux, install the runtime libraries (SteamOS already has them):
 
 ```bash
-sudo apt install libxkbcommon0 libxkbcommon-x11-0 libxcb1 \
-  libwayland-client0 libx11-6 libudev1 libasound2t64 \
-  || sudo apt install libxkbcommon0 libxkbcommon-x11-0 libxcb1 \
-  libwayland-client0 libx11-6 libudev1 libasound2
+sudo apt install libxkbcommon0 libxkbcommon-x11-0 libxcb1 libwayland-client0 \
+  libx11-6 libfontconfig1 libudev1 libasound2t64
+# On older Debian/Ubuntu releases, use libasound2 instead of libasound2t64.
 ```
 
-SteamOS already ships these. On a Steam Deck, run `./install-steamos.sh`
-from the extracted Linux archive to install Vapourfly and add it to Steam.
+On a Steam Deck, run `./install-steamos.sh` from the extracted Linux archive.
+It installs Vapourfly under `~/.local` and adds it to Steam as a non-Steam game.
 
-### From Source
+### From source
 
-Vapourfly targets **Rust 1.99**. On Linux, install the GUI build dependencies
+Requires Rust 1.99 or newer. On Linux, install the GUI build dependencies
 first:
 
 ```bash
 sudo apt install cmake clang g++ pkg-config \
   libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libwayland-dev \
   libx11-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev \
-  libgl1-mesa-dev libasound2-dev libssl-dev libudev-dev
+  libgl1-mesa-dev libasound2-dev libssl-dev libfontconfig1-dev libudev-dev
 ```
 
 ```bash
@@ -64,358 +69,112 @@ cargo install --path crates/cli
 cargo run -p vapourfly-gui --release
 ```
 
-## First Scan
-
-Verify your setup and scan your library:
+## Quick start
 
 ```bash
-# Diagnose Steam installation, accounts, and credentials
+# Check the Steam install, accounts, cache, and API credentials
 vapourfly doctor
 
-# Scan your library and print a table
+# Scan the library
 vapourfly scan --format table
 
-# JSON output for scripting
-vapourfly scan --format json
-```
-
-`vapourfly doctor` reports the detected Steam directory, accounts, library folders, cloud storage availability, cache location, and API credential status. If Steam is not auto-detected, pass `--steam-dir` or set `VAPOURFLY_STEAM_DIR`.
-
-## Safety Model
-
-Vapourfly modifies your Steam configuration files. To protect your data:
-
-- **All write operations require `--dry-run` or `--confirm`.** Omitting both is an error.
-- **`--dry-run` shows a diff without writing.** Use it to preview exactly what would change.
-- **`--confirm` executes the write with an automatic backup.** A timestamped backup is created before any file is modified.
-- **Backups before writes.** Every write creates a backup named `{file}.vapourfly-backup-{timestamp}-{sha}.json` in the same directory.
-- **No Steam process interference.** Vapourfly refuses to write if Steam is detected as actively running. Close Steam first, or use `--allow-steam-running` only when you understand the risk.
-- **Atomic writes.** Changes are written to a temporary file, fsynced, and renamed over the target. If anything fails after the backup is created, an automatic restore is attempted.
-
-See [docs/reference/STEAM_FILE_SAFETY.md](docs/reference/STEAM_FILE_SAFETY.md) for the full write target and backup strategy.
-
-## Backup and Restore
-
-Every write operation creates a timestamped backup. Manage them with:
-
-```bash
-# List available backups
-vapourfly backup list
-
-# List as JSON
-vapourfly backup list --format json
-
-# Restore a specific backup (a write operation: requires --dry-run or --confirm)
-vapourfly backup restore /path/to/cloud-storage-namespace-1.json.vapourfly-backup-20260624T120000Z-a1b2c3d4.json --confirm
-```
-
-Backups are stored alongside the original file and include a SHA-256 hash for integrity verification. The most recent 5 backups are retained by default.
-
-## API Credential Setup
-
-Some enriched metadata features require external API credentials. Set these
-before launching the CLI or GUI:
-
-| Variable / setting | Source | Required For |
-|---|---|---|
-| `VAPOURFLY_IGDB_CLIENT_ID` | [IGDB / Twitch Developer Console](https://dev.twitch.tv/console) | Genre, rating, and time-to-beat data from IGDB |
-| `VAPOURFLY_IGDB_CLIENT_SECRET` | Same as above | IGDB OAuth authentication |
-| `VAPOURFLY_RAWG_KEY` | [RAWG API](https://rawg.io/apidocs) | Genre, tag, and rating data from RAWG |
-| `VAPOURFLY_STEAM_API_KEY` or `settings set steam_api_key` | [Steam Web API key](https://steamcommunity.com/dev/apikey) | Instant owned-game name resolution (one cached request). Create your own key; it is personal and never bundled with the app. |
-
-ProtonDB, PCGamingWiki, HLTB, and Steam Store data do not require credentials.
-HLTB scraping is enabled in the default build. IGDB time-to-beat fields are
-available when IGDB credentials are configured.
-
-Check your credential status at any time:
-
-```bash
-vapourfly doctor
-vapourfly sources status
-```
-
-See [docs/reference/API_SOURCES.md](docs/reference/API_SOURCES.md) for details on each data source.
-
-## Offline Mode
-
-Pass `--offline` to prohibit all network calls. Vapourfly will use only locally cached data:
-
-```bash
-vapourfly scan --offline --format table
-vapourfly junk preview --offline
-vapourfly recommend --offline --minutes 120
-```
-
-When offline, commands that depend on uncached external data degrade gracefully: missing fields are omitted from output, junk detection uses only available signals, and recommendations fall back to local metadata. Cache refresh is blocked in offline mode.
-
-## Usage
-
-```bash
-# Diagnose Steam installation and credentials
-vapourfly doctor
-
-# Scan your library
-vapourfly scan --format table
-
-# List collections
-vapourfly collections list
-
-# Export collections to JSON
-vapourfly collections export --out collections.json
-
-# Preview junk candidates
+# Find junk, then move it to a collection (preview first)
 vapourfly junk preview
-
-# Get recommendations for 2 hours of play
-vapourfly recommend --minutes 120 --count 5
-
-# Import a playlist
-vapourfly playlist import my-playlist.json
-
-# Sync a playlist to a Steam collection (dry-run first)
-vapourfly sync collection my-playlist-id --dry-run
-vapourfly sync collection my-playlist-id --confirm
-```
-
-## Junk Detection
-
-Identify games you are unlikely to play using three evaluation modes:
-
-| Mode | Logic |
-|---|---|
-| **Default** | Low playtime + at least one other negative signal (short completion or low rating), with a minimum of 2 data points available |
-| **Strict** | Every available signal must indicate junk, with a minimum of 2 data points |
-| **Aggressive** | Low playtime + at least one other negative signal, no minimum data requirement |
-
-Every decision is explainable: the output includes which signals matched, which were missing, and a confidence score reflecting data completeness.
-Current CLI and GUI junk flows scan the library, hydrate from the local
-cache (ADR-0009), and then classify games. Missing cache entries are filled
-by `cache refresh`, `scan --enrich`, or the GUI background populate job.
-Fetch failures degrade gracefully; use `--offline` to force zero network.
-
-```bash
-# Preview junk candidates (default mode)
-vapourfly junk preview
-
-# Strict mode -- only flag games where all signals agree
-vapourfly junk preview --strict
-
-# Aggressive mode -- flag with fewer signals
-vapourfly junk preview --aggressive
-
-# Apply junk classification to a Steam collection (dry-run first)
 vapourfly junk apply --collection "junk" --dry-run
 vapourfly junk apply --collection "junk" --confirm
 
-# Move junk games to the hidden collection
-vapourfly junk hide --dry-run
-vapourfly junk hide --confirm
-```
+# Recommend 5 games for a 2-hour session
+vapourfly recommend --minutes 120 --count 5
 
-## Recommendations
-
-Get game recommendations based on available play time:
-
-```bash
-# Recommend 5 games you can play in 2 hours
-vapourfly recommend --minutes 120
-
-# Only installed games, optimized for Steam Deck
-vapourfly recommend --minutes 60 --installed-only --deck
-
-# Reproducible results with a seed
-vapourfly recommend --minutes 120 --seed 42
-
-# Save recommendations to the temporary Steam collection
-vapourfly recommend --minutes 120 --to-collection --dry-run
-vapourfly recommend --minutes 120 --to-collection --confirm
-```
-
-Current CLI and GUI recommendation flows hydrate cached metadata and
-annotate junk flags before scoring. Fetch failures degrade gracefully.
-
-## Playlists
-
-Playlists are JSON files that describe a named subset of your library. They can be manual (explicit AppID lists) or rule-based (boolean expressions evaluated against game metadata).
-
-### Import and Export
-
-```bash
-# Create a manual playlist
-vapourfly playlist create --id deck-shortlist --name "Deck Shortlist" --app-ids 292030,367520
-
-# Import a playlist from a JSON file
+# Import a playlist and sync it to a Steam collection
 vapourfly playlist import my-playlist.json
-
-# Import or emit a share code
-vapourfly playlist import --code 'VF1:...'
-vapourfly playlist share my-playlist-id
-
-# Generate a Discover playlist
-vapourfly playlist discover --count 20
-vapourfly playlist discover --seed 367520 --out discover.json
-
-# Export a stored playlist by ID
-vapourfly playlist export my-playlist-id --out exported.json
-
-# Export Steam collections to Vapourfly JSON
-vapourfly collections export --out collections.json
-
-# Compile dynamic playlist templates
-vapourfly collections dynamic deck-session --minutes 90
-vapourfly collections dynamic finish-it
-
-# Compile an Editorial Mood (named, curated playlist)
-vapourfly collections mood              # list available moods
-vapourfly collections mood friday-party # compile one
-```
-
-### Rule-Based Playlists
-
-Rule playlists support composable boolean logic:
-
-```json
-{
-  "vapourfly_schema": "vapourfly.playlist.v1",
-  "created_by": "user",
-  "playlist": {
-    "id": "short-installed-rpgs",
-    "name": "Short Installed RPGs",
-    "description": "Installed RPGs under 20 hours with good ratings",
-    "content": {
-      "type": "Rules",
-      "value": {
-        "rules": [
-          { "op": "Installed" },
-          { "op": "NotJunk" },
-          { "op": "NotHidden" },
-          { "op": "HasGenre", "args": { "genre": "Role-playing (RPG)" } },
-          { "op": "HltbMaxMinutes", "args": { "minutes": 1200 } },
-          { "op": "RatingAtLeast", "args": { "rating_0_5": 3.5 } }
-        ]
-      }
-    }
-  }
-}
-```
-
-Available rule operators: `ProtonAtLeast`, `HltbMaxMinutes`,
-`ControllerSupportFull`, `PlaytimeBetween`, `RatingAtLeast`, `HasGenre`,
-`HasTag`, `Installed`, `NotJunk`, `NotHidden`, `And`, `Or`, `Not`.
-Playlist import, match, sync, discover, dynamic template, and editorial mood
-workflows hydrate cached metadata before evaluating rules or similarity.
-Playlist match may fetch missing-entry Steam Store prices unless `--offline`
-is set. Fetch failures degrade gracefully. External metadata rules only
-match when the relevant data is available.
-
-### Match Reports
-
-Match a playlist against your library to see what you own, what is missing, and what you have played:
-
-```bash
-# Table output
-vapourfly playlist match my-playlist.json
-
-# JSON output for scripting
-vapourfly playlist match my-playlist.json --format json
-```
-
-The match report includes owned, missing, played, unplayed, hidden, and junk counts.
-
-### Sync to Steam
-
-Sync a playlist or stored collection to a Steam cloud collection:
-
-```bash
-# Preview the sync
 vapourfly sync collection my-playlist-id --dry-run
-
-# Execute the sync
-vapourfly sync collection my-playlist-id --confirm
 ```
 
-## Cache Management
+If Steam is not detected automatically, pass `--steam-dir` or set
+`VAPOURFLY_STEAM_DIR`. Add `--offline` to any command to block all network
+access and use only cached data.
 
-External API responses are cached locally. Refresh specific sources:
+The full command list is in [COMMANDS.md](docs/reference/COMMANDS.md), and the
+[getting started tutorial](docs/tutorials/getting-started.md) walks through a
+first session.
+
+## Desktop GUI
+
+`vapourfly-gui` covers the same features as the CLI: Library, Discover,
+Recommendations, Playlists, Collections, Data Sources, and Settings (including
+backups). It shows your Steam artwork, follows the SteamOS look, and works with
+a mouse, a keyboard, or a game controller. On a Steam Deck it also supports
+Game Mode and Steam's on-screen keyboard.
+
+Try it without touching your Steam files:
 
 ```bash
-vapourfly cache refresh --source igdb
-vapourfly cache refresh --source steam-store
-vapourfly cache refresh --source all
+vapourfly-gui --ui-demo
 ```
 
-## Diagnostics
+## Safety
 
-Export sanitized diagnostics for bug reports:
+Vapourfly edits Steam's collection files, so writes are guarded:
 
-```bash
-vapourfly diagnostics export --out diagnostics.json
-```
+- Every write needs `--dry-run` (show a diff) or `--confirm` (apply). Omitting
+  both is an error. The GUI asks for confirmation and shows a preview.
+- A timestamped, hash-checked backup is created next to the file before every
+  write. List and restore backups with `vapourfly backup list` and
+  `vapourfly backup restore <file> --confirm`.
+- Writes are atomic, and are refused while Steam is running unless you pass
+  `--allow-steam-running`.
 
-See [docs/reference/PRIVACY.md](docs/reference/PRIVACY.md) for what is included and redacted.
+Details: [Steam file safety](docs/reference/STEAM_FILE_SAFETY.md) and
+[back up and restore](docs/how-to/back-up-and-restore.md).
+
+## Data sources and credentials
+
+Steam Store, ProtonDB, PCGamingWiki, and HowLongToBeat work without
+credentials. Optional keys add more metadata:
+
+| Setting | Get it from | Adds |
+|---|---|---|
+| `VAPOURFLY_IGDB_CLIENT_ID`, `VAPOURFLY_IGDB_CLIENT_SECRET` | [Twitch Developer Console](https://dev.twitch.tv/console) | Genres, ratings, time-to-beat, similar games |
+| `VAPOURFLY_RAWG_KEY` | [RAWG API](https://rawg.io/apidocs) | Genres, tags, ratings |
+| `VAPOURFLY_STEAM_API_KEY` or `vapourfly settings set steam_api_key <key>` | [Steam Web API key](https://steamcommunity.com/dev/apikey) | Names for all owned games in one request |
+
+Use your own keys. None are bundled with the app. Check what is configured
+with `vapourfly sources status`. See
+[configure API credentials](docs/how-to/configure-api-credentials.md) and
+[API sources](docs/reference/API_SOURCES.md).
+
+All data stays on your machine. See [PRIVACY.md](docs/reference/PRIVACY.md).
 
 ## Documentation
 
-Organized by [Diátaxis](https://diataxis.fr/) -- the
-[documentation index](docs/README.md) has the full map.
-
-**Tutorials**
-
-- [Getting started](docs/tutorials/getting-started.md) -- guided first pass: doctor, scan, collections
-
-**How-to guides**
+The [documentation index](docs/README.md) lists everything. Highlights:
 
 - [Purge junk from your library](docs/how-to/purge-junk.md)
 - [Plan a Deck session](docs/how-to/plan-deck-session.md)
-- [Use Vapourfly on a Steam Deck](docs/how-to/use-on-steam-deck.md)
 - [Share and sync playlists](docs/how-to/share-and-sync-playlists.md)
 - [Work offline](docs/how-to/work-offline.md)
-- [Back up and restore Steam files](docs/how-to/back-up-and-restore.md)
-- [Configure API credentials](docs/how-to/configure-api-credentials.md)
-
-**Reference**
-
-- [Command reference (COMMANDS.md)](docs/reference/COMMANDS.md) -- every command, flag, and output format
-- [Feature matrix (FEATURES.md)](docs/reference/FEATURES.md) -- CLI/GUI capability contract
-- [Steam file safety](docs/reference/STEAM_FILE_SAFETY.md) -- write targets, backups, atomic writes
-- [API sources](docs/reference/API_SOURCES.md) -- IGDB, RAWG, ProtonDB, PCGW, HLTB, Steam Store, Steam Web API
-- [Privacy](docs/reference/PRIVACY.md) -- local-first design, redaction, diagnostics contents
-
-**Explanation**
-
+- [Feature matrix](docs/reference/FEATURES.md)
 - [How junk classification works](docs/explanation/junk-classification.md)
-- [How library hydration works](docs/explanation/hydration-model.md)
-
-**Project**
-
-- [CONTEXT.md](CONTEXT.md) -- Domain glossary
-- [docs/adr/](docs/adr/) -- Architecture decision records
-- [docs/gui-smoke-test.md](docs/gui-smoke-test.md) -- Manual GUI smoke checklist (contributors)
-
-## License
-
-Licensed under either of:
-
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-
-at your option.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Domain terms are defined in
+[CONTEXT.md](CONTEXT.md), and design decisions are recorded in
+[docs/adr/](docs/adr/). Report security issues as described in
+[SECURITY.md](SECURITY.md).
 
 ## Acknowledgments
 
-Vapourfly's design was informed by studying the following open-source projects. We gratefully acknowledge their authors:
+Vapourfly's design was informed by
+[Depressurizer](https://github.com/rallion/depressurizer),
+[Gameloop.Vdf](https://github.com/BeyondDimension/Gameloop.Vdf),
+[SteamTools / BD.SteamClient](https://github.com/BeyondDimension/SteamClient),
+and [TinyWiiBackupManager](https://github.com/mq1/TinyWiiBackupManager). No
+code from these projects is included. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-- [Depressurizer](https://github.com/rallion/depressurizer) -- Steam library categorization tool. Inspired Vapourfly's understanding of VDF formats, Steam collections, and SteamID handling. (GPLv3)
-- [Gameloop.Vdf](https://github.com/BeyondDimension/Gameloop.Vdf) -- C# Text VDF library. Served as reference for VDF token-level parsing behavior. (MIT)
-- [SteamTools / BD.SteamClient](https://github.com/BeyondDimension/SteamClient) -- Watt Toolkit core library. Reference for cross-platform Steam path detection, appinfo.vdf format, and librarycache layout.
-- [TinyWiiBackupManager](https://github.com/mq1/TinyWiiBackupManager) -- Rust game backup manager. Inspired the workspace architecture, GUI state patterns, and HTTP client design. (GPL-3.0)
+## License
 
-No code from these projects is incorporated into Vapourfly. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
-
-## Security
-
-See [SECURITY.md](SECURITY.md) for the vulnerability reporting policy.
+Licensed under either the [MIT license](LICENSE-MIT) or the
+[Apache License 2.0](LICENSE-APACHE), at your option.
