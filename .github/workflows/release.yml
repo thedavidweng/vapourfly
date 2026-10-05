@@ -119,7 +119,21 @@ jobs:
             found && /^## \[/ { exit }
             found { print }
           ' CHANGELOG.md)
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "${GITHUB_REF_NAME}" \
-            --notes "$notes" \
-            "${files[@]}"
+          install=$(printf '%s\n' \
+            '' \
+            '### Installation' \
+            '' \
+            '```bash' \
+            '# Homebrew (macOS)' \
+            'brew install --cask thedavidweng/tap/vapourfly' \
+            '```')
+          full_notes=$(printf '%s\n%s' "${notes:-Release ${GITHUB_REF_NAME}}" "$install")
+          if gh release view "${GITHUB_REF_NAME}" &>/dev/null; then
+            gh release edit "${GITHUB_REF_NAME}" --notes "$full_notes"
+            gh release upload "${GITHUB_REF_NAME}" "${files[@]}" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "${GITHUB_REF_NAME}" \
+              --notes "$full_notes" \
+              "${files[@]}"
+          fi

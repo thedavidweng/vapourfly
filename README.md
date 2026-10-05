@@ -1,5 +1,11 @@
 # Vapourfly
 
+<p>
+  <a href="https://github.com/thedavidweng/vapourfly/releases"><img src="https://img.shields.io/github/v/release/thedavidweng/vapourfly?color=007AFF&label=Release" alt="GitHub Release" /></a>
+  <a href="#homebrew-macos"><img src="https://img.shields.io/badge/Homebrew-thedavidweng%2Ftap-FBB040?logo=homebrew" alt="Homebrew Tap" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0--only-blue" alt="License: AGPL-3.0-only" /></a>
+</p>
+
 Manage your Steam library like Spotify playlists. Vapourfly is a local-first
 CLI and desktop GUI for organizing, filtering, and cleaning up a Steam library
 without going through Steam's own UI.
@@ -29,6 +35,22 @@ Vapourfly is pre-1.0. Expect breaking changes between minor versions.
 
 ## Install
 
+### Homebrew (macOS)
+
+```bash
+brew install --cask thedavidweng/tap/vapourfly
+```
+
+Upgrade:
+
+```bash
+brew upgrade --cask vapourfly
+```
+
+The Homebrew cask removes the quarantine flag automatically, so Gatekeeper
+does not block the first launch, and links both `vapourfly` (CLI) and
+`vapourfly-gui` (desktop app) onto your `PATH`.
+
 ### Pre-built binaries
 
 Download the archive for your platform from
@@ -37,7 +59,7 @@ archive contains `vapourfly` (CLI) and `vapourfly-gui` (desktop app). Put the
 CLI on your `PATH`.
 
 macOS builds are not notarized, so Gatekeeper may require **Right-click →
-Open** on first launch.
+Open** on first launch (if installing manually without Homebrew).
 
 On Linux, install the runtime libraries (SteamOS already has them):
 

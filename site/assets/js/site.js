@@ -148,7 +148,7 @@
       ],
       cta: "Download for macOS",
       href: "vapourfly-macos-aarch64.tar.gz",
-      fine: "Builds are not notarized. The first time, right-click the app and choose <b>Open</b>.",
+      fine: "Or install with Homebrew: <code>brew install --cask thedavidweng/tap/vapourfly</code>.<br>Builds are not notarized. When downloading directly, right-click the app and choose <b>Open</b>.",
     },
     deck: {
       name: "Vapourfly for Steam Deck",
