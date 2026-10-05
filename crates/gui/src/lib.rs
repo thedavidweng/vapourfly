@@ -32,7 +32,8 @@ mod stack_contract {
 
     #[test]
     fn library_and_junk_use_virtualized_lists() {
-        let src = include_str!("ui/library.rs");
+        // Windows checkouts may convert the source to CRLF.
+        let src = include_str!("ui/library.rs").replace("\r\n", "\n");
         assert!(
             src.contains("uniform_list("),
             "library-scale rows must use gpui uniform_list"
