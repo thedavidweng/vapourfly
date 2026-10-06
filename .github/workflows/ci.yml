@@ -55,19 +55,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Format check
-        run: cargo +${{ env.VAPOURFLY_CI_TOOLCHAIN }} fmt --all -- --check
-
-      - name: Clippy
-        run: cargo +${{ env.VAPOURFLY_CI_TOOLCHAIN }} clippy --workspace --all-targets -- -D warnings
-
-      - name: Test
-        run: cargo +${{ env.VAPOURFLY_CI_TOOLCHAIN }} test --workspace
-
       - name: Install cargo-deny
         if: runner.os == 'Linux'
         uses: taiki-e/install-action@f1dd293276342cf06b423f44b1c7c9312a2d2ecb # cargo-deny
 
-      - name: cargo deny check
-        if: runner.os == 'Linux'
-        run: cargo deny check
+      # deny only reads the lockfile. fmt only reads sources. Clippy and
+      # test stay in one script so test reuses target/. The workflow parser
+      # here rejects a bare `wait` step, so the overlap is one parallel group.
+      - parallel:
+          - name: cargo deny check
+            if: runner.os == 'Linux'
+            run: cargo deny check
+
+          - name: Format check
+            run: cargo +${{ env.VAPOURFLY_CI_TOOLCHAIN }} fmt --all -- --check
+
+          - name: Clippy and test
+            run: |
+              cargo +${{ env.VAPOURFLY_CI_TOOLCHAIN }} clippy --workspace --all-targets -- -D warnings
+              cargo +${{ env.VAPOURFLY_CI_TOOLCHAIN }} test --workspace
