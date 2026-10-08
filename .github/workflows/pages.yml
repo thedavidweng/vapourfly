@@ -12,6 +12,8 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  # Custom domain updates need Administration as well as Pages.
+  administration: write
 
 concurrency:
   group: pages
@@ -37,3 +39,28 @@ jobs:
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+
+      # A CNAME file in a workflow artifact does not attach the hostname.
+      - name: Attach custom domain
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/pages"
+          auth=(
+            -H "Authorization: Bearer ${GH_TOKEN}"
+            -H "Accept: application/vnd.github+json"
+            -H "X-GitHub-Api-Version: 2026-03-10"
+          )
+          cert_state="$(curl -fsS "${auth[@]}" "$api" | jq -r '.https_certificate.state // empty')"
+          body='{"cname":"vapourfly.blahaj.uk"}'
+          if [ "$cert_state" = "approved" ]; then
+            body='{"cname":"vapourfly.blahaj.uk","https_enforced":true}'
+          fi
+          code="$(curl -sS -o /tmp/pages-put.txt -w '%{http_code}' -X PUT "${auth[@]}" "$api" -d "$body")"
+          if [ "$code" != "204" ]; then
+            echo "pages update failed: HTTP ${code}"
+            cat /tmp/pages-put.txt
+            exit 1
+          fi
+          curl -fsS "${auth[@]}" "$api" | jq '{cname,html_url,https_enforced,certificate:(.https_certificate.state // null)}'
