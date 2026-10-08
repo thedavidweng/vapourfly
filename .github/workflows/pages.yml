@@ -12,8 +12,6 @@ permissions:
   contents: read
   pages: write
   id-token: write
-  # Custom domain updates need Administration as well as Pages.
-  administration: write
 
 concurrency:
   group: pages
