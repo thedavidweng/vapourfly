@@ -20,7 +20,7 @@ without going through Steam's own UI.
 - **Safe writes**: every change to Steam files needs a dry run or explicit
   confirmation, and a backup is taken first.
 
-Website: <https://thedavidweng.github.io/vapourfly/>
+Website: <https://vapourfly.blahaj.uk/>
 
 ![Library](docs/screenshots/library.png)
 
