@@ -11,8 +11,16 @@ env:
   # Keep CI aligned with rust-toolchain.toml and regular local cargo commands.
   VAPOURFLY_CI_TOOLCHAIN: "1.99"
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ci:
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -22,6 +30,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Linux GUI build dependencies
         if: runner.os == 'Linux'
@@ -57,7 +67,9 @@ jobs:
 
       - name: Install cargo-deny
         if: runner.os == 'Linux'
-        uses: taiki-e/install-action@f1dd293276342cf06b423f44b1c7c9312a2d2ecb # cargo-deny
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-deny
 
       # deny only reads the lockfile. fmt only reads sources. Clippy and
       # test stay in one script so test reuses target/. The workflow parser
