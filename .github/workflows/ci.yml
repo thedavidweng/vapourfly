@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
     branches: [main]
 
 env:
@@ -20,6 +21,7 @@ concurrency:
 
 jobs:
   ci:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     timeout-minutes: 60
     strategy:
       fail-fast: false
