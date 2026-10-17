@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-17
+
+### Fixed
+
+- macOS releases now require Developer ID signatures, Apple notarization, and stapled tickets before publication.
+
 ## [0.3.0] - 2026-10-04
 
 First public release of Vapourfly, a local-first CLI and desktop GUI for
@@ -83,5 +89,6 @@ by the [trademark policy](TRADEMARKS.md).
 - Logs and `vapourfly diagnostics export` redact paths, account names, and
   SteamIDs by default.
 
-[Unreleased]: https://github.com/thedavidweng/vapourfly/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/thedavidweng/vapourfly/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/thedavidweng/vapourfly/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/thedavidweng/vapourfly/releases/tag/v0.3.0
