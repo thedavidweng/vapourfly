@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'echo "AppImage smoke failed at line $LINENO" >&2; if [ -f "${work:-}/startup.log" ]; then cat "$work/startup.log" >&2; fi' ERR
 image="$(realpath "${1:?AppImage required}")"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
