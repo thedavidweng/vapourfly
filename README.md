@@ -58,7 +58,7 @@ Download the archive for your platform from
 archive contains `vapourfly` (CLI) and `vapourfly-gui` (desktop app). Put the
 CLI on your `PATH`.
 
-macOS builds are not notarized, so Gatekeeper may require **Right-click →
+The v0.3.0 macOS build is not notarized, so Gatekeeper may require **Right-click →
 Open** on first launch (if installing manually without Homebrew).
 
 On Linux, install the runtime libraries (SteamOS already has them):
@@ -178,6 +178,27 @@ The [documentation index](docs/README.md) lists everything. Highlights:
 - [Work offline](docs/how-to/work-offline.md)
 - [Feature matrix](docs/reference/FEATURES.md)
 - [How junk classification works](docs/explanation/junk-classification.md)
+
+## Release signing
+
+The macOS release job requires these repository secrets:
+
+- `APPLE_CERTIFICATE_P12_BASE64`: base64 of a Developer ID Application certificate and private key.
+- `APPLE_CERTIFICATE_PASSWORD`: the P12 password.
+- `APPLE_API_KEY_BASE64`: base64 of the App Store Connect `.p8` key.
+- `APPLE_API_KEY_ID` and `APPLE_API_ISSUER`: the API key's identifiers.
+
+The job imports an isolated keychain, signs the CLI and App with a secure timestamp
+and hardened runtime, and submits both for notarization. It requires an accepted
+submission, staples and assesses the App, and checks the CLI's online ticket before
+creating the tar archive. Signing material is removed even when a step fails.
+Missing credentials or failed verification stop the release; there is no unsigned
+release path. The standalone CLI requires network access for its first notarization
+check because raw binaries cannot hold a stapled ticket.
+
+Run `python3 scripts/test-notarization.py` to exercise the release gate with
+controlled Apple tool responses. These tests do not prove actual notarization;
+verify a downloaded release before removing the Homebrew quarantine workaround.
 
 ## Contributing
 
