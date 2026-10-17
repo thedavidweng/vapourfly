@@ -92,3 +92,28 @@ jobs:
             run: |
               cargo +${{ env.VAPOURFLY_CI_TOOLCHAIN }} clippy --workspace --all-targets -- -D warnings
               cargo +${{ env.VAPOURFLY_CI_TOOLCHAIN }} test --workspace
+
+  appimage:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: '1.99'
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang g++ pkg-config libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev libasound2-dev libssl-dev libfontconfig1-dev libudev-dev xvfb xdotool imagemagick squashfs-tools patchelf desktop-file-utils librsvg2-bin
+      - run: cargo build --release -p vapourfly-gui
+      - run: bash scripts/package-appimage.sh ci
+      - run: xvfb-run -a bash scripts/smoke-appimage.sh dist/*.AppImage
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vapourfly-appimage
+          path: |
+            dist/*
+            ${{ runner.temp }}/vapourfly-appimage.png

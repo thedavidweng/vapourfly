@@ -25,7 +25,7 @@ jobs:
         include:
           - os: macos-latest
             artifact: vapourfly-macos-aarch64
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             artifact: vapourfly-linux-x86_64
           - os: windows-latest
             artifact: vapourfly-windows-x86_64
@@ -86,7 +86,7 @@ jobs:
             libgl1-mesa-dev libasound2-dev \
             libssl-dev \
             libfontconfig1-dev \
-            libudev-dev
+            libudev-dev xvfb xdotool imagemagick squashfs-tools patchelf desktop-file-utils librsvg2-bin
 
       - name: Install Rust ${{ env.VAPOURFLY_CI_TOOLCHAIN }}
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
@@ -95,6 +95,12 @@ jobs:
 
       - name: Build release binaries
         run: cargo +${{ env.VAPOURFLY_CI_TOOLCHAIN }} build --release -p vapourfly-cli -p vapourfly-gui
+
+      - name: Package and verify updateable AppImage
+        if: runner.os == 'Linux'
+        run: |
+          bash scripts/package-appimage.sh "${GITHUB_REF_NAME#v}"
+          xvfb-run -a bash scripts/smoke-appimage.sh dist/*.AppImage
 
       - name: Package Unix archive
         if: runner.os != 'Windows'
@@ -138,6 +144,9 @@ jobs:
           path: |
             ${{ matrix.artifact }}.tar.gz
             ${{ matrix.artifact }}.zip
+            dist/*.AppImage
+            dist/*.AppImage.zsync
+            dist/*.AppImage.sha256
 
       - name: Remove signing material
         if: always() && runner.os == 'macOS'
@@ -169,7 +178,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           shopt -s nullglob
-          files=(dist/*.tar.gz dist/*.zip)
+          files=(dist/*.tar.gz dist/*.zip dist/*.AppImage dist/*.AppImage.zsync dist/*.AppImage.sha256)
           notes=$(awk '
             /^## \[0\./ { if (found) exit; found=1; next }
             found && /^## \[/ { exit }
