@@ -47,9 +47,8 @@ Upgrade:
 brew upgrade --cask vapourfly
 ```
 
-The Homebrew cask removes the quarantine flag automatically, so Gatekeeper
-does not block the first launch, and links both `vapourfly` (CLI) and
-`vapourfly-gui` (desktop app) onto your `PATH`.
+The Homebrew cask installs the signed macOS release and links both `vapourfly`
+(CLI) and `vapourfly-gui` (desktop app) onto your `PATH`.
 
 ### Pre-built binaries
 
@@ -58,8 +57,9 @@ Download the archive for your platform from
 archive contains `vapourfly` (CLI) and `vapourfly-gui` (desktop app). Put the
 CLI on your `PATH`.
 
-The v0.3.0 macOS build is not notarized, so Gatekeeper may require **Right-click →
-Open** on first launch (if installing manually without Homebrew).
+Official macOS releases from v0.3.1 use Developer ID signing and Apple
+notarization. The app includes a stapled notarization ticket. The standalone CLI
+requires network access for its first notarization check.
 
 On Linux, install the runtime libraries (SteamOS already has them):
 
@@ -197,8 +197,8 @@ release path. The standalone CLI requires network access for its first notarizat
 check because raw binaries cannot hold a stapled ticket.
 
 Run `python3 scripts/test-notarization.py` to exercise the release gate with
-controlled Apple tool responses. These tests do not prove actual notarization;
-verify a downloaded release before removing the Homebrew quarantine workaround.
+controlled Apple tool responses. These tests do not prove actual notarization.
+Verify the signatures and notarization of downloaded release artifacts separately.
 
 ## Contributing
 
