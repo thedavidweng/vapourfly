@@ -61,6 +61,12 @@ CLI on your `PATH`.
 The v0.3.0 macOS build is not notarized, so Gatekeeper may require **Right-click →
 Open** on first launch (if installing manually without Homebrew).
 
+The x86_64 AppImage bundles its native dependencies and supports AppImageUpdate.
+Download the `.AppImage` from Releases, make it executable, and run it. Its embedded
+update information selects stable releases; the adjacent `.zsync` file enables
+delta updates. Release acceptance requires offline startup as a normal user on
+Ubuntu 22.04. The runtime-library instructions below apply to the tar archive.
+
 On Linux, install the runtime libraries (SteamOS already has them):
 
 ```bash
