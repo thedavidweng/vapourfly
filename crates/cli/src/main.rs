@@ -787,10 +787,10 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                 match vapourfly_api::activity::load(&cache, &acc.steam_id64) {
                     Ok(Some(snapshot)) => {
                         println!("Activity:      cached snapshot");
-                        println!("Activity:      {}", snapshot.summary());
+                        println!("Activity:      {}", activity_status(&snapshot));
                     }
                     Ok(None) => println!("Activity:      no cached snapshot"),
-                    Err(error) => println!("Activity:      cache unavailable ({error})"),
+                    Err(_) => println!("Activity:      cache unavailable"),
                 }
             } else {
                 println!("Cloud storage: (no account selected)");
@@ -898,6 +898,34 @@ fn activity_json(
     serde_json::to_string_pretty(&value)
 }
 
+fn activity_status(snapshot: &vapourfly_api::activity::ActivitySnapshot) -> String {
+    format!(
+        "Owned: {}; Recent: {}",
+        section_status(&snapshot.owned),
+        section_status(&snapshot.recent)
+    )
+}
+
+fn section_status(section: &vapourfly_api::activity::ActivitySection) -> String {
+    let availability = match section.availability {
+        vapourfly_api::activity::Availability::Available => "available",
+        vapourfly_api::activity::Availability::Empty => "empty",
+        vapourfly_api::activity::Availability::Incomplete => "incomplete",
+        vapourfly_api::activity::Availability::RestrictedOrUnavailable => "restricted",
+        vapourfly_api::activity::Availability::Unauthorized => "unauthorized",
+        vapourfly_api::activity::Availability::RateLimited => "rate-limited",
+        vapourfly_api::activity::Availability::TransportFailure => "transport-failure",
+        vapourfly_api::activity::Availability::Malformed => "malformed",
+        vapourfly_api::activity::Availability::HttpError => "http-error",
+    };
+    let freshness = if section.stale() {
+        "stale/limited"
+    } else {
+        "fresh"
+    };
+    format!("{availability}; {freshness}")
+}
+
 fn cmd_account_activity(
     cli: &Cli,
     refresh: bool,
@@ -926,7 +954,7 @@ fn cmd_account_activity(
     match format {
         OutputFormat::Table => {
             println!("Account activity snapshot:");
-            println!("{}", snapshot.summary());
+            println!("{}", activity_status(&snapshot));
         }
         OutputFormat::Json => println!("{}", activity_json(&snapshot)?),
     }
