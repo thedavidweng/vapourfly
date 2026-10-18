@@ -254,6 +254,8 @@ impl JunkModeChoice {
 static SCAN_RESULT: JobSlot<ScanResult> = JobSlot::new();
 static WRITE_RESULT: JobSlot<String> = JobSlot::new();
 static ENRICH_RESULT: JobSlot<vapourfly_api::enrichment::EnrichmentSummary> = JobSlot::new();
+static ACTIVITY_RESULT: JobSlot<Result<Option<vapourfly_api::activity::ActivitySnapshot>, String>> =
+    JobSlot::new();
 static DRY_RUN_RESULT: JobSlot<vapourfly_core::write::PreviewedPlan> = JobSlot::new();
 static JUNK_PREVIEW_RESULT: JobSlot<Vec<JunkDecision>> = JobSlot::new();
 static RECOMMEND_RESULT: JobSlot<Vec<Recommendation>> = JobSlot::new();
@@ -464,6 +466,10 @@ pub(crate) struct VapourflyApp {
     pub(crate) has_rawg: bool,
     pub(crate) source_statuses: Vec<vapourfly_api::enrichment::SourceStatus>,
     pub(crate) offline_mode: bool,
+    pub(crate) activity_snapshot: Option<vapourfly_api::activity::ActivitySnapshot>,
+    pub(crate) activity_loading: bool,
+    pub(crate) activity_msg: Option<String>,
+    activity_account_id: Option<String>,
 
     // Backups (listed under Settings; not a top-level view)
     pub(crate) backups: Vec<BackupInfo>,
@@ -508,6 +514,7 @@ pub(crate) struct VapourflyApp {
     pub(crate) scan_job_id: Option<JobTicket>,
     pub(crate) write_job_id: Option<JobTicket>,
     pub(crate) enrich_job_id: Option<JobTicket>,
+    pub(crate) activity_job_id: Option<JobTicket>,
     pub(crate) dry_run_job_id: Option<JobTicket>,
     pub(crate) junk_preview_job_id: Option<JobTicket>,
     pub(crate) recommend_job_id: Option<JobTicket>,
@@ -1252,6 +1259,10 @@ impl VapourflyApp {
             has_rawg,
             source_statuses,
             offline_mode: false,
+            activity_snapshot: None,
+            activity_loading: false,
+            activity_msg: None,
+            activity_account_id: None,
 
             backups: Vec::new(),
 
@@ -1283,6 +1294,7 @@ impl VapourflyApp {
             scan_job_id: None,
             write_job_id: None,
             enrich_job_id: None,
+            activity_job_id: None,
             dry_run_job_id: None,
             junk_preview_job_id: None,
             recommend_job_id: None,
@@ -2226,6 +2238,61 @@ impl VapourflyApp {
         self.start_enrich_job(source, true);
     }
 
+    /// Refresh the selected account's bounded Steam activity snapshot without
+    /// coupling it to library enrichment or first paint.
+    pub(crate) fn start_account_activity_refresh(&mut self) {
+        if self.activity_loading || self.ui_demo || self.offline_mode {
+            self.activity_msg = Some(if self.ui_demo {
+                "Account refresh is disabled in demo mode.".into()
+            } else if self.offline_mode {
+                "Offline mode is on; cached account activity is unchanged.".into()
+            } else {
+                "Account refresh is already running.".into()
+            });
+            return;
+        }
+        let Some(account) = self.active_account().cloned() else {
+            self.activity_msg = Some("Select a Steam account before refreshing activity.".into());
+            return;
+        };
+        let Some(key) = self
+            .steam_api_key_edit
+            .trim()
+            .is_empty()
+            .then(vapourfly_core::config::resolve_steam_api_key)
+            .flatten()
+            .or_else(|| Some(self.steam_api_key_edit.trim().to_string()).filter(|k| !k.is_empty()))
+        else {
+            self.activity_msg =
+                Some("Configure a Steam Web API key to refresh account activity.".into());
+            return;
+        };
+        self.activity_loading = true;
+        self.activity_msg = None;
+        let ticket = self
+            .job_runner
+            .next_ticket(WorkflowKind::AccountActivity, &account.steam_id64);
+        ACTIVITY_RESULT.clear();
+        let cache_root = self.cache_dir.clone();
+        let offline = self.offline_mode;
+        let repaint = self.repaint.clone();
+        self.activity_job_id = Some(ticket);
+        std::thread::spawn(move || {
+            let cache = vapourfly_api::cache::DiskCache::new(cache_root);
+            let result = vapourfly_api::activity::refresh(
+                &cache,
+                &vapourfly_api::http::HttpClient::new(),
+                Some(&key),
+                &account.steam_id64,
+                offline,
+                &vapourfly_api::activity::RefreshControl::default(),
+            )
+            .map_err(|e| e.to_string());
+            ACTIVITY_RESULT.set(ticket, Ok(result));
+            repaint.request();
+        });
+    }
+
     /// Start the automatic background populate after a scan (ADR-0009):
     /// fetch missing/stale entries only, once per launch. Silent no-op in
     /// demo/offline mode or when a job is already running — the library is
@@ -3012,6 +3079,70 @@ impl VapourflyApp {
     /// Poll every background job slot and kick first-paint work. Called once
     /// per GPUI frame (and from tests that wait on jobs). Does not block.
     pub fn tick(&mut self) {
+        let active_account_id = self
+            .active_account()
+            .map(|account| account.steam_id64.clone());
+        if self.activity_account_id != active_account_id {
+            self.activity_account_id = active_account_id.clone();
+            self.activity_snapshot = active_account_id.as_deref().and_then(|id| {
+                match vapourfly_api::activity::load(
+                    &vapourfly_api::cache::DiskCache::new(self.cache_dir.clone()),
+                    id,
+                ) {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        self.activity_msg =
+                            Some(format!("Account activity cache unavailable: {error}"));
+                        None
+                    }
+                }
+            });
+            if self.activity_snapshot.is_some() {
+                self.activity_msg = self
+                    .activity_snapshot
+                    .as_ref()
+                    .map(vapourfly_api::activity::ActivitySnapshot::summary);
+            } else if self.activity_msg.is_none() {
+                self.activity_msg = None;
+            }
+        } else if self.activity_snapshot.as_ref().is_some_and(|snapshot| {
+            active_account_id
+                .as_deref()
+                .is_none_or(|id| id != snapshot.steam_id64)
+        }) {
+            self.activity_snapshot = None;
+            self.activity_msg = None;
+        }
+        if let Some(expected) = self.activity_job_id {
+            let current = self
+                .active_account()
+                .map(|a| fingerprint_u64(&a.steam_id64));
+            if current != Some(expected.fingerprint) {
+                self.activity_loading = false;
+                self.activity_job_id = None;
+                self.activity_snapshot = None;
+                ACTIVITY_RESULT.clear();
+            } else if let Some(result) = ACTIVITY_RESULT.take_if(expected) {
+                self.activity_loading = false;
+                self.activity_job_id = None;
+                match result {
+                    Ok(Ok(snapshot)) => {
+                        self.activity_snapshot = snapshot;
+                        self.activity_msg = self
+                            .activity_snapshot
+                            .as_ref()
+                            .map(vapourfly_api::activity::ActivitySnapshot::summary);
+                    }
+                    Ok(Err(error)) => {
+                        self.activity_msg = Some(format!("Account refresh failed: {error}"));
+                    }
+                    Err(error) => {
+                        self.activity_msg = Some(format!("Account refresh failed: {error}"));
+                    }
+                }
+            }
+        }
+
         if self.loading
             && let Some(expected) = self.scan_job_id
         {
@@ -3397,6 +3528,7 @@ impl VapourflyApp {
             Ok(accounts) => {
                 let count = accounts.len();
                 self.detected_accounts = accounts;
+                self.activity_account_id = None;
                 self.account_list_msg = Some(format!("{count} account(s) detected."));
             }
             Err(e) => {
@@ -3415,6 +3547,7 @@ impl VapourflyApp {
             && let Ok(accounts) = detect_accounts(&steam_dir)
         {
             self.detected_accounts = accounts;
+            self.activity_account_id = None;
         }
     }
 

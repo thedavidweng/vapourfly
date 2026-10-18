@@ -227,3 +227,13 @@ are covered by automated tests, not inferred from demo data. After this
 smoke the isolated test app was terminated and foreground automation released.
 The later source-access policy changes must show Cache only for disabled
 legacy integrations; this requires a subsequent renderer acceptance pass.
+## Account activity smoke (no live key required)
+
+The Data Sources view exposes **Refresh activity** beside metadata refresh.
+It is disabled in demo/offline mode and renders the selected account's
+cache-only status in the page subtitle. The worker is account-fingerprinted;
+switching accounts discards an in-flight result rather than publishing it to
+the new account. Automated mock coverage exercises available, empty,
+restricted, unauthorized, rate-limited, malformed and transport-failure
+responses. Native foreground acceptance with a real key/device is intentionally
+not claimed here.

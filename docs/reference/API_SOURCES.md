@@ -12,7 +12,7 @@ Vapourfly enriches your Steam library with metadata from external data sources. 
 | **PCGamingWiki** | None | Controller support (Full/Partial/None), fixes URL | Legacy cache only; Cargo now requires bot login. |
 | **Legacy HLTB cache** | None | Previously cached main story, main + extras, and completionist times | Read-only compatibility data; never fetched or refreshed. |
 | **Steam Store** | None | App name, type, description, developers, publishers, genres, categories, price, platforms, Metacritic score | Legacy cache only; published interface permission unverified. |
-| **Steam Web API** | User-created key | Owned-game AppID → name map | One cached `GetOwnedGames` request. Optional; existing Store caches may also supply names. |
+| **Steam Web API** | User-created key | Owned/recent activity, playtime and AppID → name map | Explicit account refresh makes at most one `GetOwnedGames` and one `GetRecentlyPlayedGames` request; snapshots are partitioned by SteamID64. |
 
 ## Access and licensing audit (2026-10-18)
 
@@ -200,6 +200,33 @@ The environment variable overrides the config file. `settings show` and
 never bundled with the app.
 
 Without a key, existing Steam Store caches may resolve names; fresh Store fetching is disabled.
+
+### Account activity snapshots
+
+`accounts activity refresh` is an explicit, bounded operation. It uses the
+documented `IPlayerService/GetOwnedGames` and
+`IPlayerService/GetRecentlyPlayedGames` user-key interfaces, never extracts a
+key from Steam files, and never blocks `workflow::prepare` or Library first
+paint. Each selected SteamID64 has an independent `steam-activity/<id>` cache
+record. A refresh makes no more than one request to each endpoint; `--offline`
+and a missing key make zero requests and leave the last snapshot unchanged.
+
+The snapshot distinguishes available data, a confirmed empty response,
+restricted/private visibility, unauthorized keys, rate limiting, malformed
+payloads, incomplete payloads and transport/HTTP failures. Failed refreshes
+retain the last valid game rows and fetched timestamp while reporting the
+failure state. Request URLs and diagnostics never retain or print the key.
+
+Inspect without network access:
+
+```bash
+vapourfly accounts activity status --account <steamid64>
+vapourfly accounts activity refresh --account <steamid64>
+```
+
+No real key or device sign-in is required by tests or local cache workflows;
+provider permission and private-profile behavior remain real-account
+acceptance boundaries.
 The remaining name-keyed source (RAWG) skips placeholder-named games.
 
 ## Caching

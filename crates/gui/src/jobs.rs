@@ -55,6 +55,7 @@ pub enum WorkflowKind {
     Write,
     DryRun,
     CacheRefresh,
+    AccountActivity,
     Prepare,
     JunkPreview,
     RecommendPreview,

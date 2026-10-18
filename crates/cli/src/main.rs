@@ -253,6 +253,25 @@ enum Commands {
 enum AccountsAction {
     /// List detected accounts.
     List,
+    /// Refresh or inspect the selected account's cached activity snapshot.
+    Activity {
+        #[command(subcommand)]
+        action: ActivityAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ActivityAction {
+    /// Fetch at most one owned-games and one recently-played response.
+    Refresh {
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Read the selected account's cached activity without network access.
+    Status {
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Subcommand)]
@@ -570,6 +589,10 @@ fn main() {
         Commands::Doctor => cmd_doctor(&cli),
         Commands::Accounts { action } => match action {
             AccountsAction::List => cmd_accounts_list(&cli),
+            AccountsAction::Activity { action } => match action {
+                ActivityAction::Refresh { format } => cmd_account_activity(&cli, true, *format),
+                ActivityAction::Status { format } => cmd_account_activity(&cli, false, *format),
+            },
         },
         Commands::Scan { format, enrich } => cmd_scan(&cli, *format, *enrich),
         Commands::Collections { action } => match action {
@@ -751,6 +774,15 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     println!("Cloud storage: not found");
                 }
+
+                let cache = vapourfly_api::cache::DiskCache::new(
+                    vapourfly_core::config::default_cache_dir(),
+                );
+                match vapourfly_api::activity::load(&cache, &acc.steam_id64) {
+                    Ok(Some(snapshot)) => println!("Activity:      {}", snapshot.summary()),
+                    Ok(None) => println!("Activity:      no cached snapshot"),
+                    Err(error) => println!("Activity:      cache unavailable ({error})"),
+                }
             } else {
                 println!("Cloud storage: (no account selected)");
             }
@@ -836,6 +868,41 @@ fn cmd_accounts_list(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                 marker
             );
         }
+    }
+    Ok(())
+}
+
+fn cmd_account_activity(
+    cli: &Cli,
+    refresh: bool,
+    format: OutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let steam_dir = cli.resolve_steam_dir()?;
+    let accounts = steam::detect_accounts(&steam_dir)?;
+    let selected = steam::select_account(&accounts, cli.account.as_deref())?;
+    let cache = vapourfly_api::cache::DiskCache::new(vapourfly_core::config::default_cache_dir());
+    let snapshot = if refresh {
+        let control = vapourfly_api::activity::RefreshControl::default();
+        vapourfly_api::activity::refresh(
+            &cache,
+            &vapourfly_api::http::HttpClient::new(),
+            vapourfly_core::config::resolve_steam_api_key().as_deref(),
+            &selected.steam_id64,
+            cli.offline,
+            &control,
+        )?
+    } else {
+        vapourfly_api::activity::load(&cache, &selected.steam_id64)?
+    };
+    let Some(snapshot) = snapshot else {
+        return Err("No account activity snapshot is cached; configure a Steam Web API key and run without --offline.".into());
+    };
+    match format {
+        OutputFormat::Table => {
+            println!("Account: {}", format::mask_id(&snapshot.steam_id64));
+            println!("{}", snapshot.summary());
+        }
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&snapshot)?),
     }
     Ok(())
 }
