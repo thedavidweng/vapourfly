@@ -118,7 +118,10 @@ and retain `HltbScrape` provenance. They are legacy compatibility data: the
 application never calls HLTB endpoints, does not refresh that namespace, and
 does not list it in CLI or GUI source controls. If no cached legacy value or
 documented IGDB value exists, completion-time workflows treat the signal as
-unknown rather than translating another duration field.
+unknown rather than translating another duration field. While a legacy record
+exists, it remains the preferred completion value; removing that local cache
+record allows the documented IGDB value to be used on the next refresh without
+rewriting or silently reinterpreting the HLTB record.
 
 ### Use in Playlists and Junk Detection
 

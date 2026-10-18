@@ -53,7 +53,7 @@ time-to-beat data or explicit user overrides. When touching external API or
 cache code, check the cache-only and offline paths as well:
 
 ```bash
-cargo check -p vapourfly-api --no-default-features
+cargo test -p vapourfly-api legacy_hltb_cache_is_readable_but_never_refreshed
 ```
 
 Domain language lives in [CONTEXT.md](CONTEXT.md). Architecture decisions live

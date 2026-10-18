@@ -92,9 +92,9 @@ fn score_game(
 
     if request.available_minutes > 0 {
         // A game is a time match when its known main-story completion time
-        // fits inside the available window (PRD: "HLTB 主线 ≤ 可用时长").
-        // HLTB main story is preferred; IGDB time-to-beat (normally) is the
-        // fallback. Games with no known completion time get no time_match.
+        // fits inside the available window. The shared accessor prefers a
+        // cached legacy HLTB value before documented IGDB `normally` data.
+        // Games with no known completion time get no time_match.
         let main_secs = crate::signal::main_story_seconds(game);
         if let Some(secs) = main_secs
             && secs / 60 <= request.available_minutes
