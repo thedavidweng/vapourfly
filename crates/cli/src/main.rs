@@ -972,13 +972,18 @@ fn cmd_achievements(
         vapourfly_api::achievements::load(&cache, &account.steam_id64, app_id)?
     };
     match format {
-        OutputFormat::Table => println!(
-            "{}",
-            progress.as_ref().map_or_else(
+        OutputFormat::Table => {
+            let display = progress
+                .as_ref()
+                .map(|p| (p.status, p.unlocked, p.total, p.fetched_at));
+            let summary = display.map_or_else(
                 || "Steam achievements: unknown / not fetched".into(),
-                achievement_table_summary
-            )
-        ),
+                |(status, unlocked, total, fetched_at)| {
+                    achievement_table_summary(status, unlocked, total, fetched_at)
+                },
+            );
+            println!("{summary}");
+        }
         OutputFormat::Json => {
             let output = progress.as_ref().map(|p| serde_json::json!({
                 "app_id": p.app_id, "status": p.status, "total": p.total, "unlocked": p.unlocked,
@@ -991,8 +996,13 @@ fn cmd_achievements(
     Ok(())
 }
 
-fn achievement_table_summary(progress: &vapourfly_api::achievements::Progress) -> String {
-    let percentage = match (progress.status, progress.unlocked, progress.total) {
+fn achievement_table_summary(
+    status: vapourfly_api::achievements::Status,
+    unlocked: Option<u32>,
+    total: Option<u32>,
+    fetched_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> String {
+    let percentage = match (status, unlocked, total) {
         (vapourfly_api::achievements::Status::Available, Some(unlocked), Some(total))
             if total > 0 =>
         {
@@ -1001,10 +1011,10 @@ fn achievement_table_summary(progress: &vapourfly_api::achievements::Progress) -
         _ => "percentage unknown".into(),
     };
     let freshness = if matches!(
-        progress.status,
+        status,
         vapourfly_api::achievements::Status::Available
             | vapourfly_api::achievements::Status::NoAchievements
-    ) && progress.fetched_at.is_some_and(|time| {
+    ) && fetched_at.is_some_and(|time| {
         chrono::Utc::now().signed_duration_since(time).num_seconds() <= 24 * 60 * 60
     }) {
         "fresh"
@@ -1013,13 +1023,9 @@ fn achievement_table_summary(progress: &vapourfly_api::achievements::Progress) -
     };
     format!(
         "Steam achievements: {:?}; {}/{}; {}; {} (user-key API)",
-        progress.status,
-        progress
-            .unlocked
-            .map_or_else(|| "?".into(), |count| count.to_string()),
-        progress
-            .total
-            .map_or_else(|| "?".into(), |count| count.to_string()),
+        status,
+        unlocked.map_or_else(|| "?".into(), |count| count.to_string()),
+        total.map_or_else(|| "?".into(), |count| count.to_string()),
         percentage,
         freshness,
     )
