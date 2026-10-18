@@ -328,7 +328,32 @@ impl GuiRoot {
                         this.arm_poll(cx);
                         cx.notify();
                     })),
+            )
+            .child(
+                Button::new("refresh-account-activity")
+                    .ghost()
+                    .icon(IconName::User)
+                    .label("Refresh activity")
+                    .loading(self.app.activity_loading)
+                    .disabled(offline || self.app.activity_loading || self.app.ui_demo)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.app.start_account_activity_refresh();
+                        this.arm_poll(cx);
+                        cx.notify();
+                    })),
             );
+
+        let activity_label = self
+            .app
+            .activity_msg
+            .clone()
+            .or_else(|| {
+                self.app
+                    .activity_snapshot
+                    .as_ref()
+                    .map(|snapshot| format!("Activity: {}", snapshot.summary()))
+            })
+            .unwrap_or_else(|| "Activity: no cached snapshot".into());
 
         let col = |w: f32| div().flex_none().w(px(w));
         let header = h_flex()
@@ -443,9 +468,11 @@ impl GuiRoot {
         });
 
         let subtitle = if offline {
-            "Offline — Vapourfly uses cached metadata only.".to_string()
+            format!("Offline — Vapourfly uses cached metadata only. · {activity_label}")
         } else {
-            "Metadata that powers filters, Proton ratings and play-time estimates.".to_string()
+            format!(
+                "Metadata that powers filters, Proton ratings and play-time estimates. · {activity_label}"
+            )
         };
 
         v_flex()

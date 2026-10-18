@@ -4,6 +4,7 @@
 //! concrete API client implementations for Steam Store, IGDB, RAWG,
 //! ProtonDB, and PCGamingWiki.
 
+pub mod activity;
 pub mod cache;
 pub mod enrichment;
 pub mod http;

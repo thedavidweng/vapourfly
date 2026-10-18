@@ -61,12 +61,23 @@ pub fn live_access_restriction(source: &str) -> Option<&'static str> {
 }
 
 /// A simplified outgoing HTTP request.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HttpRequest {
     pub url: String,
     pub method: HttpMethod,
     pub headers: HashMap<String, String>,
     pub body: Option<Vec<u8>>,
+}
+
+impl fmt::Debug for HttpRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HttpRequest")
+            .field("method", &self.method)
+            .field("endpoint", &self.url.split('?').next().unwrap_or(""))
+            .field("header_names", &self.headers.keys().collect::<Vec<_>>())
+            .field("body_bytes", &self.body.as_ref().map(Vec::len))
+            .finish()
+    }
 }
 
 /// HTTP method.
@@ -364,6 +375,24 @@ impl std::fmt::Debug for HttpClient {
 }
 
 impl HttpClient {
+    /// One paced attempt, with no retries or Retry-After sleeps. Explicit
+    /// account refreshes use this to keep their request budget bounded.
+    pub fn get_once(&self, source: &str, url: &str) -> Result<HttpResponse> {
+        if let Some(reason) = self.backend.access_restriction(source) {
+            return Err(VapourflyError::InvalidInput(reason.into()));
+        }
+        self.rate_limiter.acquire(source);
+        self.backend
+            .execute(&HttpRequest {
+                method: HttpMethod::Get,
+                url: url.to_owned(),
+                headers: HashMap::from([("user-agent".into(), self.config.user_agent.clone())]),
+                body: None,
+            })
+            .map_err(|_| VapourflyError::NetworkUnavailable {
+                source: Box::new(std::io::Error::other("HTTP transport failed")),
+            })
+    }
     /// Create a new client with the default ureq-based backend.
     pub fn new() -> Self {
         Self {
@@ -544,8 +573,8 @@ impl HttpBackend for UreqBackend {
                 req.send(body_bytes)
             }
         }
-        .map_err(|e| VapourflyError::NetworkUnavailable {
-            source: Box::new(std::io::Error::other(e.to_string())),
+        .map_err(|_| VapourflyError::NetworkUnavailable {
+            source: Box::new(std::io::Error::other("HTTP transport failed")),
         })?;
 
         let status = response.status().as_u16();
@@ -555,7 +584,13 @@ impl HttpBackend for UreqBackend {
                 resp_headers.insert(name.as_str().to_lowercase(), v.to_string());
             }
         }
-        let body = response.into_body().read_to_vec().unwrap_or_default();
+        let body =
+            response
+                .into_body()
+                .read_to_vec()
+                .map_err(|_| VapourflyError::NetworkUnavailable {
+                    source: Box::new(std::io::Error::other("HTTP response body read failed")),
+                })?;
         Ok(HttpResponse {
             status,
             headers: resp_headers,
