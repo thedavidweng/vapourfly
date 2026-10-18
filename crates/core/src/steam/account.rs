@@ -11,14 +11,14 @@ use crate::steam::paths::SteamAccount;
 ///
 /// Selection priority:
 ///
-/// 1. **Single account** -- auto-selected regardless of `preferred`.
-/// 2. **Preferred match** -- `preferred` is matched case-insensitively against
-///    `account_name` and `persona_name`. Returns the first match.
+/// 1. **Preferred match** -- `preferred` matches SteamID64 or is matched
+///    case-insensitively against `account_name` and `persona_name`.
+/// 2. **Single account** -- auto-selected when no preference is supplied.
 /// 3. **Most-recent** -- exactly one account with `most_recent == true`.
 /// 4. **Ambiguity** -- returns [`VapourflyError::AmbiguousAccount`].
 ///
 /// Returns `Err` if `accounts` is empty or if the preferred name does not
-/// match any account (when multiple accounts exist).
+/// match any account.
 pub fn select_account<'a>(
     accounts: &'a [SteamAccount],
     preferred: Option<&str>,
@@ -29,25 +29,24 @@ pub fn select_account<'a>(
         ));
     }
 
-    if accounts.len() == 1 {
-        return Ok(&accounts[0]);
-    }
-
     if let Some(pref) = preferred {
         let pref_lower = pref.to_lowercase();
         if let Some(acct) = accounts.iter().find(|a| {
-            a.account_name.to_lowercase() == pref_lower
+            a.steam_id64 == pref
+                || a.account_name.to_lowercase() == pref_lower
                 || a.persona_name.to_lowercase() == pref_lower
         }) {
             return Ok(acct);
         }
-        // Preferred given but no match -- that is an error when multiple
-        // accounts exist (caller explicitly asked for a specific account).
         return Err(VapourflyError::InvalidInput(format!(
             "account '{}' not found among {} Steam accounts",
             pref,
             accounts.len()
         )));
+    }
+
+    if accounts.len() == 1 {
+        return Ok(&accounts[0]);
     }
 
     let most_recent: Vec<&SteamAccount> = accounts.iter().filter(|a| a.most_recent).collect();
@@ -89,10 +88,15 @@ mod tests {
     }
 
     #[test]
-    fn single_account_ignores_preferred() {
+    fn single_account_rejects_unmatched_preference() {
         let accounts = vec![make_account("alice", "Alice", false)];
-        let acct = select_account(&accounts, Some("bob")).unwrap();
-        assert_eq!(acct.account_name, "alice");
+        assert!(select_account(&accounts, Some("bob")).is_err());
+        assert_eq!(
+            select_account(&accounts, Some("76561198000000000"))
+                .unwrap()
+                .account_name,
+            "alice"
+        );
     }
 
     // -- Preferred matching -------------------------------------------------

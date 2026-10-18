@@ -3098,14 +3098,6 @@ impl VapourflyApp {
                     }
                 }
             });
-            if self.activity_snapshot.is_some() {
-                self.activity_msg = self
-                    .activity_snapshot
-                    .as_ref()
-                    .map(vapourfly_api::activity::ActivitySnapshot::summary);
-            } else if self.activity_msg.is_none() {
-                self.activity_msg = None;
-            }
         } else if self.activity_snapshot.as_ref().is_some_and(|snapshot| {
             active_account_id
                 .as_deref()
@@ -3128,10 +3120,7 @@ impl VapourflyApp {
                 match result {
                     Ok(Ok(snapshot)) => {
                         self.activity_snapshot = snapshot;
-                        self.activity_msg = self
-                            .activity_snapshot
-                            .as_ref()
-                            .map(vapourfly_api::activity::ActivitySnapshot::summary);
+                        self.activity_msg = None;
                     }
                     Ok(Err(error)) => {
                         self.activity_msg = Some(format!("Account refresh failed: {error}"));
@@ -3553,19 +3542,18 @@ impl VapourflyApp {
 
     /// The account Vapourfly acts for: the configured one (matched by
     /// SteamID64, account name or persona), else Steam's most recent login.
+    /// An unmatched explicit selection must never expose another account.
     pub(crate) fn active_account(&self) -> Option<&SteamAccount> {
-        let preferred = self.account_edit.trim().to_lowercase();
-        let configured = (!preferred.is_empty())
-            .then(|| {
-                self.detected_accounts.iter().find(|a| {
-                    a.steam_id64 == preferred
-                        || a.account_name.to_lowercase() == preferred
-                        || a.persona_name.to_lowercase() == preferred
-                })
-            })
-            .flatten();
-        configured
-            .or_else(|| self.detected_accounts.iter().find(|a| a.most_recent))
+        if let Some(preferred) = self.config.as_ref().and_then(|c| c.account.as_deref()) {
+            return self.detected_accounts.iter().find(|a| {
+                a.steam_id64 == preferred
+                    || a.account_name.eq_ignore_ascii_case(preferred)
+                    || a.persona_name.eq_ignore_ascii_case(preferred)
+            });
+        }
+        self.detected_accounts
+            .iter()
+            .find(|a| a.most_recent)
             .or_else(|| self.detected_accounts.first())
     }
 
@@ -5989,17 +5977,20 @@ mod tests {
             account("76561198000000002", "bravo", "Bravo", true),
         ];
 
-        app.account_edit = String::new();
+        app.config.as_mut().unwrap().account = None;
         assert_eq!(app.active_account().unwrap().account_name, "bravo");
 
-        app.account_edit = "76561198000000001".into();
+        app.config.as_mut().unwrap().account = Some("76561198000000001".into());
         assert_eq!(app.active_account().unwrap().account_name, "alpha");
 
-        app.account_edit = "ALPHA".into();
+        app.config.as_mut().unwrap().account = Some("ALPHA".into());
         assert_eq!(app.active_account().unwrap().account_name, "alpha");
 
-        app.account_edit = "nobody".into();
-        assert_eq!(app.active_account().unwrap().account_name, "bravo");
+        app.account_edit = "bravo".into();
+        assert_eq!(app.active_account().unwrap().account_name, "alpha");
+
+        app.config.as_mut().unwrap().account = Some("nobody".into());
+        assert!(app.active_account().is_none());
 
         app.detected_accounts.clear();
         assert!(app.active_account().is_none());
