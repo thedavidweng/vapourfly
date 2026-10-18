@@ -455,7 +455,7 @@ enum SyncAction {
 enum CacheAction {
     /// Refresh cached data from external sources.
     Refresh {
-        /// Source to refresh: igdb, rawg, protondb, pcgw, hltb, steam-store, or all.
+        /// Source to refresh: igdb, rawg, protondb, pcgw, steam-store, or all.
         #[arg(long)]
         source: String,
     },

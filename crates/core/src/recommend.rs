@@ -95,12 +95,7 @@ fn score_game(
         // fits inside the available window (PRD: "HLTB 主线 ≤ 可用时长").
         // HLTB main story is preferred; IGDB time-to-beat (normally) is the
         // fallback. Games with no known completion time get no time_match.
-        let main_secs = crate::signal::main_story_seconds(game).or_else(|| {
-            game.igdb
-                .as_ref()
-                .and_then(|i| i.time_to_beat.as_ref())
-                .and_then(|t| t.normally_seconds)
-        });
+        let main_secs = crate::signal::main_story_seconds(game);
         if let Some(secs) = main_secs
             && secs / 60 <= request.available_minutes
         {
@@ -151,7 +146,7 @@ fn score_game(
         }
     }
 
-    if let Some(main_secs) = game.hltb.as_ref().and_then(|h| h.main_story_seconds) {
+    if let Some(main_secs) = crate::signal::main_story_seconds(game) {
         let main_mins = main_secs as f32 / 60.0;
         if main_mins > 0.0 && playtime as f32 > main_mins * LIKELY_FINISHED_MULTIPLIER {
             score += W_LIKELY_FINISHED;
@@ -387,14 +382,14 @@ mod tests {
         );
     }
 
-    // time_match requires a known completion time (PRD: HLTB 主线 ≤ 可用时长).
+    // time_match requires a known effective completion time.
 
     #[test]
     fn time_match_requires_known_completion_time() {
-        // No HLTB and no IGDB time-to-beat: no time_match regardless of window.
+        // No completion time: no time_match regardless of window.
         let unknown = make_game(1, "Unknown Length");
 
-        // No HLTB, but IGDB time-to-beat fits: time_match via fallback.
+        // IGDB time-to-beat fits: time_match via the supported live source.
         let mut igdb_fallback = make_game(2, "IGDB Timed");
         igdb_fallback.igdb = Some(IgdbData {
             igdb_id: 2,

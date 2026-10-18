@@ -10,7 +10,7 @@ Manage your Steam library like Spotify playlists. Vapourfly is a local-first
 CLI and desktop GUI for organizing, filtering, and cleaning up a Steam library
 without going through Steam's own UI.
 
-- **Playlists**: manual or rule-based (installed, genre, HLTB length, ProtonDB
+- **Playlists**: manual or rule-based (installed, genre, completion time, ProtonDB
   tier, rating, and more), shareable as compact `VF1:` codes, and syncable to
   Steam collections.
 - **Discover, Recommendations, and Moods**: similar-game picks, session-length
@@ -158,8 +158,10 @@ Details: [Steam file safety](docs/reference/STEAM_FILE_SAFETY.md) and
 
 ## Data sources and credentials
 
-Steam Store, ProtonDB, PCGamingWiki, and HowLongToBeat work without
-credentials. Optional keys add more metadata:
+Steam Store, ProtonDB, PCGamingWiki, and existing legacy HLTB cache records
+work without credentials. HLTB is never fetched or refreshed; new completion
+times come from documented IGDB time-to-beat data or manual overrides. Optional
+keys add more metadata:
 
 | Setting | Get it from | Adds |
 |---|---|---|

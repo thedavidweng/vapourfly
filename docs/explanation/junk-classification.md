@@ -12,7 +12,7 @@ Each game is evaluated against three negative signals:
 | Signal | Meaning | Default threshold |
 |---|---|---|
 | **Low playtime** | You have barely played it | Under 30 minutes |
-| **Short completion** | Even if you did play it, it is nearly over already | HLTB main story under 2 hours |
+| **Short completion** | Even if you did play it, it is nearly over already | Effective completion time under 2 hours |
 | **Low rating** | External ratings rate it poorly | Below 2.5 out of 5 |
 
 The second signal is the interesting one: a game you have played for 3
@@ -58,8 +58,9 @@ confidence junk flag means "one signal agreed, we could only check three"
 
 ## Degradation instead of failure
 
-Signals come from external sources (HLTB, IGDB/RAWG ratings) via the local
-cache. When a source has no entry for a game, that signal is reported as
+Signals come from external sources (documented IGDB completion data and
+IGDB/RAWG ratings) via the local cache; previously cached HLTB completion data
+remains explicitly marked as legacy. When a source has no entry for a game, that signal is reported as
 missing -- never guessed, never silently treated as passing or failing.
 With `--offline` this applies to everything uncached. The consequence:
 junk results improve as your cache fills (see

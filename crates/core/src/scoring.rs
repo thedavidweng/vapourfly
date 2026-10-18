@@ -89,20 +89,20 @@ pub fn is_high_rating(game: &Game) -> bool {
     rawg_high || igdb_high
 }
 
-/// A "short game" fits a single short session: HLTB main story ≤ 4 hours.
+/// A "short game" fits a single short session: effective completion time ≤ 4 hours.
 pub const SHORT_GAME_MAX_SECONDS: u32 = 4 * 3600;
 
-/// A "long game" earns a marathon: HLTB main story ≥ 20 hours.
+/// A "long game" earns a marathon: effective completion time ≥ 20 hours.
 pub const LONG_GAME_MIN_SECONDS: u32 = 20 * 3600;
 
 /// True when the game's main story fits a short session (≤ 4 hours).
-/// Fails closed when HLTB data is missing.
+/// Fails closed when completion-time data is missing.
 pub fn is_short_game(game: &Game) -> bool {
     signal::main_story_seconds(game).is_some_and(|s| s <= SHORT_GAME_MAX_SECONDS)
 }
 
 /// True when the game's main story is marathon-length (≥ 20 hours).
-/// Fails closed when HLTB data is missing.
+/// Fails closed when completion-time data is missing.
 pub fn is_long_game(game: &Game) -> bool {
     signal::main_story_seconds(game).is_some_and(|s| s >= LONG_GAME_MIN_SECONDS)
 }

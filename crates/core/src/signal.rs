@@ -9,7 +9,8 @@
 //!
 //! - **Rating** (0–5 scale): manual override > RAWG (native 0–5) > IGDB
 //!   (0–100, converted to 0–5 by dividing by 20).
-//! - **Completion time** (seconds): manual override > HLTB main story.
+//! - **Completion time** (seconds): manual override > cached legacy HLTB main
+//!   story > documented IGDB normally time.
 //! - **Keywords** (lowercase, sorted, deduplicated): IGDB keywords/themes/
 //!   genres, falling back to RAWG tags/genres when IGDB data is absent.
 
@@ -48,9 +49,10 @@ pub fn effective_rating(
 
 /// Return the effective completion time in seconds and its source.
 ///
-/// Manual overrides take precedence over scraped HLTB data. Overrides are a
-/// Junk-scoped concept (CONTEXT.md); other consumers read the plain signal
-/// via [`main_story_seconds`].
+/// Manual overrides take precedence over cached legacy HLTB data and the
+/// documented IGDB time-to-beat value. Overrides are a Junk-scoped concept
+/// (CONTEXT.md); other consumers read the plain signal via
+/// [`main_story_seconds`].
 pub fn effective_completion_time(
     game: &Game,
     overrides: &ManualOverrides,
@@ -58,18 +60,39 @@ pub fn effective_completion_time(
     if let Some(&seconds) = overrides.manual_hltb.get(&game.app_id) {
         return Some((seconds, HltbSource::ManualOverride));
     }
-    game.hltb
-        .as_ref()
-        .and_then(|h| h.main_story_seconds.map(|s| (s, h.source.clone())))
+    completion_time(game)
 }
 
-/// The raw completion-time signal: HLTB main-story seconds, no overrides.
+/// Return the supported non-override completion time and its provenance.
+///
+/// Legacy HLTB cache data is preferred when present so reading old caches
+/// does not silently replace their meaning. New live values come from IGDB's
+/// documented `game_time_to_beats` interface and use its `normally` value;
+/// the distinct source keeps that fallback explicit to callers.
+pub fn completion_time(game: &Game) -> Option<(u32, HltbSource)> {
+    if let Some((seconds, source)) = game
+        .hltb
+        .as_ref()
+        .and_then(|h| h.main_story_seconds.map(|s| (s, h.source.clone())))
+    {
+        return Some((seconds, source));
+    }
+    game.igdb
+        .as_ref()
+        .and_then(|igdb| igdb.time_to_beat.as_ref())
+        .and_then(|time| {
+            time.normally_seconds
+                .map(|seconds| (seconds, HltbSource::IgdbGameTimeToBeat))
+        })
+}
+
+/// The raw completion-time signal without manual overrides.
 ///
 /// Every consumer of "how long is this game" (recommend time-match, mood
 /// session predicates, Finish It ratio, `HltbMaxMinutes` rules) reads this
 /// accessor rather than chaining through `game.hltb` by hand.
 pub fn main_story_seconds(game: &Game) -> Option<u32> {
-    game.hltb.as_ref().and_then(|h| h.main_story_seconds)
+    completion_time(game).map(|(seconds, _)| seconds)
 }
 
 /// Return lowercase keywords (genres, themes, tags) for similarity matching.
@@ -192,6 +215,35 @@ mod tests {
 
         assert_eq!(main_story_seconds(&g), Some(7200));
         assert_eq!(main_story_seconds(&game(2)), None);
+    }
+
+    #[test]
+    fn completion_time_uses_documented_igdb_normally_value_with_provenance() {
+        let mut g = game(3);
+        g.igdb = Some(IgdbData {
+            igdb_id: 3,
+            name: "g3".into(),
+            slug: None,
+            rating_0_100: None,
+            total_rating_0_100: None,
+            genres: vec![],
+            themes: vec![],
+            keywords: vec![],
+            similar_game_ids: vec![],
+            steam_app_id_confirmed: true,
+            time_to_beat: Some(crate::models::IgdbTimeToBeat {
+                hastily_seconds: Some(1200),
+                normally_seconds: Some(3600),
+                completely_seconds: Some(7200),
+                submission_count: Some(10),
+            }),
+        });
+
+        assert_eq!(
+            completion_time(&g),
+            Some((3600, HltbSource::IgdbGameTimeToBeat))
+        );
+        assert_eq!(main_story_seconds(&g), Some(3600));
     }
 
     #[test]

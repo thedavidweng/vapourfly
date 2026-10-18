@@ -49,7 +49,6 @@ fn rate_limit_for(source: &str) -> f64 {
         "igdb" => 200.0,
         "protondb" | "pcgw" => 120.0,
         // Scraped without an official API — stay extra polite.
-        "hltb" => 30.0,
         "rawg" => 60.0,
         _ => RATE_LIMIT_DEFAULT_TOKENS,
     }

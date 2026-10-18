@@ -158,7 +158,7 @@ virtualized `uniform_list`.
 
 1. Navigate to Data Sources via the sidebar.
 2. Verify the header has an **Offline mode** switch and **Refresh all**, followed by Sources / Cached entries / Stale / Missing credentials tiles.
-3. Verify the table lists Steam Store, IGDB, ProtonDB, PCGW, HLTB, and RAWG with credential tag, entries, freshness, last updated, and a per-row Refresh.
+3. Verify the table lists Steam Store, IGDB, ProtonDB, PCGW, and RAWG with credential tag, entries, freshness, last updated, and a per-row Refresh. Previously cached HLTB records are compatibility data and are not listed or refreshed.
 4. Turn on **Offline mode** and verify **Refresh all** and every row's Refresh are disabled.
 5. Turn it off and click a source's Refresh; verify the refresh runs (or reports that a scan is needed first).
 

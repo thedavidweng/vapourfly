@@ -89,7 +89,7 @@ vapourfly scan --enrich --format json
 
 **JSON output** includes: `app_id`, `name`, `installed`, `playtime_minutes`, `playtime_2wks_minutes`, `collections`, `is_hidden`, plus a `warnings` array.
 
-`--enrich` uses IGDB, RAWG, ProtonDB, PCGW, HLTB, and Steam Store sources. It
+`--enrich` uses IGDB, RAWG, ProtonDB, PCGW, and Steam Store sources. It
 populates the local cache (and applies cached entries, including stale ones)
 unless global `--offline` is set.
 
@@ -163,7 +163,9 @@ Cannot use `--strict` and `--aggressive` together.
 
 **Signals evaluated:**
 - **Low playtime** -- playtime below threshold (default: 30 minutes)
-- **Short completion** -- HLTB main story below threshold (default: 7200 seconds / 2 hours)
+- **Short completion** -- effective completion time below threshold (default:
+  7200 seconds / 2 hours; manual override, legacy HLTB cache, then IGDB
+  `normally` time-to-beat)
 - **Low rating** -- rating below threshold (default: 2.5 out of 5)
 
 Each decision includes a confidence score (fraction of possible signals for which data was available) and lists which signals matched and which were missing.
@@ -284,7 +286,7 @@ vapourfly cache refresh --source steam-store
 vapourfly cache refresh --source all
 ```
 
-Valid sources: `igdb`, `rawg`, `protondb`, `pcgw`, `hltb`, `steam-store`, `all`.
+Valid sources: `igdb`, `rawg`, `protondb`, `pcgw`, `steam-store`, `all`.
 
 Cache refresh is blocked in `--offline` mode.
 

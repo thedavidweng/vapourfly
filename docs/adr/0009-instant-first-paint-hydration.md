@@ -29,13 +29,13 @@ anything that would block it becomes optional or runs in the background.
   the library re-hydrates and placeholder names/data fill in. The CLI
   populates via `cache refresh` (forced) and `scan --enrich`.
 - **Freshness policy moves from fetch-time to TTL + background repopulate**:
-  ProtonDB 7d, Steam Store 3d, PCGW/IGDB/RAWG 14d, HLTB 30d. Rate limits
-  are per source (steam-store 30/min, protondb/pcgw 120/min, igdb 200/min,
-  hltb 30/min, rawg 60/min), sized to each provider's real tolerance.
+  ProtonDB 7d, Steam Store 3d, and PCGW/IGDB/RAWG 14d. Rate limits are per
+  source (steam-store 30/min, protondb/pcgw 120/min, igdb 200/min, rawg
+  60/min), sized to each provider's real tolerance.
 - **Name resolution chain** (macOS machines commonly lack `appinfo.vdf`):
   appmanifest → librarycache → appinfo.vdf → owned-games map (key-gated,
   instant) → Steam Store per-app backfill (progressive) → `"App <id>"`.
-  Name-keyed sources (HLTB, RAWG) skip placeholder-named games.
+  The remaining name-keyed source (RAWG) skips placeholder-named games.
 
 ## Consequences
 
@@ -48,6 +48,8 @@ anything that would block it becomes optional or runs in the background.
   playtime, and collections instantly but placeholder names until the
   background populate covers them (Steam Store pass ≈ 30 min on ~900
   games). With a key, names resolve in the first seconds.
-- HLTB moved to its current `bleed` endpoints and is enabled by default;
-  the old `/api/search`, PCGW `action=ask`, and Valve's keyless
-  `GetAppList` are gone from the codebase (all removed by their providers).
+- Existing HLTB cache records remain readable as legacy data, but no HLTB
+  endpoint is called or refreshed. The documented IGDB `game_time_to_beats`
+  interface and explicit manual overrides provide supported live completion
+  times. The old HLTB client, PCGW `action=ask`, and Valve's keyless
+  `GetAppList` are gone from the codebase.

@@ -47,8 +47,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-HLTB scraping is on by default. When touching external API or cache code, also
-check the build with the scrape client disabled:
+There is no live HLTB scraping feature. Existing HLTB cache records are
+read-only compatibility data; new completion times come from documented IGDB
+time-to-beat data or explicit user overrides. When touching external API or
+cache code, check the cache-only and offline paths as well:
 
 ```bash
 cargo check -p vapourfly-api --no-default-features
