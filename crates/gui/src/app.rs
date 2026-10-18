@@ -2336,6 +2336,7 @@ impl VapourflyApp {
             self.achievement_msg = Some("No Steam Web API key; cached evidence only.".into());
             return;
         };
+        let offline = self.offline_mode;
         let ticket = self.job_runner.next_ticket(WorkflowKind::Achievements, &id);
         let control = vapourfly_api::activity::RefreshControl::default();
         self.achievement_control = control.clone();
@@ -2348,7 +2349,7 @@ impl VapourflyApp {
                 Some(&key),
                 &id,
                 app_id,
-                false,
+                offline,
                 &control,
             )
             .map_err(|e| e.to_string());
