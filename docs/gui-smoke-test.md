@@ -205,3 +205,25 @@ Run with any Xbox-style gamepad connected, on a Steam Deck, or with
 9. While the controller is in use, a footer shows the button hints. Moving the mouse hides it.
 10. In Game Mode (or `--deck`), start a write: the confirmation dialog warns that Steam is running in Game Mode.
 11. On a Deck in Game Mode, Vapourfly opens fullscreen at 1280×800 and the Library hero is shorter, so the Recently played shelf starts on the first screen. In Desktop Mode at 125% scaling the window fits the screen.
+
+## Issue 27 duration/source audit smoke (2026-10-18)
+
+Built and launched the owned worktree binary, not the installed application:
+
+```sh
+cargo build -p vapourfly-gui
+target/debug/vapourfly-gui --ui-demo --view data-sources
+target/debug/vapourfly-gui --fixtures data/fixtures/steam_minimal --offline --view data-sources
+target/debug/vapourfly-gui --ui-demo --offline --view library
+```
+
+Observed in the native macOS window: five metadata rows and no HLTB refresh
+row; fixture account with three local games, Offline mode on and disabled
+refresh buttons; demo Library hero `Fields of Luma` showing `10h to beat`.
+These are rendering/launch checks. Native click attempts did not reliably
+change the view and are not counted as successful interaction checks.
+IGDB-only duration provenance/filtering and zero-fetch legacy-cache behavior
+are covered by automated tests, not inferred from demo data. After this
+smoke the isolated test app was terminated and foreground automation released.
+The later source-access policy changes must show Cache only for disabled
+legacy integrations; this requires a subsequent renderer acceptance pass.

@@ -110,6 +110,9 @@ fn credential_status() -> (bool, bool) {
 
 /// Credential column label for a source in `sources status` output.
 fn credential_label(source: &str, igdb_configured: bool, rawg_configured: bool) -> &'static str {
+    if vapourfly_api::http::live_access_restriction(source).is_some() {
+        return "cache only";
+    }
     let configured = match source {
         "igdb" => igdb_configured,
         "rawg" => rawg_configured,
@@ -791,7 +794,7 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         if steam_key_ok {
             "configured (instant name resolution)"
         } else {
-            "not configured (names backfill from Steam Store instead; create a \
+            "not configured (local/cached names only; create a \
              free key at https://steamcommunity.com/dev/apikey and run \
              `vapourfly settings set steam_api_key <key>`)"
         }
@@ -1759,6 +1762,7 @@ fn cmd_sources_status(_cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn st
                     serde_json::json!({
                         "name": s.name,
                         "credentials": cred,
+                        "live_access_restriction": vapourfly_api::http::live_access_restriction(&s.name),
                         "last_success": s.last_success,
                         "cache_entries": s.cache_entries,
                         "stale_entries": s.stale_entries,

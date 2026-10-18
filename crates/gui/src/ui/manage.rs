@@ -79,7 +79,9 @@ fn credential_tag(signal: CredentialSignal) -> Tag {
     match signal {
         CredentialSignal::Configured => widgets::tone_tag(Tone::Success, signal.label()),
         CredentialSignal::Missing => widgets::tone_tag(Tone::Warning, signal.label()),
-        CredentialSignal::NotRequired => Tag::secondary().child(signal.label()),
+        CredentialSignal::NotRequired | CredentialSignal::CacheOnly => {
+            Tag::secondary().child(signal.label())
+        }
     }
 }
 
@@ -338,7 +340,7 @@ impl GuiRoot {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(div().flex_1().child("Source"))
-            .child(col(120.).child("Credentials"))
+            .child(col(120.).child("Access"))
             .child(col(90.).text_right().child("Entries"))
             .child(col(160.).child("Freshness"))
             .child(col(120.).child("Last updated"))
@@ -392,9 +394,19 @@ impl GuiRoot {
                                 .font_medium()
                                 .child(source_display_name(&id)),
                         )
-                        .when(!st.cache_dir_exists, |this| {
-                            this.child(widgets::caption("No cache on disk yet", cx))
-                        }),
+                        .when_some(
+                            vapourfly_api::http::live_access_restriction(&id),
+                            |this, _reason| {
+                                this.child(widgets::caption(
+                                    "Live refresh disabled; see API Sources",
+                                    cx,
+                                ))
+                            },
+                        )
+                        .when(
+                            !st.cache_dir_exists && signal != CredentialSignal::CacheOnly,
+                            |this| this.child(widgets::caption("No cache on disk yet", cx)),
+                        ),
                 )
                 .child(col(120.).flex().child(credential_tag(signal)))
                 .child(

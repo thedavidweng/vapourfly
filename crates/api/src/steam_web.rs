@@ -6,8 +6,8 @@
 //! (free, from <https://steamcommunity.com/dev/apikey>).
 //!
 //! One request returns every owned game's AppID + name, which resolves all
-//! placeholder names in seconds. Without a key, names backfill progressively
-//! from per-app Steam Store hydration instead.
+//! placeholder names in seconds. Without a key, existing per-app Steam Store
+//! caches may supply names; live Store fetching is disabled.
 
 use std::collections::HashMap;
 use std::time::Duration;

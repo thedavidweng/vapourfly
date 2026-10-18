@@ -918,7 +918,9 @@ pub(crate) enum CredentialSignal {
     Configured,
     /// IGDB/RAWG env credentials are missing.
     Missing,
-    /// Source never needs credentials (ProtonDB, PCGW, Steam Store).
+    /// Live access is disabled pending the audited provider requirements.
+    CacheOnly,
+    /// Source never needs credentials.
     NotRequired,
 }
 
@@ -928,6 +930,7 @@ impl CredentialSignal {
             CredentialSignal::Configured => "Configured",
             CredentialSignal::Missing => "Missing",
             CredentialSignal::NotRequired => "None needed",
+            CredentialSignal::CacheOnly => "Cache only",
         }
     }
 }
@@ -938,6 +941,9 @@ pub(crate) fn source_credential_signal(
     has_igdb: bool,
     has_rawg: bool,
 ) -> CredentialSignal {
+    if vapourfly_api::http::live_access_restriction(source_id).is_some() {
+        return CredentialSignal::CacheOnly;
+    }
     match source_id {
         "igdb" => {
             if has_igdb {
@@ -971,7 +977,7 @@ pub(crate) fn source_refresh_enabled(
         return false;
     }
     match source_credential_signal(source_id, has_igdb, has_rawg) {
-        CredentialSignal::Missing => false,
+        CredentialSignal::Missing | CredentialSignal::CacheOnly => false,
         CredentialSignal::Configured | CredentialSignal::NotRequired => true,
     }
 }
@@ -5789,11 +5795,11 @@ mod tests {
         );
         assert_eq!(
             source_credential_signal("protondb", false, false),
-            CredentialSignal::NotRequired
+            CredentialSignal::CacheOnly
         );
         assert_eq!(
             source_credential_signal("steam-store", false, false),
-            CredentialSignal::NotRequired
+            CredentialSignal::CacheOnly
         );
     }
 
@@ -5803,7 +5809,7 @@ mod tests {
         assert!(!source_refresh_enabled("protondb", true, true, false, true));
         assert!(!source_refresh_enabled("igdb", false, true, false, false));
         assert!(source_refresh_enabled("igdb", true, false, false, false));
-        assert!(source_refresh_enabled("pcgw", false, false, false, false));
+        assert!(!source_refresh_enabled("pcgw", false, false, false, false));
     }
 
     #[test]
