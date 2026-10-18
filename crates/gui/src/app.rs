@@ -3347,6 +3347,7 @@ impl VapourflyApp {
         self.loading
             || self.write_loading
             || self.cache_refresh_loading
+            || self.activity_loading
             || self.dry_run_loading
             || self.junk_preview_loading
             || self.recommend_loading
@@ -5961,6 +5962,13 @@ mod tests {
         let active = app.active_account().expect("fixture account");
         assert_eq!(active.persona_name, "Vapourfly Fixture");
         assert!(app.error.is_none());
+    }
+
+    #[test]
+    fn account_refresh_keeps_background_poll_alive() {
+        let mut app = VapourflyApp::new(None, true);
+        app.activity_loading = true;
+        assert!(app.has_background_work());
     }
 
     #[test]
