@@ -91,6 +91,16 @@ impl Cli {
             .ok_or_else(|| "no Steam directory detected".into())
     }
 
+    /// Resolve account and Steam directory settings with the same precedence
+    /// as the settings and GUI paths. Hidden fixtures remain an explicit CLI
+    /// override for tests.
+    fn resolved_config(&self) -> Result<VapourflyConfig, Box<dyn std::error::Error>> {
+        Ok(VapourflyConfig::from_cli_and_env(config::CliOverrides {
+            steam_dir: self.fixtures.clone().or_else(|| self.steam_dir.clone()),
+            account: self.account.clone(),
+        })?)
+    }
+
     /// Resolve the cloud storage path for the selected account.
     fn cloud_storage_path(&self) -> Result<PathBuf, Box<dyn std::error::Error>> {
         let steam_dir = self.resolve_steam_dir()?;
@@ -721,7 +731,8 @@ fn main() {
 }
 
 fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let steam_dir = cli.resolve_steam_dir().ok();
+    let resolved = cli.resolved_config().ok();
+    let steam_dir = resolved.as_ref().map(|config| config.steam_dir.clone());
 
     println!("Vapourfly Doctor");
     println!("================");
@@ -742,7 +753,13 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let accounts = steam::detect_accounts(dir).unwrap_or_default();
-            let selected = steam::select_account(&accounts, cli.account.as_deref()).ok();
+            let selected = steam::select_account(
+                &accounts,
+                resolved
+                    .as_ref()
+                    .and_then(|config| config.account.as_deref()),
+            )
+            .ok();
             println!("Accounts:      {} detected", accounts.len());
             if let Some(acc) = selected {
                 if cli.verbose {
@@ -844,10 +861,10 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn cmd_accounts_list(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let steam_dir = cli.resolve_steam_dir()?;
+    let resolved = cli.resolved_config()?;
 
-    let accounts = steam::detect_accounts(&steam_dir)?;
-    let selected = steam::select_account(&accounts, cli.account.as_deref()).ok();
+    let accounts = steam::detect_accounts(&resolved.steam_dir)?;
+    let selected = steam::select_account(&accounts, resolved.account.as_deref()).ok();
 
     for acc in &accounts {
         let marker = if Some(&acc.steam_id64) == selected.map(|s| &s.steam_id64) {
@@ -877,9 +894,9 @@ fn cmd_account_activity(
     refresh: bool,
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let steam_dir = cli.resolve_steam_dir()?;
-    let accounts = steam::detect_accounts(&steam_dir)?;
-    let selected = steam::select_account(&accounts, cli.account.as_deref())?;
+    let resolved = cli.resolved_config()?;
+    let accounts = steam::detect_accounts(&resolved.steam_dir)?;
+    let selected = steam::select_account(&accounts, resolved.account.as_deref())?;
     let cache = vapourfly_api::cache::DiskCache::new(vapourfly_core::config::default_cache_dir());
     let snapshot = if refresh {
         let control = vapourfly_api::activity::RefreshControl::default();

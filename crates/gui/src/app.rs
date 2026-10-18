@@ -3084,6 +3084,7 @@ impl VapourflyApp {
             .map(|account| account.steam_id64.clone());
         if self.activity_account_id != active_account_id {
             self.activity_account_id = active_account_id.clone();
+            self.activity_msg = None;
             self.activity_snapshot = active_account_id.as_deref().and_then(|id| {
                 match vapourfly_api::activity::load(
                     &vapourfly_api::cache::DiskCache::new(self.cache_dir.clone()),
@@ -3120,7 +3121,6 @@ impl VapourflyApp {
             if current != Some(expected.fingerprint) {
                 self.activity_loading = false;
                 self.activity_job_id = None;
-                self.activity_snapshot = None;
                 ACTIVITY_RESULT.clear();
             } else if let Some(result) = ACTIVITY_RESULT.take_if(expected) {
                 self.activity_loading = false;

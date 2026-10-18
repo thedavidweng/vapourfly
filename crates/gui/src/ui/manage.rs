@@ -345,10 +345,14 @@ impl GuiRoot {
 
         let activity_label = self
             .app
-            .activity_snapshot
-            .as_ref()
-            .map(|snapshot| format!("Activity: {}", snapshot.summary()))
-            .or_else(|| self.app.activity_msg.clone())
+            .activity_msg
+            .clone()
+            .or_else(|| {
+                self.app
+                    .activity_snapshot
+                    .as_ref()
+                    .map(|snapshot| format!("Activity: {}", snapshot.summary()))
+            })
             .unwrap_or_else(|| "Activity: no cached snapshot".into());
 
         let col = |w: f32| div().flex_none().w(px(w));

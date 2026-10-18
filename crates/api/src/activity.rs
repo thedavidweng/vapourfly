@@ -262,7 +262,17 @@ pub fn refresh(
     offline: bool,
     control: &RefreshControl,
 ) -> Result<Option<ActivitySnapshot>> {
-    let previous = load(cache, id)?;
+    validate_account(id)?;
+    let previous = match load(cache, id) {
+        Ok(snapshot) => snapshot,
+        Err(VapourflyError::ParseError { .. }) => None,
+        Err(VapourflyError::InvalidInput(reason))
+            if reason == "Activity cache account mismatch" =>
+        {
+            None
+        }
+        Err(error) => return Err(error),
+    };
     let Some(key) = api_key.filter(|key| !key.is_empty()) else {
         return Ok(previous);
     };
@@ -310,7 +320,8 @@ pub fn refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::{HttpResponse, MockBackend};
+    use crate::http::{HttpBackend, HttpResponse, MockBackend};
+    use std::sync::{Arc, atomic::AtomicUsize};
     use tempfile::TempDir;
 
     const FIRST: &str = "76561198000000001";
@@ -460,6 +471,81 @@ mod tests {
         let debug = format!("{request:?}");
         assert!(!debug.contains("secret"));
         assert!(!debug.contains("key="));
+    }
+
+    struct CountingBackend {
+        calls: Arc<AtomicUsize>,
+        response: HttpResponse,
+    }
+
+    impl HttpBackend for CountingBackend {
+        fn execute(&self, _request: &crate::http::HttpRequest) -> Result<HttpResponse> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(self.response.clone())
+        }
+    }
+
+    #[test]
+    fn refresh_makes_one_attempt_per_endpoint_without_retries() {
+        let (cache, _dir) = cache();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let client = HttpClient::with_backend(Box::new(CountingBackend {
+            calls: Arc::clone(&calls),
+            response: HttpResponse {
+                status: 429,
+                headers: Default::default(),
+                body: Vec::new(),
+            },
+        }));
+
+        let snapshot = refresh(
+            &cache,
+            &client,
+            Some("secret-key"),
+            FIRST,
+            false,
+            &RefreshControl::default(),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(snapshot.owned.availability, Availability::RateLimited);
+        assert_eq!(snapshot.recent.availability, Availability::RateLimited);
+    }
+
+    #[test]
+    fn invalid_cached_json_does_not_block_an_explicit_refresh() {
+        let (cache, _dir) = cache();
+        let path = cache.path_for(SOURCE, FIRST);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"not-json").unwrap();
+
+        let mut backend = MockBackend::new();
+        backend.register(
+            "https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/",
+            response(r#"{"response":{"game_count":0}}"#),
+        );
+        backend.register(
+            "https://api.steampowered.com/IPlayerService/GetRecentlyPlayedGames/v1/",
+            response(r#"{"response":{"total_count":0}}"#),
+        );
+        let snapshot = refresh(
+            &cache,
+            &HttpClient::with_backend(Box::new(backend)),
+            Some("key"),
+            FIRST,
+            false,
+            &RefreshControl::default(),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(snapshot.owned.availability, Availability::Empty);
+        assert_eq!(
+            load(&cache, FIRST).unwrap().unwrap().owned.availability,
+            Availability::Empty
+        );
     }
 
     #[test]

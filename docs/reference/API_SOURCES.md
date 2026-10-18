@@ -181,8 +181,10 @@ IGDB.
 **Endpoint:** `https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/`
 **Authentication:** User-created Steam Web API key
 
-Used only to resolve `"App <id>"` placeholder names when `appinfo.vdf` is
-missing (common on macOS). One request, cached for one day.
+Used for explicit account activity refreshes and, when needed, to resolve
+`"App <id>"` placeholder names when `appinfo.vdf` is missing (common on
+macOS). Activity refresh makes at most one request per documented endpoint;
+responses are cached for one day.
 
 ### Setup
 
@@ -201,6 +203,8 @@ never bundled with the app.
 
 Without a key, existing Steam Store caches may resolve names; fresh Store fetching is disabled.
 
+The remaining name-keyed source (RAWG) skips placeholder-named games.
+
 ### Account activity snapshots
 
 `accounts activity refresh` is an explicit, bounded operation. It uses the
@@ -217,7 +221,8 @@ payloads, incomplete payloads and transport/HTTP failures. Failed refreshes
 retain the last valid game rows and fetched timestamp while reporting the
 failure state. Request URLs and diagnostics never retain or print the key.
 
-Inspect without network access:
+The status command reads the cached snapshot without network access. The
+refresh command is explicit and may make at most one request per endpoint:
 
 ```bash
 vapourfly accounts activity status --account <steamid64>
@@ -227,7 +232,6 @@ vapourfly accounts activity refresh --account <steamid64>
 No real key or device sign-in is required by tests or local cache workflows;
 provider permission and private-profile behavior remain real-account
 acceptance boundaries.
-The remaining name-keyed source (RAWG) skips placeholder-named games.
 
 ## Caching
 
