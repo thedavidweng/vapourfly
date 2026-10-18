@@ -976,7 +976,7 @@ fn cmd_achievements(
             "{}",
             progress.as_ref().map_or_else(
                 || "Steam achievements: unknown / not fetched".into(),
-                |p| p.summary()
+                achievement_table_summary
             )
         ),
         OutputFormat::Json => {
@@ -989,6 +989,40 @@ fn cmd_achievements(
         }
     }
     Ok(())
+}
+
+fn achievement_table_summary(progress: &vapourfly_api::achievements::Progress) -> String {
+    let percentage = match (progress.status, progress.unlocked, progress.total) {
+        (vapourfly_api::achievements::Status::Available, Some(unlocked), Some(total))
+            if total > 0 =>
+        {
+            format!("{:.1}%", 100.0 * f64::from(unlocked) / f64::from(total))
+        }
+        _ => "percentage unknown".into(),
+    };
+    let freshness = if matches!(
+        progress.status,
+        vapourfly_api::achievements::Status::Available
+            | vapourfly_api::achievements::Status::NoAchievements
+    ) && progress.fetched_at.is_some_and(|time| {
+        chrono::Utc::now().signed_duration_since(time).num_seconds() <= 24 * 60 * 60
+    }) {
+        "fresh"
+    } else {
+        "stale/limited"
+    };
+    format!(
+        "Steam achievements: {:?}; {}/{}; {}; {} (user-key API)",
+        progress.status,
+        progress
+            .unlocked
+            .map_or_else(|| "?".into(), |count| count.to_string()),
+        progress
+            .total
+            .map_or_else(|| "?".into(), |count| count.to_string()),
+        percentage,
+        freshness,
+    )
 }
 
 fn cmd_account_activity(
