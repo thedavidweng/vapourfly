@@ -256,6 +256,7 @@ static WRITE_RESULT: JobSlot<String> = JobSlot::new();
 static ENRICH_RESULT: JobSlot<vapourfly_api::enrichment::EnrichmentSummary> = JobSlot::new();
 static ACTIVITY_RESULT: JobSlot<Result<Option<vapourfly_api::activity::ActivitySnapshot>, String>> =
     JobSlot::new();
+static ACHIEVEMENT_RESULT: JobSlot<Option<vapourfly_api::achievements::Progress>> = JobSlot::new();
 static DRY_RUN_RESULT: JobSlot<vapourfly_core::write::PreviewedPlan> = JobSlot::new();
 static JUNK_PREVIEW_RESULT: JobSlot<Vec<JunkDecision>> = JobSlot::new();
 static RECOMMEND_RESULT: JobSlot<Vec<Recommendation>> = JobSlot::new();
@@ -470,6 +471,10 @@ pub(crate) struct VapourflyApp {
     pub(crate) activity_loading: bool,
     pub(crate) activity_msg: Option<String>,
     activity_account_id: Option<String>,
+    pub(crate) achievement_progress: HashMap<u32, vapourfly_api::achievements::Progress>,
+    pub(crate) achievement_msg: Option<String>,
+    achievement_job_id: Option<JobTicket>,
+    achievement_control: vapourfly_api::activity::RefreshControl,
 
     // Backups (listed under Settings; not a top-level view)
     pub(crate) backups: Vec<BackupInfo>,
@@ -1263,6 +1268,10 @@ impl VapourflyApp {
             activity_loading: false,
             activity_msg: None,
             activity_account_id: None,
+            achievement_progress: HashMap::new(),
+            achievement_msg: None,
+            achievement_job_id: None,
+            achievement_control: Default::default(),
 
             backups: Vec::new(),
 
@@ -2293,6 +2302,75 @@ impl VapourflyApp {
         });
     }
 
+    pub(crate) fn inspect_achievements(&mut self, app_id: u32) {
+        self.achievement_control.cancel();
+        self.achievement_job_id = None;
+        self.achievement_msg = None;
+        let Some(id) = self.active_account().map(|a| a.steam_id64.clone()) else {
+            self.achievement_msg = Some("Select a matching Steam account.".into());
+            return;
+        };
+        let cache = vapourfly_api::cache::DiskCache::new(self.cache_dir.clone());
+        match vapourfly_api::achievements::load(&cache, &id, app_id) {
+            Ok(Some(progress)) => {
+                self.achievement_progress.insert(app_id, progress);
+            }
+            Ok(None) => {
+                self.achievement_progress.remove(&app_id);
+            }
+            Err(error) => {
+                self.achievement_msg = Some(format!("Achievement cache unavailable: {error}"));
+                return;
+            }
+        }
+        if self.ui_demo
+            || self.offline_mode
+            || self
+                .achievement_progress
+                .get(&app_id)
+                .is_some_and(|p| !p.stale())
+        {
+            return;
+        }
+        let Some(key) = self.config.as_ref().and_then(|c| c.steam_api_key.clone()) else {
+            self.achievement_msg = Some("No Steam Web API key; cached evidence only.".into());
+            return;
+        };
+        let ticket = self.job_runner.next_ticket(WorkflowKind::Achievements, &id);
+        let control = vapourfly_api::activity::RefreshControl::default();
+        self.achievement_control = control.clone();
+        self.achievement_job_id = Some(ticket);
+        let repaint = self.repaint.clone();
+        std::thread::spawn(move || {
+            let result = vapourfly_api::achievements::refresh(
+                &cache,
+                &vapourfly_api::http::HttpClient::new(),
+                Some(&key),
+                &id,
+                app_id,
+                false,
+                &control,
+            )
+            .map_err(|e| e.to_string());
+            ACHIEVEMENT_RESULT.set(ticket, result);
+            repaint.request();
+        });
+    }
+
+    pub(crate) fn achievement_summary(&self, app_id: u32) -> String {
+        let summary = self.achievement_progress.get(&app_id).map_or_else(
+            || "Steam achievements: unknown / not fetched".into(),
+            |p| p.summary(),
+        );
+        if self.achievement_job_id.is_some() {
+            format!("{summary}; loading")
+        } else if let Some(message) = &self.achievement_msg {
+            format!("{summary}; {message}")
+        } else {
+            summary
+        }
+    }
+
     /// Start the automatic background populate after a scan (ADR-0009):
     /// fetch missing/stale entries only, once per launch. Silent no-op in
     /// demo/offline mode or when a job is already running — the library is
@@ -3083,6 +3161,10 @@ impl VapourflyApp {
             .active_account()
             .map(|account| account.steam_id64.clone());
         if self.activity_account_id != active_account_id {
+            self.achievement_control.cancel();
+            self.achievement_job_id = None;
+            self.achievement_progress.clear();
+            self.achievement_msg = None;
             self.activity_account_id = active_account_id.clone();
             self.activity_msg = None;
             self.activity_snapshot = active_account_id.as_deref().and_then(|id| {
@@ -3128,6 +3210,23 @@ impl VapourflyApp {
                     Err(error) => {
                         self.activity_msg = Some(format!("Account refresh failed: {error}"));
                     }
+                }
+            }
+        }
+
+        if let Some(ticket) = self.achievement_job_id
+            && let Some(result) = ACHIEVEMENT_RESULT.take_if(ticket)
+        {
+            self.achievement_job_id = None;
+            match result {
+                Ok(Some(progress))
+                    if Some(progress.steam_id64.as_str()) == active_account_id.as_deref() =>
+                {
+                    self.achievement_progress.insert(progress.app_id, progress);
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    self.achievement_msg = Some(format!("Achievements unavailable: {error}"));
                 }
             }
         }
@@ -3348,6 +3447,7 @@ impl VapourflyApp {
             || self.write_loading
             || self.cache_refresh_loading
             || self.activity_loading
+            || self.achievement_job_id.is_some()
             || self.dry_run_loading
             || self.junk_preview_loading
             || self.recommend_loading
@@ -5969,6 +6069,55 @@ mod tests {
         let mut app = VapourflyApp::new(None, true);
         app.activity_loading = true;
         assert!(app.has_background_work());
+    }
+
+    #[test]
+    #[serial]
+    fn achievement_account_switch_discards_old_result() {
+        let mut app = VapourflyApp::new(None, true);
+        app.populate_demo_data();
+        app.detected_accounts = vec![
+            SteamAccount {
+                steam_id64: "76561198000000001".into(),
+                account_name: "alpha".into(),
+                persona_name: "Alpha".into(),
+                most_recent: true,
+            },
+            SteamAccount {
+                steam_id64: "76561198000000002".into(),
+                account_name: "bravo".into(),
+                persona_name: "Bravo".into(),
+                most_recent: false,
+            },
+        ];
+        app.config.as_mut().unwrap().account = Some("alpha".into());
+        app.tick();
+        let control = vapourfly_api::activity::RefreshControl::default();
+        app.achievement_control = control.clone();
+        let ticket = app
+            .job_runner
+            .next_ticket(WorkflowKind::Achievements, "76561198000000001");
+        app.achievement_job_id = Some(ticket);
+        ACHIEVEMENT_RESULT.set(
+            ticket,
+            Ok(Some(vapourfly_api::achievements::Progress {
+                steam_id64: "76561198000000001".into(),
+                app_id: 10,
+                status: vapourfly_api::achievements::Status::Available,
+                total: Some(1),
+                unlocked: Some(1),
+                unlocks: Default::default(),
+                checked_at: chrono::Utc::now(),
+                fetched_at: Some(chrono::Utc::now()),
+            })),
+        );
+        app.config.as_mut().unwrap().account = Some("bravo".into());
+        app.tick();
+        assert!(app.achievement_progress.is_empty());
+        assert!(app.achievement_job_id.is_none());
+        assert!(control.check().is_err());
+        assert!(app.achievement_summary(10).contains("unknown"));
+        ACHIEVEMENT_RESULT.clear();
     }
 
     #[test]

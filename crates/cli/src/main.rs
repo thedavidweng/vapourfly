@@ -263,6 +263,15 @@ enum Commands {
 enum AccountsAction {
     /// List detected accounts.
     List,
+    /// Inspect cached official achievement progress for an owned AppID.
+    Achievements {
+        app_id: u32,
+        /// Explicitly refresh; at most one schema and one player request.
+        #[arg(long)]
+        refresh: bool,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Refresh or inspect the selected account's cached activity snapshot.
     Activity {
         #[command(subcommand)]
@@ -599,6 +608,11 @@ fn main() {
         Commands::Doctor => cmd_doctor(&cli),
         Commands::Accounts { action } => match action {
             AccountsAction::List => cmd_accounts_list(&cli),
+            AccountsAction::Achievements {
+                app_id,
+                refresh,
+                format,
+            } => cmd_achievements(&cli, *app_id, *refresh, *format),
             AccountsAction::Activity { action } => match action {
                 ActivityAction::Refresh { format } => cmd_account_activity(&cli, true, *format),
                 ActivityAction::Status { format } => cmd_account_activity(&cli, false, *format),
@@ -924,6 +938,57 @@ fn section_status(section: &vapourfly_api::activity::ActivitySection) -> String 
         "fresh"
     };
     format!("{availability}; {freshness}")
+}
+
+fn cmd_achievements(
+    cli: &Cli,
+    app_id: u32,
+    refresh: bool,
+    format: OutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resolved = cli.resolved_config()?;
+    let accounts = steam::detect_accounts(&resolved.steam_dir)?;
+    let account = steam::select_account(&accounts, resolved.account.as_deref())?;
+    let scan = steam::scan_library(&steam::ScanOptions {
+        steam_dir: resolved.steam_dir.clone(),
+        account: Some(account.steam_id64.clone()),
+        fixtures: cli.fixtures.clone(),
+    })?;
+    if !scan.games.iter().any(|g| g.app_id == app_id) {
+        return Err("AppID is not in the selected account's local Library".into());
+    }
+    let cache = vapourfly_api::cache::DiskCache::new(resolved.cache_root);
+    let progress = if refresh {
+        vapourfly_api::achievements::refresh(
+            &cache,
+            &vapourfly_api::http::HttpClient::new(),
+            resolved.steam_api_key.as_deref(),
+            &account.steam_id64,
+            app_id,
+            cli.offline,
+            &vapourfly_api::activity::RefreshControl::default(),
+        )?
+    } else {
+        vapourfly_api::achievements::load(&cache, &account.steam_id64, app_id)?
+    };
+    match format {
+        OutputFormat::Table => println!(
+            "{}",
+            progress.as_ref().map_or_else(
+                || "Steam achievements: unknown / not fetched".into(),
+                |p| p.summary()
+            )
+        ),
+        OutputFormat::Json => {
+            let output = progress.as_ref().map(|p| serde_json::json!({
+                "app_id": p.app_id, "status": p.status, "total": p.total, "unlocked": p.unlocked,
+                "percentage": p.percentage(), "perfected": p.perfected(), "stale": p.stale(),
+                "checked_at": p.checked_at, "fetched_at": p.fetched_at, "source": "Steam user-key API",
+            }));
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+    }
+    Ok(())
 }
 
 fn cmd_account_activity(

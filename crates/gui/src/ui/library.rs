@@ -308,6 +308,8 @@ impl GuiRoot {
 
     pub(super) fn open_game_sheet(&mut self, id: u32, window: &mut Window, cx: &mut Context<Self>) {
         self.app.library_selected_app_id = Some(id);
+        self.app.inspect_achievements(id);
+        self.arm_poll(cx);
         cx.notify();
         let entity = cx.entity();
         window.open_sheet(cx, move |sheet, _, cx| {
@@ -465,6 +467,7 @@ impl GuiRoot {
                         1,
                     )
                     .item("Last played", last_played, 1)
+                    .item("Achievements", self.app.achievement_summary(id), 2)
                     .item(
                         "Time to beat",
                         hltb_minutes(game).map_or_else(|| "—".to_string(), format_playtime),
