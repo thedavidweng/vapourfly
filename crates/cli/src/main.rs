@@ -761,19 +761,8 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
             )
             .ok();
             println!("Accounts:      {} detected", accounts.len());
-            if let Some(acc) = selected {
-                if cli.verbose {
-                    println!(
-                        "Selected:      {} ({}) [{}]",
-                        acc.persona_name, acc.account_name, acc.steam_id64
-                    );
-                } else {
-                    println!(
-                        "Selected:      {} (***) [{}]",
-                        acc.persona_name,
-                        format::mask_id(&acc.steam_id64)
-                    );
-                }
+            if selected.is_some() {
+                println!("Selected:      account detected");
             }
 
             let folders = steam::detect_library_folders(dir).unwrap_or_default();
@@ -796,7 +785,10 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                     vapourfly_core::config::default_cache_dir(),
                 );
                 match vapourfly_api::activity::load(&cache, &acc.steam_id64) {
-                    Ok(Some(snapshot)) => println!("Activity:      {}", snapshot.summary()),
+                    Ok(Some(snapshot)) => {
+                        println!("Activity:      cached snapshot");
+                        println!("Activity:      {}", snapshot.summary());
+                    }
                     Ok(None) => println!("Activity:      no cached snapshot"),
                     Err(error) => println!("Activity:      cache unavailable ({error})"),
                 }
@@ -889,6 +881,23 @@ fn cmd_accounts_list(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn activity_json(
+    snapshot: &vapourfly_api::activity::ActivitySnapshot,
+) -> Result<String, serde_json::Error> {
+    let mut value = serde_json::to_value(snapshot)?;
+    let serde_json::Value::Object(ref mut object) = value else {
+        unreachable!("ActivitySnapshot always serializes as an object");
+    };
+    object.insert(
+        "freshness".into(),
+        serde_json::json!({
+            "owned": if snapshot.owned.stale() { "stale/limited" } else { "fresh" },
+            "recent": if snapshot.recent.stale() { "stale/limited" } else { "fresh" },
+        }),
+    );
+    serde_json::to_string_pretty(&value)
+}
+
 fn cmd_account_activity(
     cli: &Cli,
     refresh: bool,
@@ -916,10 +925,10 @@ fn cmd_account_activity(
     };
     match format {
         OutputFormat::Table => {
-            println!("Account: {}", format::mask_id(&snapshot.steam_id64));
+            println!("Account activity snapshot:");
             println!("{}", snapshot.summary());
         }
-        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&snapshot)?),
+        OutputFormat::Json => println!("{}", activity_json(&snapshot)?),
     }
     Ok(())
 }
