@@ -89,7 +89,7 @@ The compiled playlist is a normal rule-based playlist file:
 ```
 
 (Excerpt: the compiled file contains all 6 rules -- `ControllerSupportFull`
-and an HLTB session-length bound follow.)
+and an effective completion-time bound follow.)
 
 There is also a `finish-it` template for chipping away at nearly-finished
 games, and seven curated Editorial Moods (`vapourfly collections mood`).

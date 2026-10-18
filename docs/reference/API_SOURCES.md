@@ -10,7 +10,7 @@ Vapourfly enriches your Steam library with metadata from external data sources. 
 | **RAWG** | API key | Genres, tags, ratings (0-5), store availability | Large database with community-sourced data. |
 | **ProtonDB** | None | Compatibility tier (Borked/Native/Platinum/Gold/Silver/Bronze), confidence, score | Community-reported Linux/Steam Deck compatibility. |
 | **PCGamingWiki** | None | Controller support (Full/Partial/None), fixes URL | MediaWiki Cargo API. Steam Deck notes come from ProtonDB. |
-| **HLTB** | None | Main story time, main + extras time, completionist time | Enabled in the default build (`hltb_scrape`). |
+| **Legacy HLTB cache** | None | Previously cached main story, main + extras, and completionist times | Read-only compatibility data; never fetched or refreshed. |
 | **Steam Store** | None | App name, type, description, developers, publishers, genres, categories, price, platforms, Metacritic score | Public Steam Store API. |
 | **Steam Web API** | User-created key | Owned-game AppID → name map | One cached `GetOwnedGames` request. Optional; names otherwise backfill from Steam Store. |
 
@@ -106,20 +106,22 @@ ProtonDB data is useful for Steam Deck and Linux compatibility filtering:
 
 Steam Deck compatibility is taken from ProtonDB, not PCGW.
 
-## HLTB (HowLongToBeat)
+## Completion time
 
-**Source:** `howlongtobeat.com` (`bleed` endpoints)
-**Authentication:** None
-**Feature:** `hltb_scrape` (enabled by default; omit with `--no-default-features`)
+Vapourfly's supported live completion-time source is the documented IGDB
+`game_time_to_beats` endpoint, available when IGDB credentials are configured.
+The `normally` value is used for time-dependent workflows and remains marked
+as `IgdbGameTimeToBeat` in the model. Explicit manual overrides take priority.
 
-Time-to-beat data is also available through IGDB when IGDB credentials are
-configured.
-
-### Data Used
-
-- **Main Story** -- Average time to complete the main story (seconds)
-- **Main + Extras** -- Main story plus significant side content
-- **Completionist** -- 100% completion time
+Previously cached HLTB records remain readable under the `hltb` cache namespace
+and retain `HltbScrape` provenance. They are legacy compatibility data: the
+application never calls HLTB endpoints, does not refresh that namespace, and
+does not list it in CLI or GUI source controls. If no cached legacy value or
+documented IGDB value exists, completion-time workflows treat the signal as
+unknown rather than translating another duration field. While a legacy record
+exists, it remains the preferred completion value; removing that local cache
+record allows the documented IGDB value to be used on the next refresh without
+rewriting or silently reinterpreting the HLTB record.
 
 ### Use in Playlists and Junk Detection
 
@@ -127,7 +129,9 @@ configured.
 { "op": "HltbMaxMinutes", "args": { "minutes": 600 } }
 ```
 
-Junk detection uses the main story time to identify short games that the user has not played.
+The completion-time rule uses the supported precedence above. Legacy HLTB data
+is still useful when present, while new live data is explicitly attributed to
+IGDB.
 
 ## Steam Store
 
@@ -172,7 +176,7 @@ The environment variable overrides the config file. `settings show` and
 never bundled with the app.
 
 Without a key, names backfill progressively from Steam Store hydration.
-Name-keyed sources (HLTB, RAWG) skip placeholder-named games.
+The remaining name-keyed source (RAWG) skips placeholder-named games.
 
 ## Caching
 
@@ -212,7 +216,7 @@ When multiple sources provide the same data, Vapourfly uses this priority order:
 - **Ratings:** RAWG (native 0-5) > IGDB (0-100, converted to 0-5) > Manual override
 - **Genres:** IGDB + RAWG (union of both)
 - **Tags:** RAWG tags + IGDB keywords + IGDB themes + Steam collections (union)
-- **Completion time:** Manual override > HLTB (if the scrape client is compiled in) > IGDB time-to-beat
+- **Completion time:** Manual override > cached legacy HLTB > IGDB `normally` time-to-beat
 
 ## Graceful Degradation
 

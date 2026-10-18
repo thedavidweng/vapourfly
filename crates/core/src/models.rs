@@ -121,8 +121,8 @@ pub struct Game {
 impl Game {
     /// True when the scan could not resolve a real name and fell back to
     /// `"App <id>"` (no appmanifest, librarycache, or appinfo.vdf source —
-    /// common on machines with no games installed). Name-keyed lookups
-    /// (HLTB, RAWG) are meaningless for such games; Steam Store hydration
+    /// common on machines with no games installed). Name-keyed RAWG lookups
+    /// are meaningless for such games; Steam Store hydration
     /// backfills the real name by AppID.
     pub fn has_placeholder_name(&self) -> bool {
         self.name == format!("App {}", self.app_id)

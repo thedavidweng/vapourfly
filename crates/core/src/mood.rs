@@ -7,7 +7,7 @@
 //! evaluated against the current library.
 //!
 //! Criteria are computable from Vapourfly's available data: Steam Store,
-//! IGDB, RAWG, ProtonDB, PCGW, HLTB, and local playtime. A game that lacks
+//! IGDB, RAWG, ProtonDB, PCGW, completion-time data, and local playtime. A game that lacks
 //! the data needed by a mood's criteria is simply excluded — moods never
 //! fail, they just produce shorter lists when data is sparse.
 

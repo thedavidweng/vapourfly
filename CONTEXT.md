@@ -46,7 +46,7 @@ behind each template. The canonical templates are `deck-session` and
 `finish-it`. `deck-session` emits a rule Playlist (Installed + NotHidden +
 NotJunk + ProtonAtLeast Gold + ControllerSupportFull + HltbMaxMinutes);
 `finish-it` evaluates the library and emits an explicit-AppID Playlist (games
-whose playtime is 0.5–1.25× HLTB main story).
+whose playtime is 0.5–1.25× the effective completion time).
 
 A Dynamic Template is not itself a Playlist or a Collection. It is a generator.
 
@@ -59,8 +59,8 @@ evocative names; the underlying logic is Vapourfly's editorial judgment, not a
 user-configured filter.
 
 The seven canonical Editorial Moods, each backed by criteria computable from
-Vapourfly's available data (Steam Store, IGDB, RAWG, ProtonDB, PCGW, HLTB,
-local playtime). Names are canonical English; localized display names (e.g.
+Vapourfly's available data (Steam Store, IGDB, RAWG, ProtonDB, PCGW,
+legacy HLTB cache, local playtime). Names are canonical English; localized display names (e.g.
 Chinese) are a UI/localization concern, not part of the domain model:
 
 | Canonical name | Hidden criteria |
@@ -68,10 +68,10 @@ Chinese) are a UI/localization concern, not part of the domain model:
 | Today's Biggest Hits | Owned games currently on sale (`discount_percent > 0`). Games without Steam Store price data are excluded. |
 | Indie Rising | Indie (IGDB theme / Steam Store type) + high rating + recent |
 | Friday Party | Steam Store categories: Co-op / Local Multiplayer / Party |
-| Deck Guardians | ProtonDB Platinum/Gold + full controller + short HLTB |
+| Deck Guardians | ProtonDB Platinum/Gold + full controller + short completion time |
 | Unopened Treasures | Unplayed + high rating + not junk |
-| Weekend Marathon | Unplayed + long HLTB + high rating |
-| Quick Round | Unplayed + short HLTB + not junk |
+| Weekend Marathon | Unplayed + long completion time + high rating |
+| Quick Round | Unplayed + short completion time + not junk |
 
 An Editorial Mood compiles to a Playlist (manual AppID list, evaluated against
 the current library). It is a generator, like a Dynamic Template, but the
@@ -105,8 +105,9 @@ separate domain artifact type. See [ADR-0007](docs/adr/0007-generator-playlist-s
 
 A single Steam application **owned by the user** as Vapourfly models it:
 AppID, name, type, install state, playtime, Steam collection membership,
-hidden flag, junk flag, and optional enriched external data (HLTB, IGDB,
-RAWG, ProtonDB, PCGW, Steam Store).
+hidden flag, junk flag, and optional enriched external data (completion time,
+IGDB, RAWG, ProtonDB, PCGW, Steam Store). Existing HLTB values are legacy
+cache records and retain their original provenance.
 
 **Unowned games are not first-class entities.** Vapourfly's scope is the
 user's own library. Games the user does not own appear only in the playlist
@@ -119,7 +120,7 @@ playlist match report.
 ### Junk
 
 A classification applied to a Game indicating the user is unlikely to play it.
-Evaluated from three signals — **playtime**, **completion time** (HLTB),
+Evaluated from three signals — **playtime**, **effective completion time**,
 **rating** (RAWG/IGDB) — under one of three modes:
 
 - **Default**: low playtime + at least one other low signal + at least
@@ -132,8 +133,9 @@ Evaluated from three signals — **playtime**, **completion time** (HLTB),
   data count.
 
 Default is the canonical mode. A hard AND of all three signals is not used —
-it fails to classify most games because HLTB and RAWG coverage is incomplete.
-Manual overrides (`force_include`, `force_exclude`, manual HLTB, manual rating)
+it fails to classify most games because completion-time and RAWG coverage is
+incomplete. Manual overrides (`force_include`, `force_exclude`, manual
+completion time, manual rating)
 take precedence over signals. A Junk decision is explainable: it carries
 matched signals, missing signals, and a confidence score (fraction of signals
 available). A Game's junk flag is a derived, explainable decision — not a
@@ -146,12 +148,14 @@ engine from the current library. Seven weighted signals combine additively:
 
 - `low_playtime` (+2.0): playtime under 120 min.
 - `deck_compatible` (Native +2.0 / Platinum +1.5 / Gold +1.0, deck mode only).
-- `time_match` (+1.5): a known main-story completion time (HLTB, falling back
-  to IGDB time-to-beat) fits the requested session length.
+- `time_match` (+1.5): a known effective completion time fits the requested
+  session length. New live values use IGDB time-to-beat; cached HLTB values
+  remain readable as legacy data.
 - `high_rating` (+1.0): RAWG ≥ 4.0 or IGDB ≥ 80.
 - `taste_similarity` (+1.0): keyword overlap with the user's taste vector > 5%.
 - `recently_played_penalty` (−1.0): played within 14 days.
-- `likely_finished_penalty` (−0.5): playtime exceeds 1.5× HLTB main story.
+- `likely_finished_penalty` (−0.5): playtime exceeds 1.5× the effective
+  completion time.
 
 Junk and hidden games are filtered out before scoring, not penalised. Optional
 seed makes selection deterministic via SplitMix64 perturbation.
@@ -164,8 +168,9 @@ user can see *why* each game scored the way it did.
 
 ### Hydration
 
-The process of loading external metadata (HLTB, IGDB, RAWG, ProtonDB, PCGW,
-Steam Store) onto Game records before a workflow evaluates them. Two phases
+The process of loading external metadata (IGDB, RAWG, ProtonDB, PCGW, Steam
+Store, and legacy HLTB cache records) onto Game records before a workflow
+evaluates them. Two phases
 exist in the code:
 
 - **Populate** — fetches from the network and writes to the local disk cache

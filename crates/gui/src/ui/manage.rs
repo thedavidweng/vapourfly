@@ -79,9 +79,7 @@ fn credential_tag(signal: CredentialSignal) -> Tag {
     match signal {
         CredentialSignal::Configured => widgets::tone_tag(Tone::Success, signal.label()),
         CredentialSignal::Missing => widgets::tone_tag(Tone::Warning, signal.label()),
-        CredentialSignal::NotRequired | CredentialSignal::Optional => {
-            Tag::secondary().child(signal.label())
-        }
+        CredentialSignal::NotRequired => Tag::secondary().child(signal.label()),
     }
 }
 

@@ -184,7 +184,7 @@ fn any_eq_ci(items: &[String], lower: &str) -> bool {
 /// Returns `true` if the game matches, `false` otherwise.
 ///
 /// **Fail-closed for positive predicates**: when the data a predicate needs
-/// is absent (e.g. no HLTB data for `HltbMaxMinutes`), the predicate returns
+/// is absent (e.g. no completion time for `HltbMaxMinutes`), the predicate returns
 /// `false`.
 ///
 /// **Pass-through for negated predicates**: `Not(rule)` inverts the result,

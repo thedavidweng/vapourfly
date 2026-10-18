@@ -56,9 +56,10 @@ by the [trademark policy](TRADEMARKS.md).
 
 ### Data sources
 
-- Metadata from Steam Store, ProtonDB, PCGamingWiki, and HowLongToBeat
-  without credentials, plus IGDB and RAWG with your own API keys. An optional
-  Steam Web API key resolves all owned-game names in one request.
+- Metadata from Steam Store, ProtonDB, PCGamingWiki, and legacy HLTB cache
+  records without credentials, plus documented IGDB time-to-beat and RAWG with
+  your own API keys. An optional Steam Web API key resolves all owned-game
+  names in one request. HLTB is no longer fetched or refreshed.
 - Cache-first hydration (ADR-0009): commands render from the local cache
   immediately, and missing entries are filled by `cache refresh`,
   `scan --enrich`, or the GUI background job. `--offline` blocks all network

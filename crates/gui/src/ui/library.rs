@@ -26,6 +26,7 @@ use gpui_kit::{
     linear_color_stop, linear_gradient, list, prelude::*, px, rgb, uniform_list,
 };
 use vapourfly_core::models::{ControllerSupport, Game, JunkMode, ProtonTier};
+use vapourfly_core::signal;
 
 use super::controller::CardScope;
 use super::widgets::{self, PAGE_PX};
@@ -115,10 +116,7 @@ fn played_label(game: &Game) -> String {
 }
 
 fn hltb_minutes(game: &Game) -> Option<u32> {
-    game.hltb
-        .as_ref()
-        .and_then(|h| h.main_story_seconds)
-        .map(|s| s / 60)
+    signal::main_story_seconds(game).map(|s| s / 60)
 }
 
 fn genres(game: &Game) -> Vec<String> {

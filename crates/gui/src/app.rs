@@ -20,6 +20,7 @@ use vapourfly_core::mood::{self, EditorialMood};
 use vapourfly_core::playlist;
 use vapourfly_core::playlist_store;
 use vapourfly_core::recommend::recommend;
+use vapourfly_core::signal;
 use vapourfly_core::steam::BackupInfo;
 use vapourfly_core::steam::backup::list_backups;
 #[cfg(test)]
@@ -692,20 +693,7 @@ pub(crate) fn game_matches_library_filters(game: &Game, filters: &LibraryFilters
             return false;
         }
     }
-    // Prefer the canonical, normalized HLTB main_story_seconds; fall back
-    // to the raw IGDB time_to_beat.normally_seconds for games without HLTB.
-    let completion_minutes = || {
-        game.hltb
-            .as_ref()
-            .and_then(|h| h.main_story_seconds)
-            .or_else(|| {
-                game.igdb
-                    .as_ref()
-                    .and_then(|i| i.time_to_beat.as_ref())
-                    .and_then(|t| t.normally_seconds)
-            })
-            .map(|secs| secs / 60)
-    };
+    let completion_minutes = || signal::main_story_seconds(game).map(|secs| secs / 60);
     if let Some(max_minutes) = filters.hltb_max_minutes
         && completion_minutes().is_none_or(|m| m > max_minutes)
     {
@@ -756,16 +744,8 @@ pub(crate) fn project_library_games(games: &[Game], filters: &LibraryFilters) ->
             .cmp(&a.playtime_minutes.unwrap_or(0))
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
         LibrarySort::Hltb => {
-            let ha = a
-                .hltb
-                .as_ref()
-                .and_then(|h| h.main_story_seconds)
-                .unwrap_or(0);
-            let hb = b
-                .hltb
-                .as_ref()
-                .and_then(|h| h.main_story_seconds)
-                .unwrap_or(0);
+            let ha = signal::main_story_seconds(a).unwrap_or(0);
+            let hb = signal::main_story_seconds(b).unwrap_or(0);
             hb.cmp(&ha)
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         }
@@ -926,7 +906,6 @@ pub(crate) fn source_display_name(source_id: &str) -> &'static str {
         "rawg" => "RAWG",
         "protondb" => "ProtonDB",
         "pcgw" => "PCGW",
-        "hltb" => "HLTB",
         "steam-store" => "Steam Store",
         _ => "Unknown",
     }
@@ -941,8 +920,6 @@ pub(crate) enum CredentialSignal {
     Missing,
     /// Source never needs credentials (ProtonDB, PCGW, Steam Store).
     NotRequired,
-    /// HLTB is optional / feature-gated — not a hard credential failure.
-    Optional,
 }
 
 impl CredentialSignal {
@@ -951,7 +928,6 @@ impl CredentialSignal {
             CredentialSignal::Configured => "Configured",
             CredentialSignal::Missing => "Missing",
             CredentialSignal::NotRequired => "None needed",
-            CredentialSignal::Optional => "Optional",
         }
     }
 }
@@ -977,7 +953,6 @@ pub(crate) fn source_credential_signal(
                 CredentialSignal::Missing
             }
         }
-        "hltb" => CredentialSignal::Optional,
         "protondb" | "pcgw" | "steam-store" => CredentialSignal::NotRequired,
         _ => CredentialSignal::NotRequired,
     }
@@ -997,9 +972,7 @@ pub(crate) fn source_refresh_enabled(
     }
     match source_credential_signal(source_id, has_igdb, has_rawg) {
         CredentialSignal::Missing => false,
-        CredentialSignal::Configured
-        | CredentialSignal::NotRequired
-        | CredentialSignal::Optional => true,
+        CredentialSignal::Configured | CredentialSignal::NotRequired => true,
     }
 }
 
@@ -1877,7 +1850,6 @@ impl VapourflyApp {
             status("igdb", 22, 1, Some(5)),
             status("protondb", 24, 3, Some(30)),
             status("pcgw", 18, 0, Some(26)),
-            status("hltb", 16, 6, Some(170)),
             status("rawg", 0, 0, None),
         ];
         self.has_igdb = true;
@@ -3911,11 +3883,7 @@ impl From<&Game> for GameSummary {
     fn from(g: &Game) -> Self {
         Self {
             playtime_minutes: g.playtime_minutes.unwrap_or(0),
-            hltb_minutes: g
-                .hltb
-                .as_ref()
-                .and_then(|h| h.main_story_seconds)
-                .map(|s| s / 60),
+            hltb_minutes: signal::main_story_seconds(g).map(|s| s / 60),
             rating_0_5: g.rawg.as_ref().and_then(|r| r.rating_0_5),
             proton_tier: g.protondb.as_ref().map(|p| p.tier),
         }
@@ -3968,13 +3936,8 @@ pub(crate) fn playlist_avg_hltb(
     let lookup: HashMap<u32, &Game> = games.iter().map(|g| (g.app_id, g)).collect();
     let hltbs: Vec<u32> = ids
         .iter()
-        .filter_map(|id| {
-            lookup
-                .get(id)
-                .and_then(|g| g.hltb.as_ref())
-                .and_then(|h| h.main_story_seconds)
-                .map(|s| s / 60)
-        })
+        .filter_map(|id| lookup.get(id).and_then(|g| signal::main_story_seconds(g)))
+        .map(|s| s / 60)
         .collect();
     if hltbs.is_empty() {
         return None;
@@ -5803,12 +5766,11 @@ mod tests {
         assert_eq!(source_display_name("rawg"), "RAWG");
         assert_eq!(source_display_name("protondb"), "ProtonDB");
         assert_eq!(source_display_name("pcgw"), "PCGW");
-        assert_eq!(source_display_name("hltb"), "HLTB");
         assert_eq!(source_display_name("steam-store"), "Steam Store");
     }
 
     #[test]
-    pub(crate) fn source_credential_signals_cover_configured_missing_and_optional() {
+    pub(crate) fn source_credential_signals_cover_configured_missing_and_not_required() {
         assert_eq!(
             source_credential_signal("igdb", true, false),
             CredentialSignal::Configured
@@ -5830,10 +5792,6 @@ mod tests {
             CredentialSignal::NotRequired
         );
         assert_eq!(
-            source_credential_signal("hltb", false, false),
-            CredentialSignal::Optional
-        );
-        assert_eq!(
             source_credential_signal("steam-store", false, false),
             CredentialSignal::NotRequired
         );
@@ -5845,7 +5803,6 @@ mod tests {
         assert!(!source_refresh_enabled("protondb", true, true, false, true));
         assert!(!source_refresh_enabled("igdb", false, true, false, false));
         assert!(source_refresh_enabled("igdb", true, false, false, false));
-        assert!(source_refresh_enabled("hltb", false, false, false, false));
         assert!(source_refresh_enabled("pcgw", false, false, false, false));
     }
 

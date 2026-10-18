@@ -280,7 +280,7 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
     // Surface how many names stayed unresolved: no local source (appmanifest,
     // librarycache, appinfo.vdf) had them. Real names backfill from Steam
     // Store hydration when online; without that, name-keyed enrichment
-    // (HLTB, RAWG) is skipped for these games.
+    // (RAWG) is skipped for these games.
     let still_unresolved = games_map
         .values()
         .filter(|g| g.has_placeholder_name())
