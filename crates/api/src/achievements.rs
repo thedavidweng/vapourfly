@@ -15,6 +15,7 @@ pub const SOURCE: &str = "steam-achievements";
 const SCHEMA_SOURCE: &str = "steam-achievement-schema";
 const TTL: Duration = Duration::from_secs(24 * 3600);
 const BASE: &str = "https://api.steampowered.com/ISteamUserStats";
+pub const DEFAULT_BATCH_LIMIT: usize = 12;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,6 +42,22 @@ pub struct Progress {
     pub unlocks: BTreeMap<String, Option<i64>>,
     pub checked_at: DateTime<Utc>,
     pub fetched_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchSummary {
+    pub requested: usize,
+    pub completed: usize,
+    pub fresh: usize,
+    pub limited: usize,
+    pub missing: usize,
+}
+
+pub struct BatchOptions<'a> {
+    pub app_ids: &'a [u32],
+    pub limit: usize,
+    pub force: bool,
+    pub offline: bool,
 }
 
 impl Progress {
@@ -312,6 +329,59 @@ pub fn refresh(
     Ok(Some(progress))
 }
 
+/// Refresh a bounded, ordered set of games for one account.
+///
+/// Work is deliberately sequential: one caller owns the control token, and
+/// each game makes at most one schema and one player request. Background
+/// callers skip fresh cache entries; explicit callers can force them.
+pub fn refresh_batch(
+    cache: &DiskCache,
+    http: &HttpClient,
+    api_key: Option<&str>,
+    id: &str,
+    options: BatchOptions<'_>,
+    control: &RefreshControl,
+) -> Result<(BatchSummary, Vec<Progress>)> {
+    validate_account(id)?;
+    let mut unique = BTreeSet::new();
+    let selected: Vec<_> = options
+        .app_ids
+        .iter()
+        .copied()
+        .filter(|app_id| *app_id != 0 && unique.insert(*app_id))
+        .take(options.limit)
+        .collect();
+    let mut summary = BatchSummary {
+        requested: selected.len(),
+        ..Default::default()
+    };
+    let mut progress = Vec::new();
+    for app_id in selected {
+        control.check()?;
+        if !options.force
+            && let Some(cached) = load(cache, id, app_id)?
+            && !cached.stale()
+        {
+            progress.push(cached);
+            continue;
+        }
+        if let Some(current) = refresh(cache, http, api_key, id, app_id, options.offline, control)?
+        {
+            progress.push(current);
+        }
+    }
+    summary.completed = progress.len();
+    for item in &progress {
+        if item.stale() {
+            summary.limited += 1;
+        } else {
+            summary.fresh += 1;
+        }
+    }
+    summary.missing = summary.requested.saturating_sub(summary.completed);
+    Ok((summary, progress))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,5 +607,58 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(error, VapourflyError::Internal(_)));
+    }
+
+    #[test]
+    fn batch_is_ordered_bounded_and_skips_fresh_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = DiskCache::new(temp.path());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let http = HttpClient::with_backend(Box::new(Backend {
+            calls: calls.clone(),
+            status: 200,
+            body: format!(
+                r#"{{"playerstats":{{"success":true,"steamID":"{ID}","achievements":[{{"apiname":"A","achieved":1}},{{"apiname":"B","achieved":0}}]}}}}"#
+            ),
+        }));
+        refresh(
+            &cache,
+            &http,
+            Some("secret"),
+            ID,
+            10,
+            false,
+            &RefreshControl::default(),
+        )
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        let (summary, progress) = refresh_batch(
+            &cache,
+            &http,
+            Some("secret"),
+            ID,
+            BatchOptions {
+                app_ids: &[10, 11, 11, 12],
+                limit: 2,
+                force: false,
+                offline: false,
+            },
+            &RefreshControl::default(),
+        )
+        .unwrap();
+        assert_eq!(summary.requested, 2);
+        assert_eq!(summary.completed, 2);
+        assert_eq!(summary.fresh, 2);
+        assert_eq!(summary.missing, 0);
+        assert_eq!(
+            progress.iter().map(|p| p.app_id).collect::<Vec<_>>(),
+            [10, 11]
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            4,
+            "one cached and one refreshed"
+        );
     }
 }
