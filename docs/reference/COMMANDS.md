@@ -414,3 +414,23 @@ official progress for an owned Library game. The default and `--offline`
 are cache-only. Explicit refresh makes at most two documented Steam user-key
 requests and reports unknown/restricted/incomplete separately from zero.
 JSON excludes account identifiers and individual unlock history.
+
+`accounts achievement-coverage [--app-id <AppID>] [--limit 1..12]
+[--refresh] [--format table|json]` reports the bounded active subset, rather
+than whole-library completion. An explicitly selected owned game comes
+first, followed by recently played owned games from local play history and
+cached account activity. The default reads cache only.
+
+```bash
+vapourfly accounts achievement-coverage --format json
+vapourfly accounts achievement-coverage --app-id 620 --limit 3 --refresh
+vapourfly --offline accounts achievement-coverage --refresh
+```
+
+Explicit refresh processes at most 12 games sequentially, with at most one
+schema and one player request each (24 total), existing Steam pacing and no
+retries. One OS lock per account prevents concurrent batches. Provider-wide
+authorization, rate-limit, HTTP or transport failure stops the batch; prior
+counts remain stale evidence. Coverage reports available/stale/unavailable/
+missing counts, attempted games and pending games left after a stop.
+Offline and no-key refreshes inspect cached evidence without requests.

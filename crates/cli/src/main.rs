@@ -272,6 +272,20 @@ enum AccountsAction {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Inspect or refresh bounded achievement coverage for active owned games.
+    AchievementCoverage {
+        /// Prioritize this owned AppID before recently played games.
+        #[arg(long)]
+        app_id: Option<u32>,
+        /// Maximum games in this batch (1..=12; at most two requests per game).
+        #[arg(long, default_value_t = 12, value_parser = clap::value_parser!(u32).range(1..=12))]
+        limit: u32,
+        /// Explicit refresh; otherwise read cache only.
+        #[arg(long)]
+        refresh: bool,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Refresh or inspect the selected account's cached activity snapshot.
     Activity {
         #[command(subcommand)]
@@ -613,6 +627,12 @@ fn main() {
                 refresh,
                 format,
             } => cmd_achievements(&cli, *app_id, *refresh, *format),
+            AccountsAction::AchievementCoverage {
+                app_id,
+                limit,
+                refresh,
+                format,
+            } => cmd_achievement_coverage(&cli, *app_id, *limit as usize, *refresh, *format),
             AccountsAction::Activity { action } => match action {
                 ActivityAction::Refresh { format } => cmd_account_activity(&cli, true, *format),
                 ActivityAction::Status { format } => cmd_account_activity(&cli, false, *format),
@@ -989,6 +1009,71 @@ fn cmd_achievements(
         }
     }
     Ok(())
+}
+
+fn cmd_achievement_coverage(
+    cli: &Cli,
+    app_id: Option<u32>,
+    limit: usize,
+    refresh: bool,
+    format: OutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use vapourfly_api::achievements;
+    let resolved = cli.resolved_config()?;
+    let detected = steam::detect_accounts(&resolved.steam_dir)?;
+    let selected = steam::select_account(&detected, resolved.account.as_deref())?;
+    let scan = steam::scan_library(&steam::ScanOptions {
+        steam_dir: resolved.steam_dir.clone(),
+        account: Some(selected.steam_id64.clone()),
+        fixtures: cli.fixtures.clone(),
+    })?;
+    let cache = vapourfly_api::cache::DiskCache::new(config::default_cache_dir());
+    let activity = vapourfly_api::activity::load(&cache, &selected.steam_id64)?;
+    let recent = activity
+        .as_ref()
+        .map_or(&[][..], |snapshot| snapshot.recent.games.as_slice());
+    let ids = achievements::active_app_ids(&scan.games, recent, app_id, limit)?;
+    let coverage = if refresh {
+        achievements::refresh_batch(
+            &cache,
+            &vapourfly_api::http::HttpClient::new(),
+            resolved.steam_api_key.as_deref(),
+            &selected.steam_id64,
+            achievements::BatchOptions {
+                app_ids: &ids,
+                limit,
+                force: true,
+                offline: cli.offline,
+            },
+            &vapourfly_api::activity::RefreshControl::default(),
+        )?
+        .0
+    } else {
+        achievements::batch_status(&cache, &selected.steam_id64, &ids)?
+    };
+    let output = achievement_coverage_output(&coverage, format)?;
+    println!("{output}");
+    Ok(())
+}
+
+fn achievement_coverage_output(
+    coverage: &vapourfly_api::achievements::BatchSummary,
+    format: OutputFormat,
+) -> Result<String, serde_json::Error> {
+    match format {
+        OutputFormat::Json => serde_json::to_string_pretty(coverage),
+        OutputFormat::Table => Ok(format!(
+            "Steam achievements (user-key API): {} selected; {} available; {} stale; {} unavailable; {} missing; {} attempted; {} pending; stop {:?}",
+            coverage.selected,
+            coverage.available,
+            coverage.stale,
+            coverage.unavailable,
+            coverage.missing,
+            coverage.attempted,
+            coverage.pending,
+            coverage.stop_reason,
+        )),
+    }
 }
 
 fn cmd_account_activity(
@@ -2331,6 +2416,106 @@ fn print_match_counts(report: &vapourfly_core::models::PlaylistMatchReport) {
 mod tests {
     use super::*;
     use vapourfly_core::models::Playlist;
+
+    #[test]
+    fn achievement_coverage_parses_bounded_explicit_refresh() {
+        let cli = Cli::try_parse_from([
+            "vapourfly",
+            "--offline",
+            "accounts",
+            "achievement-coverage",
+            "--app-id",
+            "620",
+            "--limit",
+            "3",
+            "--refresh",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        assert!(cli.offline);
+        assert!(matches!(
+            cli.command,
+            Commands::Accounts {
+                action: AccountsAction::AchievementCoverage {
+                    app_id: Some(620),
+                    limit: 3,
+                    refresh: true,
+                    format: OutputFormat::Json,
+                }
+            }
+        ));
+        let cli = Cli::try_parse_from(["vapourfly", "accounts", "achievement-coverage"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Accounts {
+                action: AccountsAction::AchievementCoverage {
+                    app_id: None,
+                    limit: 12,
+                    refresh: false,
+                    ..
+                }
+            }
+        ));
+        for limit in ["0", "13"] {
+            assert!(
+                Cli::try_parse_from([
+                    "vapourfly",
+                    "accounts",
+                    "achievement-coverage",
+                    "--limit",
+                    limit,
+                ])
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn achievement_coverage_output_reports_partial_coverage_and_stop() {
+        let coverage = vapourfly_api::achievements::BatchSummary {
+            selected: 12,
+            available: 2,
+            stale: 1,
+            unavailable: 1,
+            missing: 8,
+            attempted: 4,
+            pending: 8,
+            stop_reason: Some(vapourfly_api::achievements::Status::RateLimited),
+        };
+        let json = achievement_coverage_output(&coverage, OutputFormat::Json).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["selected"], 12);
+        assert_eq!(parsed["missing"], 8);
+        assert_eq!(parsed["pending"], 8);
+        assert_eq!(parsed["stop_reason"], "rate_limited");
+        assert_eq!(parsed.as_object().unwrap().len(), 8);
+        let table = achievement_coverage_output(&coverage, OutputFormat::Table).unwrap();
+        assert!(table.contains("2 available; 1 stale; 1 unavailable; 8 missing"));
+        assert!(table.contains("4 attempted; 8 pending; stop Some(RateLimited)"));
+    }
+
+    #[test]
+    fn achievement_coverage_offline_fixture_runs_status_and_refresh() {
+        let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../data/fixtures/steam_minimal");
+        assert!(fixtures.is_dir());
+        let cli = Cli {
+            fixtures: Some(fixtures),
+            steam_dir: None,
+            account: Some("76561198000000000".into()),
+            verbose: false,
+            offline: true,
+            allow_steam_running: false,
+            command: Commands::Doctor,
+        };
+        for refresh in [false, true] {
+            cmd_achievement_coverage(&cli, Some(730), 3, refresh, OutputFormat::Json).unwrap();
+        }
+        assert!(
+            cmd_achievement_coverage(&cli, Some(999999), 3, false, OutputFormat::Json).is_err()
+        );
+    }
 
     #[test]
     fn cache_refresh_accepts_every_enrichment_source() {
