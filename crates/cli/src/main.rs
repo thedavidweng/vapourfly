@@ -1081,11 +1081,18 @@ fn cmd_profile(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error
         vapourfly_core::preferences::load(&config::default_preferences_dir(), &account.steam_id64)?;
     let cache = vapourfly_api::cache::DiskCache::new(config::default_cache_dir());
     let activity = vapourfly_api::activity::load(&cache, &account.steam_id64)?;
+    let progress = vapourfly_api::achievements::library_progress(
+        &cache,
+        &config::default_story_dir(),
+        &account.steam_id64,
+        &scan.games,
+    )?;
     let profile = vapourfly_api::profile::derive(
         &account.steam_id64,
         &scan.games,
         &prefs,
         activity.as_ref(),
+        &progress,
         chrono::Utc::now().timestamp(),
     )?;
     match format {
@@ -1094,6 +1101,31 @@ fn cmd_profile(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error
             println!("Top Tags ({})", profile.steam_id64);
             println!("{}", profile.activity_status);
             println!("{}", profile.taste.explanation);
+            for item in &profile.traits {
+                println!(
+                    "Playstyle: {} — {}",
+                    item.label,
+                    if item.supported {
+                        "supported"
+                    } else {
+                        "insufficient evidence"
+                    }
+                );
+                println!("  Rule: {}", item.rule);
+                for (label, examples) in [
+                    ("Supporting", &item.supporting),
+                    ("Contrary", &item.contrary),
+                    ("Unknown", &item.unknown),
+                ] {
+                    println!("  {label}: {} titles", examples.len());
+                    for example in examples {
+                        println!(
+                            "    {} [{}]: {}",
+                            example.name, example.app_id, example.evidence
+                        );
+                    }
+                }
+            }
             println!(
                 "Coverage: {:?}; as of {}",
                 profile.taste.coverage, profile.taste.as_of
@@ -2798,6 +2830,10 @@ mod tests {
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("\"long_term\""));
+        assert!(stdout.contains("\"traits\""));
+        assert!(stdout.contains("Playstyle: Completion-focused"));
+        assert!(stdout.contains("insufficient evidence"));
+        assert!(stdout.contains("Story unmarked"));
         assert!(stdout.contains("\"steam_id64\": \"76561198000000000\""));
         assert!(stdout.contains("Top Tags (76561198000000000)"));
         assert!(stdout.contains("No eligible titles"));

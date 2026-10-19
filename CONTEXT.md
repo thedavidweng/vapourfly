@@ -108,6 +108,15 @@ Strength describes weighted engagement within this library; library-relative
 lift compares it to this library's descriptor coverage, never to other players.
 A Taste Profile is not a separate personal database or a Playlist ranker.
 
+### Player-style traits
+
+Original descriptive rules derived from the same eligible account evidence as
+Top Tags plus existing local story marks and fresh cached achievement counts.
+Completion-focused, Deep diver and Explorer are transparent threshold labels,
+not personality scores or comparisons with other players. Every rule exposes
+supporting, contrary and unknown titles; an absent story mark is unknown, not
+proof of an unfinished story. Ownership alone never supports a trait.
+
 ## Library and games
 
 ### Game

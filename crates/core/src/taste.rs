@@ -62,6 +62,8 @@ pub struct TasteProfile {
     pub coverage: Coverage,
     pub long_term: Vec<TagStrength>,
     pub recent: Vec<TagStrength>,
+    /// Eligible account evidence, including titles without metadata or activity.
+    pub titles: Vec<SupportingTitle>,
     pub explanation: String,
 }
 
@@ -136,6 +138,7 @@ pub fn derive(
 ) -> TasteProfile {
     let mut coverage = Coverage::default();
     let mut tags: BTreeMap<String, TagEvidence> = BTreeMap::new();
+    let mut titles = Vec::new();
     let (mut total_long, mut total_recent) = (0.0, 0.0);
     // AppID ordering makes floating-point reductions and supporting evidence stable.
     let ordered: BTreeMap<_, _> = games.iter().map(|g| (g.app_id, g)).collect();
@@ -174,6 +177,20 @@ pub fn derive(
         coverage.activity_titles += usize::from(lifetime > 0 || recent > 0);
         coverage.interested_titles += usize::from(interested);
         let concepts = concepts(game);
+        let title = SupportingTitle {
+            app_id: game.app_id,
+            name: game.name.clone(),
+            lifetime_minutes: lifetime,
+            recent_minutes: recent,
+            last_played_at: activity.iter().filter_map(|a| a.last_played_at).max(),
+            interested,
+            metadata_sources: concepts
+                .values()
+                .flat_map(|(_, sources)| sources.clone())
+                .collect(),
+            activity,
+        };
+        titles.push(title.clone());
         if concepts.is_empty() {
             continue;
         }
@@ -196,14 +213,8 @@ pub fn derive(
             if long_weight > 0.0 || recent_weight > 0.0 {
                 entry.engaged.push((
                     SupportingTitle {
-                        app_id: game.app_id,
-                        name: game.name.clone(),
-                        lifetime_minutes: lifetime,
-                        recent_minutes: recent,
-                        last_played_at: activity.iter().filter_map(|a| a.last_played_at).max(),
-                        interested,
                         metadata_sources: sources,
-                        activity: activity.clone(),
+                        ..title.clone()
                     },
                     long_weight,
                     recent_weight,
@@ -251,6 +262,7 @@ pub fn derive(
             "Limited to cached/local evidence. Strengths are non-exclusive engagement shares; lift is relative to this metadata-covered library, never a player percentile. Recent means available two-week evidence; Interested affects long-term only. Local observations have no fetch timestamp.".into()
         },
         coverage,
+        titles,
         long_term,
         recent,
     }

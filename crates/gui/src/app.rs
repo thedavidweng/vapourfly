@@ -2619,6 +2619,7 @@ impl VapourflyApp {
             Some(&id),
             &snapshot.games,
             &snapshot.preferences,
+            &snapshot.progress,
         );
         self.preferences_generation = self.preferences_generation.wrapping_add(1);
         let rerun_recommend = self.recommend_loading || !self.recommend_results.is_empty();
@@ -2673,6 +2674,12 @@ impl VapourflyApp {
             .and_then(|p| p.get_mut(&app_id))
         {
             summary.story_completed = completed;
+        }
+        if let Some(snapshot) = self.prepared_snapshot.as_mut()
+            && let (Ok(profile), Ok(progress)) = (&mut snapshot.taste, &snapshot.progress)
+        {
+            let profile = Arc::make_mut(profile);
+            profile.traits = vapourfly_core::traits::derive(&profile.taste, progress);
         }
         Ok(())
     }
@@ -3513,7 +3520,8 @@ impl VapourflyApp {
                 &overrides,
             );
             let games: Arc<[Game]> = Arc::from(games);
-            let taste = library_taste_profile(&cache, account.as_deref(), &games, &preferences);
+            let taste =
+                library_taste_profile(&cache, account.as_deref(), &games, &preferences, &progress);
             repaint.request();
             PREPARED_LIBRARY_RESULT.set(
                 job_id,
@@ -3968,6 +3976,7 @@ impl VapourflyApp {
                 self.active_account().map(|a| a.steam_id64.as_str()),
                 &games,
                 &preferences,
+                &progress,
             ),
             games,
             overrides,
@@ -4456,15 +4465,18 @@ fn library_taste_profile(
     account: Option<&str>,
     games: &[Game],
     preferences: &Result<Preferences, String>,
+    progress: &Result<std::collections::BTreeMap<u32, vapourfly_core::progress::Summary>, String>,
 ) -> Result<Arc<vapourfly_api::profile::AccountProfile>, String> {
     let id = account.ok_or("Scan the selected account's Library first.")?;
     let preferences = preferences.as_ref().map_err(Clone::clone)?;
+    let progress = progress.as_ref().map_err(Clone::clone)?;
     let activity = vapourfly_api::activity::load(cache, id).map_err(|e| e.to_string())?;
     vapourfly_api::profile::derive(
         id,
         games,
         preferences,
         activity.as_ref(),
+        progress,
         chrono::Utc::now().timestamp(),
     )
     .map(Arc::new)
@@ -6771,6 +6783,7 @@ mod tests {
         assert!(app.filtered_games().iter().any(|g| g.app_id == id));
         app.set_story_completed(id, true).unwrap();
         assert!(app.game_progress(id).unwrap().story_completed);
+        assert_eq!(app.taste_profile().unwrap().traits[0].supporting.len(), 1);
         assert!(!app.game_progress(id).unwrap().perfected());
         assert!(!app.filtered_games().iter().any(|g| g.app_id == id));
         app.inject_prepared_snapshot();
@@ -6779,6 +6792,7 @@ mod tests {
             "persists across prepare"
         );
         app.set_story_completed(id, false).unwrap();
+        assert_eq!(app.taste_profile().unwrap().traits[0].supporting.len(), 0);
         assert!(app.filtered_games().iter().any(|g| g.app_id == id));
         app.progress_filter = vapourfly_core::progress::Filter::NearPerfect;
         assert!(
@@ -6804,6 +6818,7 @@ mod tests {
         app.scan_result.as_mut().unwrap().account = "bravo".into();
         app.inject_prepared_snapshot();
         assert!(!app.game_progress(id).unwrap().story_completed);
+        assert_eq!(app.taste_profile().unwrap().traits[0].supporting.len(), 0);
         app.config.as_mut().unwrap().account = Some("alpha".into());
         app.scan_result.as_mut().unwrap().account = "alpha".into();
         app.inject_prepared_snapshot();
