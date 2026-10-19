@@ -2678,7 +2678,7 @@ impl VapourflyApp {
         self.prepared_snapshot = None;
         self.prepare_job_id = None;
         self.prepare_fingerprint = None;
-        PREPARED_LIBRARY_RESULT.clear();
+        self.prepare_result.clear();
         self.clear_personalized_results();
         self.ensure_library_prepared();
         result
