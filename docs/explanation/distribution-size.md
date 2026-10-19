@@ -43,8 +43,8 @@ an experiment rather than interpreting omitted fields as effective settings.
 - Insufficient evidence: `s`/`z`, thin LTO, panic=abort and trim-paths adoption.
   They require comparable builds and actual startup, scan, GUI/controller and
   platform evidence. Reports alone cannot satisfy those native acceptance gates.
-- Next automatic work: choose a separate experimental profile only when its
-  measurement plan is ready. The target-specific tree audit below does not
+- Next automatic work: run the separate opt-in profile experiment below and
+  retain comparable measurements. The target-specific tree audit below does not
   establish a dependency that is safe to remove. Keep #23 open
   until the required native/per-OS comparisons and any chosen optimization are
   genuinely verified. No performance improvement is claimed by this slice.
