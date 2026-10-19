@@ -1813,8 +1813,8 @@ impl VapourflyApp {
                 name: DEMO_GAME_NAMES[4].into(),
                 score: 5.2,
                 reasons: vec![discover::DiscoverReason {
-                    code: "taste_overlap",
-                    description: "Same dark-fantasy action feel",
+                    code: "taste_overlap".into(),
+                    description: "Same dark-fantasy action feel".into(),
                     weight: 5.2,
                 }],
             },
@@ -1823,8 +1823,8 @@ impl VapourflyApp {
                 name: DEMO_GAME_NAMES[0].into(),
                 score: 4.7,
                 reasons: vec![discover::DiscoverReason {
-                    code: "taste_overlap",
-                    description: "Shares Shooter and Action",
+                    code: "taste_overlap".into(),
+                    description: "Shares Shooter and Action".into(),
                     weight: 4.7,
                 }],
             },
@@ -1833,8 +1833,8 @@ impl VapourflyApp {
                 name: DEMO_GAME_NAMES[6].into(),
                 score: 4.1,
                 reasons: vec![discover::DiscoverReason {
-                    code: "high_rating",
-                    description: "Critics' favourite in your backlog",
+                    code: "high_rating".into(),
+                    description: "Critics' favourite in your backlog".into(),
                     weight: 4.1,
                 }],
             },
@@ -1843,8 +1843,8 @@ impl VapourflyApp {
                 name: DEMO_GAME_NAMES[13].into(),
                 score: 3.8,
                 reasons: vec![discover::DiscoverReason {
-                    code: "taste_overlap",
-                    description: "Similar pacing and length",
+                    code: "taste_overlap".into(),
+                    description: "Similar pacing and length".into(),
                     weight: 3.8,
                 }],
             },
@@ -1853,8 +1853,8 @@ impl VapourflyApp {
                 name: DEMO_GAME_NAMES[15].into(),
                 score: 3.4,
                 reasons: vec![discover::DiscoverReason {
-                    code: "taste_overlap",
-                    description: "Players who love it also play this",
+                    code: "taste_overlap".into(),
+                    description: "Players who love it also play this".into(),
                     weight: 3.4,
                 }],
             },
@@ -1863,8 +1863,8 @@ impl VapourflyApp {
                 name: DEMO_GAME_NAMES[1].into(),
                 score: 3.0,
                 reasons: vec![discover::DiscoverReason {
-                    code: "high_rating",
-                    description: "ProtonDB Platinum",
+                    code: "high_rating".into(),
+                    description: "ProtonDB Platinum".into(),
                     weight: 3.0,
                 }],
             },
@@ -1873,8 +1873,8 @@ impl VapourflyApp {
                 name: DEMO_GAME_NAMES[19].into(),
                 score: 2.6,
                 reasons: vec![discover::DiscoverReason {
-                    code: "taste_overlap",
-                    description: "Fast, arcade-style sessions",
+                    code: "taste_overlap".into(),
+                    description: "Fast, arcade-style sessions".into(),
                     weight: 2.6,
                 }],
             },
@@ -1883,8 +1883,8 @@ impl VapourflyApp {
                 name: DEMO_GAME_NAMES[22].into(),
                 score: 2.2,
                 reasons: vec![discover::DiscoverReason {
-                    code: "taste_overlap",
-                    description: "Synth-heavy soundtrack",
+                    code: "taste_overlap".into(),
+                    description: "Synth-heavy soundtrack".into(),
                     weight: 2.2,
                 }],
             },
@@ -2968,6 +2968,22 @@ impl VapourflyApp {
                 return;
             }
         };
+        let profile = match self.taste_profile() {
+            Ok(profile) => profile.clone(),
+            Err(error) => {
+                self.discover_loading = false;
+                self.error = Some(error);
+                return;
+            }
+        };
+        let progress = match &self.prepared_snapshot.as_ref().unwrap().progress {
+            Ok(progress) => progress.clone(),
+            Err(error) => {
+                self.discover_loading = false;
+                self.error = Some(error.clone());
+                return;
+            }
+        };
         let fingerprint = self.discover_fp(&options);
         let job_id = self
             .job_runner
@@ -2977,10 +2993,12 @@ impl VapourflyApp {
 
         let repaint = self.repaint.clone();
         std::thread::spawn(move || {
-            let picks = discover::rank_discover_with_preferences(
+            let picks = discover::rank_discover_personalized(
                 &games,
                 &options,
                 &preferences,
+                &profile.taste,
+                &progress,
                 chrono::Utc::now().timestamp(),
             );
             let pf = discover::playlist_from_discover_picks(&games, &options, &picks);
@@ -4468,10 +4486,17 @@ impl VapourflyApp {
             .prepared_games(JunkMode::Default)
             .ok_or_else(|| "Scan your library before generating.".to_string())?;
         let preferences = self.prepared_preferences()?;
-        let picks = discover::rank_discover_with_preferences(
+        let picks = discover::rank_discover_personalized(
             &games,
             &options,
             preferences,
+            &self.taste_profile()?.taste,
+            self.prepared_snapshot
+                .as_ref()
+                .unwrap()
+                .progress
+                .as_ref()
+                .map_err(Clone::clone)?,
             chrono::Utc::now().timestamp(),
         );
         let pf = discover::playlist_from_discover_picks(&games, &options, &picks);
@@ -4716,20 +4741,6 @@ pub(crate) fn game_shows_deck_badge(game: &Game) -> bool {
 
 pub(crate) fn empty_value_label() -> &'static str {
     "None"
-}
-
-/// Append a system CJK face so collection names and other user strings
-pub(crate) fn reason_badge_label(code: &str, description: &str) -> String {
-    let raw = if description.trim().is_empty() {
-        code.replace('_', " ")
-    } else {
-        description.to_string()
-    };
-    if raw.chars().count() > 24 {
-        format!("{}…", raw.chars().take(23).collect::<String>())
-    } else {
-        raw
-    }
 }
 
 pub(crate) fn parse_required<T: std::str::FromStr>(label: &str, input: &str) -> Result<T, String> {
@@ -5852,15 +5863,6 @@ mod tests {
     }
 
     #[test]
-    pub(crate) fn reason_badge_prefers_human_description() {
-        assert_eq!(
-            reason_badge_label("taste_overlap", "Taste vector overlap"),
-            "Taste vector overlap"
-        );
-        assert_eq!(reason_badge_label("HIGH_RATING", ""), "HIGH RATING");
-    }
-
-    #[test]
     pub(crate) fn discover_seed_resolves_name_or_app_id() {
         let mut app = VapourflyApp::new(None, false);
         app.scan_result = Some(ScanResult {
@@ -6787,6 +6789,67 @@ mod tests {
         ));
         app.ui_demo = true;
         assert!(app.edit_preference(Some(id), None).is_err());
+        assert!(!temp.path().join("cache").exists());
+    }
+
+    #[test]
+    #[serial]
+    fn personalized_discover_matches_core_and_rejects_late_story_results() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(&temp.path().join("cache"));
+        app.preferences_dir = temp.path().join("preferences");
+        app.story_dir = temp.path().join("story");
+        app.playlist_store_dir = Some(temp.path().join("playlists"));
+        app.ui_demo = false;
+        app.offline_mode = true;
+        app.discover_seed.clear();
+        app.inject_prepared_snapshot();
+        let options = app.discover_options_from_inputs().unwrap();
+        let snapshot = app.prepared_snapshot.as_ref().unwrap();
+        let expected = discover::rank_discover_personalized(
+            &snapshot.games,
+            &options,
+            snapshot.preferences.as_ref().unwrap(),
+            &snapshot.taste.as_ref().unwrap().taste,
+            snapshot.progress.as_ref().unwrap(),
+            chrono::Utc::now().timestamp(),
+        );
+        assert_ne!(
+            expected.iter().map(|p| p.app_id).collect::<Vec<_>>(),
+            Vec::<u32>::new()
+        );
+        app.start_discover_generate();
+        for _ in 0..1000 {
+            if !app.discover_loading {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            app.tick();
+        }
+        assert!(!app.discover_loading);
+        assert_eq!(app.discover_results, expected);
+        let stored = app.discover_last_playlist.clone().unwrap();
+        assert_eq!(stored.playlist.id, "discover");
+        let PlaylistContent::Manual { app_ids } = &stored.playlist.content else {
+            panic!("manual");
+        };
+        assert_eq!(
+            *app_ids,
+            expected.iter().map(|p| p.app_id).collect::<Vec<_>>()
+        );
+        let path = playlist_store::put(app.playlist_store_dir.as_ref().unwrap(), &stored).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let fp = app.discover_fp(&options);
+        let ticket = app.job_runner.next_ticket(WorkflowKind::Discover, &fp);
+        app.set_story_completed(expected[0].app_id, true).unwrap();
+        assert_ne!(fp, app.discover_fp(&options));
+        assert_eq!(app.discover_results, Vec::<DiscoverPick>::new());
+        app.discover_loading = true;
+        app.discover_job_id = Some(ticket);
+        DISCOVER_RESULT.set(ticket, Ok((expected, stored)));
+        app.tick();
+        assert!(app.discover_job_id.is_none());
+        assert_eq!(std::fs::read(path).unwrap(), before);
         assert!(!temp.path().join("cache").exists());
     }
 

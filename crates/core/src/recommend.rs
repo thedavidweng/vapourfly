@@ -2,29 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::models::{Game, ProtonTier, RecommendReason, RecommendRequest, Recommendation};
+use crate::models::{Game, ProtonTier, RecommendRequest, Recommendation};
 use crate::{preferences, progress, scoring, taste};
-
-const RECENT_SECONDS: i64 = 14 * 86400;
-const DIVERSITY_WEIGHT: f32 = 0.35;
-
-fn tie_key(seed: Option<u64>, app_id: u32) -> u64 {
-    let Some(seed) = seed else {
-        return u64::from(app_id);
-    };
-    let mut z = (seed ^ u64::from(app_id)).wrapping_add(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
-
-fn contribution(reasons: &mut Vec<RecommendReason>, code: &str, description: String, weight: f32) {
-    reasons.push(RecommendReason {
-        code: code.into(),
-        description,
-        weight,
-    });
-}
 
 fn score_game(
     game: &Game,
@@ -36,22 +15,16 @@ fn score_game(
     now: i64,
 ) -> Recommendation {
     let mut reasons = Vec::new();
-    // The shared derivation emits title evidence in AppID order.
-    let title = profile
-        .titles
-        .binary_search_by_key(&game.app_id, |t| t.app_id)
-        .ok()
-        .map(|index| &profile.titles[index]);
-    let playtime = title.and_then(|t| t.activity.iter().filter_map(|a| a.lifetime_minutes).max());
+    let playtime = scoring::known_playtime(profile, game.app_id);
     if let Some(minutes) = playtime.filter(|m| *m < 120) {
-        contribution(
+        scoring::contribution(
             &mut reasons,
             "low_playtime",
             format!("Known low playtime ({minutes} min)"),
             2.0,
         );
     } else if playtime.is_none() {
-        contribution(
+        scoring::contribution(
             &mut reasons,
             "activity_unknown",
             "Lifetime activity unknown, not zero or unplayed".into(),
@@ -67,14 +40,14 @@ fn score_game(
             _ => None,
         });
         if let Some((weight, label)) = deck {
-            contribution(&mut reasons, "deck_compatible", label.into(), weight);
+            scoring::contribution(&mut reasons, "deck_compatible", label.into(), weight);
         }
     }
     if request.available_minutes > 0 {
         if let Some(secs) = crate::signal::main_story_seconds(game)
             && secs / 60 <= request.available_minutes
         {
-            contribution(
+            scoring::contribution(
                 &mut reasons,
                 "time_match",
                 format!(
@@ -85,90 +58,9 @@ fn score_game(
             );
         }
     }
-    if let Some(weight) = scoring::quality(game) {
-        contribution(
-            &mut reasons,
-            "high_rating",
-            "Above-midpoint cached game quality (bounded 0..1; low/missing neutral; not personal completion)".into(),
-            weight,
-        );
-    }
-    for (code, tags, weight) in [
-        ("taste_similarity", &profile.long_term, 3.0),
-        ("recent_taste", &profile.recent, 0.5),
-    ] {
-        let affinity = scoring::profile_affinity(concepts, tags);
-        if affinity > 0.0 {
-            let matches = tags
-                .iter()
-                .filter(|t| concepts.contains(&t.tag))
-                .map(|t| t.tag.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            contribution(
-                &mut reasons,
-                code,
-                format!("Cached canonical profile affinity {affinity:.3}: {matches}"),
-                weight * affinity,
-            );
-        }
-    }
-    contribution(
-        &mut reasons,
-        "evidence_limits",
-        format!(
-            "Cache/local only; descriptors {}/{} eligible titles; absent matches are not dislike; fit is not probability or player percentile",
-            profile.coverage.metadata_titles, profile.coverage.eligible_titles
-        ),
-        0.0,
-    );
-
-    if let Some(last) = title.and_then(|t| t.last_played_at) {
-        let age = now - last;
-        if (0..RECENT_SECONDS).contains(&age) {
-            let days = age / 86400;
-            let label = match days {
-                0 => "Played today".into(),
-                1 => "Played 1 day ago".into(),
-                n => format!("Played {n} days ago"),
-            };
-            contribution(
-                &mut reasons,
-                "recently_played_penalty",
-                label,
-                -(1.0 - age as f32 / RECENT_SECONDS as f32),
-            );
-        }
-    }
-    match progress {
-        Some(p) if p.story_completed => contribution(&mut reasons, "story_completed", "Story completed (your local mark); achievements are separate".into(), -1.25),
-        Some(p) if p.achievements.is_some_and(|e| !e.stale && e.total > 0 && e.unlocked == e.total) => contribution(&mut reasons, "perfected", "Fresh authoritative achievements: all unlocked; not a story inference".into(), -1.0),
-        Some(p) if p.achievements.is_some_and(|e| !e.stale && e.total > 0 && e.unlocked > 0 && e.unlocked < e.total) => {
-            let e = p.achievements.unwrap();
-            contribution(&mut reasons, "achievement_progress", format!("Fresh authoritative achievements {}/{}; incomplete achievements do not imply unfinished story", e.unlocked, e.total), 0.5 * e.unlocked as f32 / e.total as f32);
-        }
-        _ => contribution(&mut reasons, "progress_unknown", "Story unmarked; achievement completion missing/stale/zero; no playtime or duration completion guess".into(), 0.0),
-    }
-    if preferences::interested(prefs, game.app_id, now) {
-        contribution(
-            &mut reasons,
-            "local_interested",
-            "Interested (your local preference)".into(),
-            preferences::INTERESTED_WEIGHT,
-        );
-    }
-    if game
-        .steam_collections
-        .iter()
-        .any(|c| c.eq_ignore_ascii_case("favorites"))
-    {
-        contribution(
-            &mut reasons,
-            "favorite",
-            "Steam Favorites (explicit choice, not a game tag)".into(),
-            0.25,
-        );
-    }
+    reasons.extend(scoring::personal_reasons(
+        game, profile, concepts, progress, prefs, now,
+    ));
     Recommendation {
         app_id: game.app_id,
         name: game.name.clone(),
@@ -236,7 +128,7 @@ pub fn recommend_personalized(
         .iter()
         .map(|g| (g.app_id, taste::canonical_tags(g)))
         .collect();
-    let mut candidates: Vec<_> = eligible
+    let candidates: Vec<_> = eligible
         .iter()
         .map(|g| {
             score_game(
@@ -250,51 +142,30 @@ pub fn recommend_personalized(
             )
         })
         .collect();
-    let mut result: Vec<Recommendation> = Vec::new();
-    while !candidates.is_empty() && result.len() < request.count {
-        let penalty = |candidate: &Recommendation| {
-            result
-                .iter()
-                .map(|picked| {
-                    let a = &tags[&candidate.app_id];
-                    let b = &tags[&picked.app_id];
-                    let union = a.union(b).count();
-                    if union == 0 {
-                        0.0
-                    } else {
-                        DIVERSITY_WEIGHT * a.intersection(b).count() as f32 / union as f32
-                    }
-                })
-                .fold(0.0, f32::max)
-        };
-        let (index, amount) = candidates
+    scoring::diverse_order(
+        &candidates
             .iter()
-            .enumerate()
-            .map(|(i, c)| (i, penalty(c)))
-            .max_by(|(ai, ap), (bi, bp)| {
-                let a = &candidates[*ai];
-                let b = &candidates[*bi];
-                (a.score - ap)
-                    .total_cmp(&(b.score - bp))
-                    .then_with(|| {
-                        tie_key(request.seed, b.app_id).cmp(&tie_key(request.seed, a.app_id))
-                    })
-                    .then_with(|| b.app_id.cmp(&a.app_id))
-            })
-            .unwrap();
-        let mut selected = candidates.swap_remove(index);
+            .map(|c| (c.app_id, c.score))
+            .collect::<Vec<_>>(),
+        &tags,
+        request.count,
+        request.seed,
+    )
+    .into_iter()
+    .map(|(index, amount)| {
+        let mut selected = candidates[index].clone();
         if amount > 0.0 {
             selected.score -= amount;
-            contribution(
+            scoring::contribution(
                 &mut selected.reasons,
                 "diversity",
                 "Bounded canonical-concept overlap with an earlier pick".into(),
                 -amount,
             );
         }
-        result.push(selected);
-    }
-    result
+        selected
+    })
+    .collect()
 }
 
 #[cfg(test)]

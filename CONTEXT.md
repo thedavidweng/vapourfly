@@ -238,3 +238,15 @@ prefix is retained; the `1` is the format generation. See
 
 A Share Code decodes back into a PlaylistFile that can be imported, matched,
 and synced like any other playlist.
+
+### Personal Discover ranking
+
+Discover shares canonical personal attribution and deterministic diversity with
+Recommendations, but owns its existing owned/unplayed eligibility and Manual
+Playlist factory. It does not consume a session duration or Deck planner request.
+Optional seed relatedness is +0.75 only for two confirmed cached IGDB Steam
+mappings linked by the seed's similar IDs; missing seed evidence stays neutral.
+Known-lifetime novelty is bounded by +0.25, unknown activity is not zero. Keep
+eligible cold-start picks even at non-positive scores. CLI/GUI expose all signed
+reasons; story/preference changes invalidate late results without rewriting saved
+playlists. Existing generator slots, share format and Steam guards are unchanged.

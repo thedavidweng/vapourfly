@@ -154,8 +154,8 @@ Hidden/junk and known non-games do not contribute. Ownership alone has no weight
 Lifetime weights are `minutes/(minutes+600)`, recent weights
 `minutes/(minutes+120)`: continuous and bounded, so one huge playtime cannot grow
 without limit. Interested adds 0.25 to long-term only and resetting removes it.
-Recommendations consume this profile (see Personal Owned-Library Ranking);
-Discover ranking is unchanged by this view.
+Recommendations and Discover consume this profile (see Personal Owned-Library
+Ranking and Personal Discover).
 
 Local/cached minutes are combined by maximum, never added across sources. Cached
 recent samples older than 14 days and observations whose known last-played time
@@ -277,3 +277,29 @@ random relevance noise. The GUI's relative fit is within the current result set,
 not a probability or global percentile. CLI/GUI show full contributions and
 coverage limitations; local story edits invalidate stale/in-flight picks.
 Existing Steam write preview/confirmation/backup/running guards remain unchanged.
+
+## Personal Discover
+
+Discover remains the owned/unplayed Manual Playlist factory, not a session planner
+or population-graph recommendation service. It reuses the selected account's
+prepared canonical long-term/recent profile, cached achievements, local story
+marks and preferences. Hidden/junk/non-games and active Not interested/Not now
+are excluded before scoring. Existing local-unplayed eligibility is retained;
+unknown local activity does not assert zero lifetime activity.
+
+Shared signed contributions follow Recommendations, without duration or Deck
+planner terms. Optional seed relatedness adds at most 0.75 only when both cached
+IGDB records have confirmed Steam mappings and the seed's similar-game IDs name
+the candidate. Missing/unvalidated links add nothing and are explicitly labeled.
+Known lifetime activity contributes novelty `0.25/(1+minutes/120)`; missing
+activity is neutral. Canonical Jaccard diversity subtracts at most 0.35 per pick.
+Input order does not change results. Sparse/no-key profiles keep useful eligible
+picks even when scores are zero or negative, with honest limited-evidence reasons.
+
+CLI and GUI display the same complete signed reasons and relative-fit semantics.
+The CLI keeps existing seed/taste playlist IDs; the GUI overwrites only its
+existing `discover` generator slot. Edit, match, export, VF1 sharing and confirmed
+Steam sync retain the existing Manual Playlist contract and safety guards.
+Story/feedback edits invalidate old displayed/in-flight picks, but do not silently
+regenerate and overwrite a saved playlist or unsaved editor: generate again when
+ready. Reads use prepared local caches, never trigger provider refreshes.
