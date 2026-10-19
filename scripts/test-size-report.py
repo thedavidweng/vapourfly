@@ -3,14 +3,56 @@
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 
 spec = importlib.util.spec_from_file_location("size_report", Path(__file__).with_name("size-report.py"))
 size_report = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(size_report)
+
+
+class WorkflowReportInvocationTests(unittest.TestCase):
+    def report_block(self):
+        workflow = (Path(__file__).resolve().parents[1] /
+                    ".github/workflows/size-experiment.yml").read_text()
+        # Execute the workflow's real argument construction without a native build.
+        return textwrap.dedent(workflow.split("          PY\n", 1)[1].split(
+            "            cmp Cargo.lock", 1)[0])
+
+    def run_report(self, profile, report_function):
+        bash = shutil.which("bash")
+        self.assertIsNotNone(bash, "The workflow regression requires Bash")
+        script = ('profile=$1; stage="size-experiment/$profile"; '
+                  'target=fixture-target; GITHUB_SHA=fixture-revision\n' +
+                  report_function + "\n" + self.report_block() + "\n")
+        return subprocess.run([bash, "--noprofile", "--norc", "-euo", "pipefail",
+                               "-c", script, "report-regression", profile],
+                              capture_output=True)
+
+    def test_baseline_and_candidate_preserve_argument_boundaries_with_nounset(self):
+        for profile in ("release", "release-size"):
+            with self.subTest(profile=profile):
+                result = self.run_report(profile, 'python3() { printf "%s\\0" "$@"; }')
+                self.assertEqual(result.returncode, 0, result.stderr.decode())
+                stage = f"size-experiment/{profile}"
+                expected = ["scripts/size-report.py", "--stage", stage, "--asset", stage + ".zip",
+                            "--target", "fixture-target", "--revision", "fixture-revision",
+                            "--profile", profile, "--toolchain", "1.99"]
+                if profile == "release-size":
+                    expected += ["--baseline", "size-experiment/report-release.json"]
+                expected += ["--out", f"size-experiment/report-{profile}"]
+                self.assertEqual(result.stdout.split(b"\0")[:-1],
+                                 [argument.encode() for argument in expected])
+
+    def test_report_failure_stops_both_profiles(self):
+        for profile in ("release", "release-size"):
+            with self.subTest(profile=profile):
+                result = self.run_report(profile, "python3() { return 23; }")
+                self.assertEqual(result.returncode, 23, result.stderr.decode())
 
 
 class SizeReportTests(unittest.TestCase):
