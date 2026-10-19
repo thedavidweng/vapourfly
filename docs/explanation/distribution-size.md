@@ -43,8 +43,8 @@ an experiment rather than interpreting omitted fields as effective settings.
 - Insufficient evidence: `s`/`z`, thin LTO, panic=abort and trim-paths adoption.
   They require comparable builds and actual startup, scan, GUI/controller and
   platform evidence. Reports alone cannot satisfy those native acceptance gates.
-- Next automatic work: choose a separate experimental profile only when its
-  measurement plan is ready. The target-specific tree audit below does not
+- Next automatic work: run the separate opt-in profile experiment below and
+  retain comparable measurements. The target-specific tree audit below does not
   establish a dependency that is safe to remove. Keep #23 open
   until the required native/per-OS comparisons and any chosen optimization are
   genuinely verified. No performance improvement is claimed by this slice.
@@ -125,3 +125,26 @@ cross-compilation toolchains, and does not prove a native OS build works.
 References: [Cargo tree](https://doc.rust-lang.org/cargo/commands/cargo-tree.html),
 [Cargo fetch](https://doc.rust-lang.org/cargo/commands/cargo-fetch.html), and
 [feature resolution](https://doc.rust-lang.org/cargo/reference/features.html#feature-resolver-version-2).
+
+## Separate Size-Profile Experiment
+
+The manually dispatched `Size profile experiment` workflow compares the current
+`release` profile against `release-size` (inherits release, changes only
+`opt-level` to `s`). It never changes the production release profile, signs an
+app, publishes a release, or deploys an optimization. Choose a native runner;
+the workflow serializes experiment runs and limits Cargo to two jobs.
+
+Both builds use the same source, pinned Rust toolchain and unchanged lockfile.
+Artifacts retain both raw CLI/GUI binaries, CLI help smoke output, manifests,
+toolchain/revision metadata, hashes and size reports. Fixed-entry-timestamp ZIPs
+use the same filenames and compression settings for both profiles. They are
+**benchmark archives of raw binaries**, not shipped installers: no macOS app
+bundle, shared libraries, resources, signatures or production packaging are
+included. Compare them only with each other, not with actual distribution
+inventories or historical release archives.
+
+Warm-cache build times are not comparable compiler benchmarks, CLI `--help` is
+not a library-scan benchmark, and retaining a GUI executable is not proof of
+native startup, keyboard or controller responsiveness. Even if raw bytes shrink,
+adoption requires actual per-OS packaged measurements and native acceptance.
+Keep #23 open until those checks and the measured decision are recorded.

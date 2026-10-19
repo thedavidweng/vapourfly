@@ -1,0 +1,100 @@
+name: Size profile experiment
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Native build target (run one platform at a time)
+        type: choice
+        required: true
+        default: ubuntu-latest
+        options: [ubuntu-latest, macos-latest, windows-latest]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: size-profile-experiment
+  cancel-in-progress: false
+  queue: max
+
+env:
+  CARGO_BUILD_JOBS: '2'
+  CARGO_TERM_COLOR: always
+
+jobs:
+  compare:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: '1.99'
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Linux native build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang g++ pkg-config \
+            libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libwayland-dev \
+            libx11-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev \
+            libgl1-mesa-dev libasound2-dev libssl-dev libfontconfig1-dev libudev-dev
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-size-experiment-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-size-experiment-${{ hashFiles('Cargo.lock') }}-
+      - name: Compare identical-source raw binaries (not release packages)
+        run: |
+          set -euo pipefail
+          mkdir -p size-experiment
+          cp Cargo.toml Cargo.lock size-experiment/
+          rustc -Vv > size-experiment/rustc.txt
+          git rev-parse HEAD > size-experiment/revision.txt
+          target=$(rustc -Vv | sed -n 's/^host: //p')
+          suffix=''
+          if [[ "$RUNNER_OS" == Windows ]]; then suffix='.exe'; fi
+          for profile in release release-size; do
+            cargo build --locked --profile "$profile" -p vapourfly-cli -p vapourfly-gui
+            stage="size-experiment/$profile"
+            mkdir -p "$stage"
+            cp "target/$profile/vapourfly$suffix" "target/$profile/vapourfly-gui$suffix" "$stage/"
+            "$stage/vapourfly$suffix" --help > "size-experiment/$profile-help.txt"
+            python3 - "$stage" <<'PY'
+          import pathlib, sys, zipfile
+          stage = pathlib.Path(sys.argv[1])
+          with zipfile.ZipFile(stage.with_suffix('.zip'), 'w') as archive:
+              for path in sorted(stage.iterdir()):
+                  entry = zipfile.ZipInfo(path.name, date_time=(1980, 1, 1, 0, 0, 0))
+                  entry.external_attr = 0o100755 << 16
+                  entry.compress_type = zipfile.ZIP_DEFLATED
+                  archive.writestr(entry, path.read_bytes(), compresslevel=9)
+          PY
+            comparison=()
+            if [[ "$profile" == release-size ]]; then
+              comparison=(--baseline size-experiment/report-release.json)
+            fi
+            python3 scripts/size-report.py --stage "$stage" --asset "$stage.zip" \
+              --target "$target" --revision "$GITHUB_SHA" --profile "$profile" \
+              --toolchain 1.99 "${comparison[@]}" --out "size-experiment/report-$profile"
+            cmp Cargo.lock size-experiment/Cargo.lock
+          done
+          cat size-experiment/report-release-size.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: size-experiment-${{ runner.os }}
+          path: size-experiment/
+          if-no-files-found: error

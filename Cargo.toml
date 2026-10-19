@@ -35,6 +35,10 @@ lto = true
 codegen-units = 1
 strip = true
 
+[profile.release-size]
+inherits = "release"
+opt-level = "s"
+
 [workspace.lints.rust]
 unused_must_use = "deny"
 
