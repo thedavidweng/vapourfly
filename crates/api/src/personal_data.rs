@@ -135,6 +135,11 @@ pub fn prepare_clear(
     match scope {
         ClearScope::Cached => {
             add_target(&mut targets, activity_path.clone(), false)?;
+            add_target(
+                &mut targets,
+                activity_path.with_extension("json.tmp"),
+                false,
+            )?;
             let prefix = format!("{id}-");
             let entries = std::fs::read_dir(roots[1]).map_err(|_| InventoryError::Storage)?;
             for entry in entries {
@@ -143,7 +148,10 @@ pub fn prepare_clear(
                     .file_name()
                     .and_then(|s| s.to_str())
                     .and_then(|s| s.strip_prefix(&prefix))
-                    .and_then(|s| s.strip_suffix(".json"))
+                    .and_then(|s| {
+                        s.strip_suffix(".json.tmp")
+                            .or_else(|| s.strip_suffix(".json"))
+                    })
                     .is_some_and(|s| s.parse::<u32>().is_ok_and(|id| id > 0))
                 {
                     add_target(&mut targets, path, false)?;
@@ -315,11 +323,26 @@ mod tests {
         let prefs = root.path().join("prefs");
         let removed = [
             cache.path_for(activity::SOURCE, ID),
+            cache
+                .path_for(activity::SOURCE, ID)
+                .with_extension("json.tmp"),
             cache.path_for(crate::achievements::SOURCE, &format!("{ID}-999999")),
+            cache
+                .path_for(crate::achievements::SOURCE, &format!("{ID}-999999"))
+                .with_extension("json.tmp"),
+            cache
+                .path_for(crate::achievements::SOURCE, &format!("{ID}-1234"))
+                .with_extension("json.tmp"),
         ];
         let retained = [
             cache.path_for(activity::SOURCE, OTHER),
+            cache
+                .path_for(activity::SOURCE, OTHER)
+                .with_extension("json.tmp"),
             cache.path_for(crate::achievements::SOURCE, &format!("{OTHER}-10")),
+            cache
+                .path_for(crate::achievements::SOURCE, &format!("{OTHER}-10"))
+                .with_extension("json.tmp"),
             cache.path_for("steam-achievement-schema", "10"),
             story.join(ID).join("10.json"),
             prefs.join(ID).join("10.json"),
