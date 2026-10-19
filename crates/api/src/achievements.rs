@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use vapourfly_core::error::{Result, VapourflyError};
 
-use crate::activity::{RefreshControl, encode_query, validate_account};
+use crate::activity::{RefreshControl, encode_query, validate_steam_id64};
 use crate::cache::DiskCache;
 use crate::http::{CacheRecord, HttpClient};
 
@@ -61,6 +61,15 @@ pub struct BatchOptions<'a> {
 }
 
 impl Progress {
+    pub fn automatic_refresh_due(&self) -> bool {
+        self.stale()
+            && (matches!(self.status, Status::Available | Status::NoAchievements)
+                || Utc::now()
+                    .signed_duration_since(self.checked_at)
+                    .num_seconds()
+                    >= 3600)
+    }
+
     pub fn stale(&self) -> bool {
         !matches!(self.status, Status::Available | Status::NoAchievements)
             || self.fetched_at.is_none_or(|time| {
@@ -100,29 +109,33 @@ impl Progress {
     }
 }
 
-fn key(id: &str, app_id: u32) -> Result<String> {
-    validate_account(id)?;
+fn validate_request(id: &str, app_id: u32) -> Result<()> {
+    validate_steam_id64(id)?;
     if app_id == 0 {
         return Err(VapourflyError::InvalidInput(
             "AppID must be positive".into(),
         ));
     }
-    Ok(format!("{id}-{app_id}"))
+    Ok(())
 }
 
 pub fn load(cache: &DiskCache, id: &str, app_id: u32) -> Result<Option<Progress>> {
-    let record = cache.get::<Progress>(SOURCE, &key(id, app_id)?)?;
+    validate_request(id, app_id)?;
+    let record = match cache.get::<Progress>(SOURCE, &format!("{id}-{app_id}")) {
+        Ok(record) => record,
+        // A corrupt cache cannot establish progress; an explicit refresh can replace it.
+        Err(VapourflyError::ParseError { .. }) => return Ok(None),
+        Err(error) => return Err(error),
+    };
     match record {
-        Some(record) if record.data.steam_id64 != id || record.data.app_id != app_id => Err(
-            VapourflyError::InvalidInput("Achievement cache identity mismatch".into()),
-        ),
+        Some(record) if record.data.steam_id64 != id || record.data.app_id != app_id => Ok(None),
         other => Ok(other.map(|r| r.data)),
     }
 }
 
 #[derive(Deserialize)]
 struct SchemaEnvelope {
-    game: SchemaGame,
+    game: Option<SchemaGame>,
 }
 
 #[derive(Deserialize)]
@@ -163,8 +176,11 @@ struct PlayerAchievement {
 
 fn schema(body: &[u8]) -> std::result::Result<BTreeSet<String>, Status> {
     let wire: SchemaEnvelope = serde_json::from_slice(body).map_err(|_| Status::Malformed)?;
-    let stats = wire.game.stats.ok_or(Status::MissingSchema)?;
-    let rows = stats.achievements.unwrap_or_default();
+    let game = wire.game.ok_or(Status::MissingSchema)?;
+    let rows = game
+        .stats
+        .and_then(|stats| stats.achievements)
+        .unwrap_or_default();
     let mut names = BTreeSet::new();
     for row in rows {
         if row.name.is_empty() {
@@ -248,7 +264,8 @@ pub fn refresh(
     offline: bool,
     control: &RefreshControl,
 ) -> Result<Option<Progress>> {
-    let cache_key = key(id, app_id)?;
+    validate_request(id, app_id)?;
+    let cache_key = format!("{id}-{app_id}");
     let previous = load(cache, id, app_id)?;
     let Some(api_key) = api_key.filter(|k| !k.is_empty() && !offline) else {
         return Ok(previous);
@@ -422,6 +439,109 @@ mod tests {
         }
     }
 
+    fn progress() -> Progress {
+        Progress {
+            steam_id64: ID.into(),
+            app_id: 10,
+            status: Status::Available,
+            total: Some(2),
+            unlocked: Some(1),
+            unlocks: BTreeMap::from([("private-unlock-history".into(), Some(100))]),
+            checked_at: Utc::now(),
+            fetched_at: Some(Utc::now()),
+        }
+    }
+
+    #[test]
+    fn summary_exposes_progress_not_identity_or_unlock_history() {
+        let summary = progress().summary();
+        assert!(summary.contains("1/2") && summary.contains("50.0%"));
+        assert!(!summary.contains(ID));
+        assert!(!summary.contains("private-unlock-history"));
+    }
+
+    #[test]
+    fn automatic_refresh_cools_down_failures_only() {
+        let mut p = progress();
+        assert!(!p.automatic_refresh_due());
+        p.fetched_at = Some(Utc::now() - chrono::Duration::hours(25));
+        assert!(p.automatic_refresh_due());
+        p.status = Status::RateLimited;
+        assert!(p.stale());
+        assert!(!p.automatic_refresh_due());
+        p.checked_at = Utc::now() - chrono::Duration::seconds(3601);
+        assert!(p.automatic_refresh_due());
+        p.status = Status::NoAchievements;
+        p.checked_at = Utc::now();
+        assert!(p.automatic_refresh_due());
+    }
+
+    #[test]
+    fn invalid_cache_is_absent_evidence_and_refresh_replaces_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = DiskCache::new(temp.path());
+        let path = cache.path_for(SOURCE, &format!("{ID}-10"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"invalid json").unwrap();
+        assert!(load(&cache, ID, 10).unwrap().is_none());
+        let mut foreign = progress();
+        foreign.steam_id64 = OTHER.into();
+        for data in [
+            foreign,
+            Progress {
+                app_id: 20,
+                ..progress()
+            },
+        ] {
+            cache
+                .put(&CacheRecord {
+                    source: SOURCE.into(),
+                    key: format!("{ID}-10"),
+                    data,
+                    fetched_at: Utc::now(),
+                    ttl: TTL,
+                    stale: false,
+                    etag: None,
+                })
+                .unwrap();
+            assert!(load(&cache, ID, 10).unwrap().is_none());
+        }
+        let http = HttpClient::with_backend(Box::new(Backend {
+            calls: Arc::new(AtomicUsize::new(0)),
+            status: 200,
+            body: format!(
+                r#"{{"playerstats":{{"success":true,"steamID":"{ID}","achievements":[{{"apiname":"A","achieved":0}},{{"apiname":"B","achieved":0}}]}}}}"#
+            ),
+        }));
+        assert_eq!(
+            refresh(
+                &cache,
+                &http,
+                Some("secret"),
+                ID,
+                10,
+                false,
+                &RefreshControl::default()
+            )
+            .unwrap()
+            .unwrap()
+            .unlocked,
+            Some(0)
+        );
+        assert_eq!(
+            load(&cache, ID, 10).unwrap().unwrap().status,
+            Status::Available
+        );
+        assert!(load(&cache, "invalid", 10).is_err());
+        assert!(load(&cache, ID, 0).is_err());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(matches!(
+            load(&cache, ID, 10),
+            Err(VapourflyError::FileNotFound { .. })
+        ));
+    }
+
     #[test]
     fn complete_sets_zero_partial_all_and_account_isolation() {
         let temp = tempfile::tempdir().unwrap();
@@ -492,7 +612,8 @@ mod tests {
 
     #[test]
     fn missing_restricted_incomplete_and_no_achievements_are_distinct() {
-        assert_eq!(schema(br#"{"game":{}}"#), Err(Status::MissingSchema));
+        assert_eq!(schema(b"{}"), Err(Status::MissingSchema));
+        assert!(schema(br#"{"game":{}}"#).unwrap().is_empty());
         assert!(
             schema(br#"{"game":{"availableGameStats":{}}}"#)
                 .unwrap()

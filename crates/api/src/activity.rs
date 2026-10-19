@@ -124,7 +124,7 @@ impl ActivitySnapshot {
     }
 }
 
-pub fn validate_account(id: &str) -> Result<()> {
+pub fn validate_steam_id64(id: &str) -> Result<()> {
     let base = vapourfly_core::steam::STEAM_ID64_BASE;
     if id.len() != 17
         || !id.bytes().all(|b| b.is_ascii_digit())
@@ -153,7 +153,7 @@ pub(crate) fn encode_query(value: &str) -> String {
 }
 
 pub fn load(cache: &DiskCache, id: &str) -> Result<Option<ActivitySnapshot>> {
-    validate_account(id)?;
+    validate_steam_id64(id)?;
     let record = cache.get::<ActivitySnapshot>(SOURCE, id)?;
     match record {
         Some(record) if record.data.steam_id64 != id => Err(VapourflyError::InvalidInput(
@@ -262,7 +262,7 @@ pub fn refresh(
     offline: bool,
     control: &RefreshControl,
 ) -> Result<Option<ActivitySnapshot>> {
-    validate_account(id)?;
+    validate_steam_id64(id)?;
     let previous = match load(cache, id) {
         Ok(snapshot) => snapshot,
         Err(VapourflyError::ParseError { .. }) => None,

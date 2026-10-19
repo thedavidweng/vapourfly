@@ -233,8 +233,6 @@ No real key or device sign-in is required by tests or local cache workflows;
 provider permission and private-profile behavior remain real-account
 acceptance boundaries.
 
-## Caching
-
 ### Account achievement progress
 
 The documented Steam user-key interfaces are
@@ -265,6 +263,8 @@ cache root. Schema is shared game metadata in `steam-achievement-schema`.
 Failures preserve prior counts and data timestamps but invalidate current
 percentage/Perfected claims. Account switching discards visible progress and
 cancels further requests for the previous account. No Steam file is modified.
+
+## Caching
 
 All API responses are cached locally under the Vapourfly cache directory (reported by `vapourfly doctor`). The cache:
 

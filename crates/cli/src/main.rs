@@ -948,39 +948,34 @@ fn cmd_achievements(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let resolved = cli.resolved_config()?;
     let accounts = steam::detect_accounts(&resolved.steam_dir)?;
-    let account = steam::select_account(&accounts, resolved.account.as_deref())?;
+    let selected = steam::select_account(&accounts, resolved.account.as_deref())?;
     let scan = steam::scan_library(&steam::ScanOptions {
         steam_dir: resolved.steam_dir.clone(),
-        account: Some(account.steam_id64.clone()),
+        account: Some(selected.steam_id64.clone()),
         fixtures: cli.fixtures.clone(),
     })?;
     if !scan.games.iter().any(|g| g.app_id == app_id) {
         return Err("AppID is not in the selected account's local Library".into());
     }
-    let cache = vapourfly_api::cache::DiskCache::new(resolved.cache_root);
+    let cache = vapourfly_api::cache::DiskCache::new(vapourfly_core::config::default_cache_dir());
     let progress = if refresh {
         vapourfly_api::achievements::refresh(
             &cache,
             &vapourfly_api::http::HttpClient::new(),
             resolved.steam_api_key.as_deref(),
-            &account.steam_id64,
+            &selected.steam_id64,
             app_id,
             cli.offline,
             &vapourfly_api::activity::RefreshControl::default(),
         )?
     } else {
-        vapourfly_api::achievements::load(&cache, &account.steam_id64, app_id)?
+        vapourfly_api::achievements::load(&cache, &selected.steam_id64, app_id)?
     };
     match format {
         OutputFormat::Table => {
-            let display = progress
-                .as_ref()
-                .map(|p| (p.status, p.unlocked, p.total, p.fetched_at));
-            let summary = display.map_or_else(
+            let summary = progress.as_ref().map_or_else(
                 || "Steam achievements: unknown / not fetched".into(),
-                |(status, unlocked, total, fetched_at)| {
-                    achievement_table_summary(status, unlocked, total, fetched_at)
-                },
+                vapourfly_api::achievements::Progress::summary,
             );
             println!("{summary}");
         }
@@ -994,41 +989,6 @@ fn cmd_achievements(
         }
     }
     Ok(())
-}
-
-fn achievement_table_summary(
-    status: vapourfly_api::achievements::Status,
-    unlocked: Option<u32>,
-    total: Option<u32>,
-    fetched_at: Option<chrono::DateTime<chrono::Utc>>,
-) -> String {
-    let percentage = match (status, unlocked, total) {
-        (vapourfly_api::achievements::Status::Available, Some(unlocked), Some(total))
-            if total > 0 =>
-        {
-            format!("{:.1}%", 100.0 * f64::from(unlocked) / f64::from(total))
-        }
-        _ => "percentage unknown".into(),
-    };
-    let freshness = if matches!(
-        status,
-        vapourfly_api::achievements::Status::Available
-            | vapourfly_api::achievements::Status::NoAchievements
-    ) && fetched_at.is_some_and(|time| {
-        chrono::Utc::now().signed_duration_since(time).num_seconds() <= 24 * 60 * 60
-    }) {
-        "fresh"
-    } else {
-        "stale/limited"
-    };
-    format!(
-        "Steam achievements: {:?}; {}/{}; {}; {} (user-key API)",
-        status,
-        unlocked.map_or_else(|| "?".into(), |count| count.to_string()),
-        total.map_or_else(|| "?".into(), |count| count.to_string()),
-        percentage,
-        freshness,
-    )
 }
 
 fn cmd_account_activity(
