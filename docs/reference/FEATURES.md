@@ -69,7 +69,9 @@ does not establish Perfected. Cached stale authoritative counts remain labeled.
 The Library **Filters > Progress** controls include **Unfinished** (known
 activity, neither locally story completed nor achievement Perfected) and
 **Near-perfect** (fresh authoritative counts at least 90% but below 100%).
-Unknown progress does not match either filter. Coverage and errors remain visible
+Unknown activity excludes Unfinished; missing or stale authoritative achievement
+counts exclude Near-perfect. Known playtime alone can qualify for Unfinished.
+Coverage and errors remain visible
 above the Library. Reads share the existing background prepare, with no network
 or per-frame disk reads. Rescan reloads externally edited local marks.
 

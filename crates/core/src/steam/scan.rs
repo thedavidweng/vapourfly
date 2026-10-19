@@ -253,6 +253,13 @@ pub fn scan_library(opts: &ScanOptions) -> Result<ScanResult> {
         );
     }
 
+    if games_map.remove(&0).is_some() {
+        warnings.push(ScanWarning {
+            code: "invalid_app_id".into(),
+            message: "Ignored invalid AppID 0 from local Steam data".into(),
+        });
+    }
+
     let unresolved: HashSet<u32> = games_map
         .values()
         .filter(|game| game.has_placeholder_name())
@@ -340,6 +347,52 @@ mod tests {
     }
 
     // -- Basic scan -----------------------------------------------------------
+
+    #[test]
+    fn scan_rejects_zero_app_id_with_diagnostic() {
+        for include_zero_manifest in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let steam = temp.path();
+            std::fs::create_dir_all(steam.join("steamapps")).unwrap();
+            for id in [10, 0]
+                .into_iter()
+                .filter(|id| *id != 0 || include_zero_manifest)
+            {
+                std::fs::write(
+                    steam.join(format!("steamapps/appmanifest_{id}.acf")),
+                    format!(
+                        r#""AppState" {{ "appid" "{id}" "name" "Game {id}" "installdir" "game" }}"#
+                    ),
+                )
+                .unwrap();
+            }
+            let userdata = resolve_userdata_dir(steam, "0").join("config");
+            std::fs::create_dir_all(&userdata).unwrap();
+            std::fs::write(
+                userdata.join("localconfig.vdf"),
+                r#""UserLocalConfigStore" { "Software" { "Valve" { "Steam" { "apps" { "0" { "Playtime" "5" } } } } } }"#,
+            )
+            .unwrap();
+            let result = scan_library(&ScanOptions {
+                steam_dir: steam.to_path_buf(),
+                account: None,
+                fixtures: None,
+            })
+            .unwrap();
+            assert_eq!(
+                result.games.iter().map(|g| g.app_id).collect::<Vec<_>>(),
+                vec![10]
+            );
+            assert_eq!(
+                result
+                    .warnings
+                    .iter()
+                    .filter(|w| w.code == "invalid_app_id")
+                    .count(),
+                1
+            );
+        }
+    }
 
     #[test]
     fn scan_fixture_library_returns_games() {

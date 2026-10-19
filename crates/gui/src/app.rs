@@ -2485,6 +2485,23 @@ impl VapourflyApp {
         snapshot.progress.as_ref().ok()?.get(&app_id)
     }
 
+    pub(crate) fn game_progress_summary(&self, app_id: u32) -> String {
+        let Some(snapshot) = self
+            .prepared_snapshot
+            .as_ref()
+            .filter(|s| s.fingerprint == self.library_prepare_fingerprint())
+        else {
+            return "Progress evidence loading".into();
+        };
+        match &snapshot.progress {
+            Ok(progress) => progress.get(&app_id).map_or_else(
+                || "Progress unavailable: game is not in the prepared Library".into(),
+                vapourfly_core::progress::Summary::label,
+            ),
+            Err(error) => format!("Progress unavailable: {error}"),
+        }
+    }
+
     pub(crate) fn progress_coverage(&self) -> String {
         let Some(snapshot) = self
             .prepared_snapshot
@@ -2519,10 +2536,10 @@ impl VapourflyApp {
             return Err("Story edits are disabled in demo mode.".into());
         }
         let account = self.active_account().ok_or("Select a Steam account.")?;
-        if !self
+        if self
             .scan_result
             .as_ref()
-            .is_some_and(|s| s.account == account.account_name)
+            .is_none_or(|s| s.account != account.account_name)
             || self.game_progress(app_id).is_none()
         {
             return Err("Prepare the selected account's owned Library first.".into());
@@ -6381,6 +6398,33 @@ mod tests {
             !temp.path().join("cache").exists(),
             "offline edits do not create provider cache or requests"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn story_progress_gui_details_distinguish_failure_from_loading() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(&temp.path().join("cache"));
+        app.story_dir = temp.path().join("personal/story");
+        app.ui_demo = false;
+        let id = app.scan_result.as_ref().unwrap().games[0].app_id;
+        app.inject_prepared_snapshot();
+        app.set_story_completed(id, true).unwrap();
+        let record = app
+            .story_dir
+            .join("76561198000000001")
+            .join(format!("{id}.json"));
+        std::fs::write(record, "not json").unwrap();
+        app.inject_prepared_snapshot();
+        assert!(
+            app.game_progress_summary(id)
+                .starts_with("Progress unavailable:")
+        );
+        assert!(!app.game_progress_summary(id).contains("loading"));
+        assert!(app.game_progress(id).is_none());
+        assert!(app.set_story_completed(id, false).is_err());
+        app.prepared_snapshot = None;
+        assert_eq!(app.game_progress_summary(id), "Progress evidence loading");
     }
 
     #[test]

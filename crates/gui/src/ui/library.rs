@@ -459,7 +459,7 @@ impl GuiRoot {
                         story_action.update(cx, |this, cx| {
                             match this.app.set_story_completed(id, !story_completed) {
                                 Ok(()) => {
-                                    window.push_notification("Local story completion updated", cx)
+                                    window.push_notification("Local story completion updated", cx);
                                 }
                                 Err(error) => window.push_notification(error, cx),
                             }
@@ -492,11 +492,7 @@ impl GuiRoot {
                     )
                     .item("Last played", last_played, 1)
                     .item("Achievements", self.app.achievement_summary(id), 2)
-                    .item(
-                        "Progress",
-                        progress.map_or_else(|| "Unknown / loading".into(), |p| p.label()),
-                        2,
-                    )
+                    .item("Progress", self.app.game_progress_summary(id), 2)
                     .item(
                         "Time to beat",
                         hltb_minutes(game).map_or_else(|| "—".to_string(), format_playtime),

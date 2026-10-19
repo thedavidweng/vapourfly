@@ -15,8 +15,9 @@ Run these steps on the target device before recording #31 native acceptance:
    count and Perfected state. Rescan/restart and confirm persistence.
 2. Activate **Undo story completion**; confirm it disappears and survives rescan.
    Verify **Filters > Progress > Unfinished**, then **Near-perfect**, and removable
-   filter chips. Unknown evidence never matches; near-perfect requires fresh
-   authoritative 90%..<100% counts, not merely high playtime.
+   filter chips. Unknown activity excludes Unfinished, but known playtime alone
+   can qualify. Near-perfect requires fresh authoritative 90%..<100% counts,
+   not merely high playtime; missing/stale counts never qualify.
 3. Switch accounts: old marks/counts must not appear before or after the next scan.
    Switch back and confirm the original account's marks remain. Verify the progress
    coverage caption and explicit corrupt-record error state. Demo edits are disabled.

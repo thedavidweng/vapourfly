@@ -57,8 +57,9 @@ With no AppID, list/filter the selected account's owned Library. `--story`
 requires an owned AppID and changes only Vapourfly's local narrative mark,
 never Steam files or achievements. Unfinished excludes marked stories and
 achievement Perfected games, and requires known activity evidence. Near-perfect
-requires fresh authoritative achievement counts in [90%, 100%). Missing data
-does not match either filter. Table output includes evidence coverage; JSON
+requires fresh authoritative achievement counts in [90%, 100%). Unknown activity
+excludes Unfinished; missing or stale achievement counts exclude Near-perfect.
+Known playtime alone can qualify for Unfinished. Table output includes evidence coverage; JSON
 contains AppID and progress only, without account identifiers or unlock history.
 No network requests or API credentials are required. Local marks survive cache
 clears; corrupt records report an error instead of silently losing the mark.
