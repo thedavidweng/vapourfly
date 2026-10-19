@@ -15,6 +15,7 @@ pub mod error;
 pub mod junk;
 pub mod models;
 pub mod mood;
+pub mod personal_store;
 pub mod playlist;
 pub mod playlist_store;
 pub mod preferences;

@@ -65,6 +65,27 @@ refresh still requires an authorized key and provider visibility, and is disable
 offline. Reopen the dialog for a fresh snapshot. Inventory exports omit account
 identifiers, per-game payloads and credentials. This command does not clear data.
 
+### Confirmed Personal Cleanup
+
+```bash
+vapourfly --offline --account <steamid64> accounts clear --scope cached
+vapourfly --offline --account <steamid64> accounts clear --scope cached --confirm
+vapourfly --offline --account <steamid64> accounts clear --scope authored --confirm
+```
+
+Without `--confirm`, print the inventory and scope warning without removing
+records. The preview takes account locks until it exits; live personal refresh
+and authored writers fail busy while another preview/cleanup owns their scope.
+`cached` removes the activity snapshot and all per-game player achievement
+records, including orphaned titles; shared achievement schemas remain.
+`authored` permanently removes the selected account's story marks and preferences
+(including invalid/temporary authored files). This cannot be undone.
+Other accounts, metadata, Playlists, unrelated settings and Steam files remain.
+No key or network is required. Partial failures are explicit; reopen inventory
+before retry. Following profile/ranking commands read current disk evidence.
+Data Sources has the same two preview/confirm actions, rejects active personal
+refresh, checks the current account again on confirm and reloads derived evidence.
+
 ### Account Progress (Local And Cache-Only)
 
 ```bash
