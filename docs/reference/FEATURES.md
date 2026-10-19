@@ -154,7 +154,8 @@ Hidden/junk and known non-games do not contribute. Ownership alone has no weight
 Lifetime weights are `minutes/(minutes+600)`, recent weights
 `minutes/(minutes+120)`: continuous and bounded, so one huge playtime cannot grow
 without limit. Interested adds 0.25 to long-term only and resetting removes it.
-Existing Recommendations/Discover ranking remains unchanged by this view.
+Recommendations consume this profile (see Personal Owned-Library Ranking);
+Discover ranking is unchanged by this view.
 
 Local/cached minutes are combined by maximum, never added across sources. Cached
 recent samples older than 14 days and observations whose known last-played time

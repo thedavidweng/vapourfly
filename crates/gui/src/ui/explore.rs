@@ -556,7 +556,7 @@ impl GuiRoot {
                                             .and_then(|games| games.iter().find(|g| g.app_id == id))
                                             .and_then(|g| g.playtime_minutes)
                                         {
-                                            None => "Activity unknown".to_string(),
+                                            None => "Local playtime unavailable".to_string(),
                                             Some(0) => "No local playtime recorded".to_string(),
                                             Some(m) => {
                                                 format!("{} local playtime", format_playtime(m))

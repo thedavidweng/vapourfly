@@ -4601,7 +4601,6 @@ pub(crate) fn execute_backup_restore(
 /// cards without keeping a borrow on the scan result.
 #[derive(Clone, Default)]
 pub(crate) struct GameSummary {
-    pub(crate) playtime_minutes: u32,
     pub(crate) hltb_minutes: Option<u32>,
     pub(crate) rating_0_5: Option<f32>,
     pub(crate) proton_tier: Option<ProtonTier>,
@@ -4610,7 +4609,6 @@ pub(crate) struct GameSummary {
 impl From<&Game> for GameSummary {
     fn from(g: &Game) -> Self {
         Self {
-            playtime_minutes: g.playtime_minutes.unwrap_or(0),
             hltb_minutes: signal::main_story_seconds(g).map(|s| s / 60),
             rating_0_5: g.rawg.as_ref().and_then(|r| r.rating_0_5),
             proton_tier: g.protondb.as_ref().map(|p| p.tier),
@@ -6812,7 +6810,10 @@ mod tests {
             snapshot.progress.as_ref().unwrap(),
             chrono::Utc::now().timestamp(),
         );
-        assert_ne!(expected.iter().map(|r| r.app_id).collect::<Vec<_>>(), []);
+        assert_ne!(
+            expected.iter().map(|r| r.app_id).collect::<Vec<_>>(),
+            Vec::<u32>::new()
+        );
         app.start_recommend_preview();
         for _ in 0..1000 {
             if !app.recommend_loading {
@@ -6859,7 +6860,7 @@ mod tests {
                 .iter()
                 .map(|r| r.app_id)
                 .collect::<Vec<_>>(),
-            []
+            Vec::<u32>::new()
         );
         assert!(app.recommend_job_id.is_none());
         assert!(!temp.path().join("cache").exists());

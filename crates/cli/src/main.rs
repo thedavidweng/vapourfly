@@ -2848,6 +2848,33 @@ mod tests {
                 .unwrap();
             }
             assert!(!config::default_cache_dir().exists());
+            // Personal edits are not disposable provider caches: corruption must be visible.
+            std::fs::write(
+                config::default_story_dir().join(id).join("427520.json"),
+                b"{broken",
+            )
+            .unwrap();
+            let error = cmd_recommend(
+                &cli,
+                RecommendArgs {
+                    minutes: 120,
+                    count: 5,
+                    deck: false,
+                    installed_only: false,
+                    seed: Some(42),
+                    exclude_collections: vec![],
+                    to_collection: false,
+                    dry_run: false,
+                    confirm: false,
+                    format: OutputFormat::Json,
+                },
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("Invalid story completion record")
+            );
             return;
         }
         let root = tempfile::tempdir().unwrap();

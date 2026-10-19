@@ -1,6 +1,6 @@
 //! Cache-only owned-library ranking with attributable, bounded contributions.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::models::{Game, ProtonTier, RecommendReason, RecommendRequest, Recommendation};
 use crate::{preferences, progress, scoring, taste};
@@ -30,12 +30,18 @@ fn score_game(
     game: &Game,
     request: &RecommendRequest,
     profile: &taste::TasteProfile,
+    concepts: &BTreeSet<String>,
     progress: Option<&progress::Summary>,
     prefs: &preferences::Preferences,
     now: i64,
 ) -> Recommendation {
     let mut reasons = Vec::new();
-    let title = profile.titles.iter().find(|t| t.app_id == game.app_id);
+    // The shared derivation emits title evidence in AppID order.
+    let title = profile
+        .titles
+        .binary_search_by_key(&game.app_id, |t| t.app_id)
+        .ok()
+        .map(|index| &profile.titles[index]);
     let playtime = title.and_then(|t| t.activity.iter().filter_map(|a| a.lifetime_minutes).max());
     if let Some(minutes) = playtime.filter(|m| *m < 120) {
         contribution(
@@ -83,7 +89,7 @@ fn score_game(
         contribution(
             &mut reasons,
             "high_rating",
-            "Cached game quality (bounded 0..1; not personal completion)".into(),
+            "Above-midpoint cached game quality (bounded 0..1; low/missing neutral; not personal completion)".into(),
             weight,
         );
     }
@@ -91,9 +97,8 @@ fn score_game(
         ("taste_similarity", &profile.long_term, 3.0),
         ("recent_taste", &profile.recent, 0.5),
     ] {
-        let affinity = scoring::profile_affinity(game, tags);
+        let affinity = scoring::profile_affinity(concepts, tags);
         if affinity > 0.0 {
-            let concepts = taste::canonical_tags(game);
             let matches = tags
                 .iter()
                 .filter(|t| concepts.contains(&t.tag))
@@ -211,7 +216,7 @@ pub fn recommend_personalized(
     now: i64,
 ) -> Vec<Recommendation> {
     use crate::eligibility::{EligibilityOptions, is_eligible};
-    let mut candidates: Vec<_> = games
+    let eligible: Vec<_> = games
         .iter()
         .filter(|g| {
             is_eligible(
@@ -226,11 +231,24 @@ pub fn recommend_personalized(
                     .iter()
                     .any(|c| request.exclude_collections.contains(c))
         })
-        .map(|g| score_game(g, request, profile, progress.get(&g.app_id), prefs, now))
         .collect();
-    let tags: BTreeMap<_, _> = games
+    let tags: BTreeMap<_, _> = eligible
         .iter()
         .map(|g| (g.app_id, taste::canonical_tags(g)))
+        .collect();
+    let mut candidates: Vec<_> = eligible
+        .iter()
+        .map(|g| {
+            score_game(
+                g,
+                request,
+                profile,
+                &tags[&g.app_id],
+                progress.get(&g.app_id),
+                prefs,
+                now,
+            )
+        })
         .collect();
     let mut result: Vec<Recommendation> = Vec::new();
     while !candidates.is_empty() && result.len() < request.count {
@@ -858,6 +876,28 @@ mod tests {
                 .all(|r| r.code != "likely_finished_penalty"),
             "playtime must not infer completion"
         );
+    }
+
+    #[test]
+    fn low_quality_is_neutral_and_above_midpoint_quality_is_continuous() {
+        let mut games: Vec<_> = (1..=5).map(|id| tagged(id, &[])).collect();
+        for (game, rating) in
+            games
+                .iter_mut()
+                .zip([Some(1.0), None, Some(2.5), Some(4.0), Some(5.0)])
+        {
+            game.rawg.as_mut().unwrap().rating_0_5 = rating;
+        }
+        let mut request = default_request();
+        request.seed = None;
+        let picks = recommend(&games, &request);
+        assert_eq!(
+            picks.iter().map(|r| r.app_id).collect::<Vec<_>>(),
+            vec![5, 4, 1, 2, 3]
+        );
+        assert!((picks[0].score - picks[1].score - 0.4).abs() < 1e-5);
+        assert_eq!(picks[2].score, picks[3].score);
+        assert_eq!(picks[3].score, picks[4].score);
     }
 
     #[test]

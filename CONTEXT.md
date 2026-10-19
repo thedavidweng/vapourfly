@@ -169,7 +169,7 @@ Profile. Signed, bounded contributions are shared by CLI and GUI:
 - `deck_compatible` (Native +2 / Platinum +1.5 / Gold +1, Deck mode only).
 - `time_match` (+1.5): legacy cached whole-story estimate fits the window; this
   is not remaining time, session shape, or proof of provider rights (#27/#36).
-- `high_rating` (0..1): continuous maximum of normalized cached RAWG/IGDB quality.
+- `high_rating` (0..1): continuous above-midpoint maximum of normalized cached RAWG/IGDB quality; low and missing ratings are neutral.
 - `taste_similarity` (0..3) and `recent_taste` (0..0.5): fraction of canonical
   profile mass covered by a candidate's cached concepts, not a binary bonus.
 - `recently_played_penalty` (-1..0): linearly decays over the last 14 days;
