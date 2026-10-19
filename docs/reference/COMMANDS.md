@@ -407,3 +407,10 @@ Most commands that produce tabular output support `--format`:
 | `VAPOURFLY_RAWG_KEY` | RAWG API key |
 | `VAPOURFLY_STEAM_API_KEY` | Steam Web API key for owned-game name resolution (overrides `steam_api_key` in config) |
 | `RUST_LOG` | Override log level (default: `warn`, or `debug` with `--verbose`) |
+# Account achievement progress
+
+`accounts achievements <AppID> [--refresh] [--format table|json]` inspects
+official progress for an owned Library game. The default and `--offline`
+are cache-only. Explicit refresh makes at most two documented Steam user-key
+requests and reports unknown/restricted/incomplete separately from zero.
+JSON excludes account identifiers and individual unlock history.

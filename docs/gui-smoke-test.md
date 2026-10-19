@@ -237,3 +237,14 @@ the new account. Automated mock coverage exercises available, empty,
 restricted, unauthorized, rate-limited, malformed and transport-failure
 responses. Native foreground acceptance with a real key/device is intentionally
 not claimed here.
+# Achievement progress acceptance
+
+- Open an owned Library game's details. The sheet remains interactive while
+  achievements load and displays Steam provenance, status and freshness.
+- With an authorized test key, compare zero, partial and complete achievement
+  sets against Steam. Confirm private/restricted profiles never become 0%.
+- Switch accounts while loading; previous-account progress must disappear.
+- Open the same game offline and without a key; cached evidence remains usable
+  and no requests occur. Unknown data remains unknown.
+- Exercise opening/closing the sheet with keyboard and controller on the
+  target device. Mock tests do not establish device or provider acceptance.

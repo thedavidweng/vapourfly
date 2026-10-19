@@ -233,6 +233,37 @@ No real key or device sign-in is required by tests or local cache workflows;
 provider permission and private-profile behavior remain real-account
 acceptance boundaries.
 
+### Account achievement progress
+
+The documented Steam user-key interfaces are
+`ISteamUserStats/GetSchemaForGame/v2` and
+`ISteamUserStats/GetPlayerAchievements/v1`
+([provider reference](https://partner.steamgames.com/doc/webapi/ISteamUserStats)).
+They use the player's locally configured normal Web API key; a publisher key
+is not requested. Local account selection does not grant permission to read
+private Steam profiles. Real-key eligibility and privacy behavior must be
+verified by an authorized account holder.
+
+```bash
+# Read only; never requests data.
+vapourfly accounts achievements 620 --format json
+# Explicit bounded refresh (maximum one schema + one player request).
+vapourfly accounts achievements 620 --refresh
+```
+
+Library game details start a bounded background refresh when cached progress
+is absent or stale and credentials are available. First paint, offline reads
+and no-key reads never wait for achievements. Schema IDs define the
+denominator; only a complete matching player set can produce a percentage or
+Perfected. Zero unlocks, no achievements, missing schema, restricted visibility,
+incomplete responses and request failures remain distinct.
+
+Progress is stored in `steam-achievements/<SteamID64>-<AppID>.json` under the
+cache root. Schema is shared game metadata in `steam-achievement-schema`.
+Failures preserve prior counts and data timestamps but invalidate current
+percentage/Perfected claims. Account switching discards visible progress and
+cancels further requests for the previous account. No Steam file is modified.
+
 ## Caching
 
 All API responses are cached locally under the Vapourfly cache directory (reported by `vapourfly doctor`). The cache:
