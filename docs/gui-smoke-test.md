@@ -353,3 +353,22 @@ devices with an authorized test account before claiming those gates.
 - Switch accounts and reopen: no retained previous-account inventory. Opening
   or closing must not change personal files, shared metadata, Playlists or Steam.
 - No clear/delete acceptance is implied by this read-only dialog.
+
+## Confirmed Personal Cleanup
+
+- Use an isolated, disposable account fixture; inventory cached and authored
+  records first. Record another account, shared schemas/metadata, saved Playlists,
+  settings and Steam contents to verify preservation.
+- In Data Sources, open each clear preview. Verify its scope and permanent/no-undo
+  authored warning, then Cancel/Escape. Reopen to prove locks were released;
+  records must remain. Busy personal refresh must reject cleanup explicitly.
+- With explicit action-time authorization, confirm one scope. Cached must retain
+  story/preferences; authored must retain remote caches. Unrelated/other-account
+  files remain unchanged. Profile/traits/recommend/Discover must not show old
+  evidence or accept a late pre-clear result; cleared remote data stays unknown.
+- Restart and reopen inventory: deletion persists without automatic provider
+  repopulation. Switch accounts: no prior-account evidence or deletion.
+- A partial removal failure must say some records may be gone and invalidate old
+  in-memory evidence. Reopen inventory before retry; do not mask the error.
+- Automated API/CLI/app-state fixture checks are not a native confirmation,
+  real Steam/provider/privacy or physical-controller acceptance.

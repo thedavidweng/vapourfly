@@ -4,6 +4,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme, Disableable, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
+    dialog::DialogFooter,
     h_flex,
     input::Input,
     scroll::ScrollableElement,
@@ -92,6 +93,63 @@ fn backup_label(path: &std::path::Path) -> String {
 }
 
 impl GuiRoot {
+    fn personal_clear_button(
+        &self,
+        scope: vapourfly_api::personal_data::ClearScope,
+        cx: &mut Context<Self>,
+    ) -> Button {
+        use vapourfly_api::personal_data::ClearScope;
+        let (id, label) = match scope {
+            ClearScope::Cached => ("preview-cached-clear", "Clear personal caches…"),
+            ClearScope::Authored => ("preview-authored-clear", "Clear local marks & choices…"),
+        };
+        Button::new(id).ghost().label(label)
+            .disabled(self.app.ui_demo || self.app.active_account().is_none()
+                || self.app.activity_loading || self.app.achievement_refreshing())
+            .on_click(cx.listener(move |this, _, window, cx| {
+                let plan = match this.app.preview_personal_clear(scope) {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        window.push_notification(error, cx);
+                        return;
+                    }
+                };
+                let rows = plan.inventory.summary();
+                let owner = std::rc::Rc::new(std::cell::RefCell::new(Some(plan)));
+                let entity = cx.entity();
+                window.open_dialog(cx, move |dialog, _, cx| {
+                    let cancel = owner.clone();
+                    let confirm = owner.clone();
+                    let entity = entity.clone();
+                    dialog.title("Preview selected-account cleanup")
+                        .child(v_flex().gap_3()
+                            .child(widgets::caption(scope.warning(), cx))
+                            .children(rows.iter().cloned().map(|row| widgets::caption(row, cx)))
+                            .child(widgets::caption("Shared metadata, saved Playlists, settings and Steam files will not be removed. Cancel or Escape keeps all records.", cx)))
+                        .footer(DialogFooter::new()
+                            .child(Button::new("personal-clear-cancel").ghost().label("Cancel")
+                                .on_click(move |_, window, cx| {
+                                    cancel.borrow_mut().take();
+                                    window.close_dialog(cx);
+                                }))
+                            .child(Button::new("personal-clear-confirm").primary().label("Confirm clear")
+                                .on_click(move |_, window, cx| {
+                                    if let Some(plan) = confirm.borrow_mut().take() {
+                                        entity.update(cx, |this, cx| {
+                                            match this.app.confirm_personal_clear(plan) {
+                                                Ok(()) => window.push_notification("Personal records cleared; evidence reloading.", cx),
+                                                Err(error) => window.push_notification(error, cx),
+                                            }
+                                            this.arm_poll(cx);
+                                            cx.notify();
+                                        });
+                                    }
+                                    window.close_dialog(cx);
+                                })))
+                });
+            }))
+    }
+
     fn page_width(&self, window: &Window) -> f32 {
         let width: f32 = window.viewport_size().width.into();
         width - self.sidebar_width(window) - 10. - PAGE_PX * 2.
@@ -421,6 +479,13 @@ impl GuiRoot {
             .child(col(120.).child("Last updated"))
             .child(col(84.));
 
+        let personal_clear = h_flex()
+            .flex_wrap()
+            .gap_2()
+            .child(self.personal_clear_button(vapourfly_api::personal_data::ClearScope::Cached, cx))
+            .child(
+                self.personal_clear_button(vapourfly_api::personal_data::ClearScope::Authored, cx),
+            );
         let rows = statuses.iter().enumerate().map(|(i, st)| {
             let id = st.name.clone();
             let signal = source_credential_signal(&id, self.app.has_igdb, self.app.has_rawg);
@@ -620,6 +685,7 @@ impl GuiRoot {
                                 .child(widgets::caption(msg, cx)),
                         )
                     })
+                    .child(personal_clear)
                     .child(
                         widgets::panel(cx)
                             .overflow_hidden()

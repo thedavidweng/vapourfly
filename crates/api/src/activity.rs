@@ -265,13 +265,18 @@ pub fn refresh(
     control: &RefreshControl,
 ) -> Result<Option<ActivitySnapshot>> {
     validate_steam_id64(id)?;
-    let previous = load(cache, id)?;
     let Some(key) = api_key.filter(|key| !key.is_empty()) else {
-        return Ok(previous);
+        return load(cache, id);
     };
     if offline {
-        return Ok(previous);
+        return load(cache, id);
     }
+    let path = cache.path_for(SOURCE, id);
+    let _owner = vapourfly_core::personal_store::lock_account(
+        path.parent().expect("activity cache directory"),
+        id,
+    )?;
+    let previous = load(cache, id)?;
     control.check()?;
     let owned_input = encode_query(
         &serde_json::json!({

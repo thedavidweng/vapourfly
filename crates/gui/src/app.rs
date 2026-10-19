@@ -2632,6 +2632,59 @@ impl VapourflyApp {
         Ok(())
     }
 
+    pub(crate) fn preview_personal_clear(
+        &self,
+        scope: vapourfly_api::personal_data::ClearScope,
+    ) -> Result<vapourfly_api::personal_data::ClearPlan, String> {
+        if self.ui_demo || self.activity_loading || self.achievement_refreshing() {
+            return Err("Cleanup unavailable in demo mode or during personal refresh; finish or cancel refresh first.".into());
+        }
+        let account = self.active_account().ok_or("Select a Steam account.")?;
+        vapourfly_api::personal_data::prepare_clear(
+            &vapourfly_api::cache::DiskCache::new(&self.cache_dir),
+            &self.story_dir,
+            &self.preferences_dir,
+            &account.steam_id64,
+            scope,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn confirm_personal_clear(
+        &mut self,
+        plan: vapourfly_api::personal_data::ClearPlan,
+    ) -> Result<(), String> {
+        if self.ui_demo
+            || self
+                .active_account()
+                .is_none_or(|a| !plan.is_for(&a.steam_id64))
+        {
+            return Err("Account changed or demo mode enabled; cleanup cancelled.".into());
+        }
+        if self.activity_loading || self.achievement_refreshing() {
+            return Err("Finish or cancel personal refresh before clearing records.".into());
+        }
+        let result = plan.clear().map_err(|error| error.to_string());
+        // A partial deletion also invalidates all derived/late results. Reload
+        // cache-only evidence, never rescan or automatically fetch cleared data.
+        self.activity_snapshot = None;
+        self.activity_account_id = None;
+        self.activity_msg = None;
+        self.achievement_progress.clear();
+        self.achievement_coverage = None;
+        self.achievement_pending = 0;
+        self.achievement_msg = None;
+        self.cache_refresh_generation = self.cache_refresh_generation.wrapping_add(1);
+        self.preferences_generation = self.preferences_generation.wrapping_add(1);
+        self.prepared_snapshot = None;
+        self.prepare_job_id = None;
+        self.prepare_fingerprint = None;
+        PREPARED_LIBRARY_RESULT.clear();
+        self.clear_personalized_results();
+        self.ensure_library_prepared();
+        result
+    }
+
     fn clear_personalized_results(&mut self) {
         self.recommend_results.clear();
         self.recommend_selected = None;
@@ -6666,6 +6719,68 @@ mod tests {
         app.scan_result.as_mut().unwrap().account = "alpha".into();
         app.inject_prepared_snapshot();
         app
+    }
+
+    #[test]
+    #[serial]
+    fn personal_clear_gui_cancel_switch_busy_confirm_and_partial_failure_reload() {
+        use vapourfly_api::personal_data::ClearScope;
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(&temp.path().join("cache"));
+        app.story_dir = temp.path().join("story");
+        app.preferences_dir = temp.path().join("preferences");
+        app.ui_demo = false;
+        app.offline_mode = true;
+        let id = "76561198000000001";
+        let game = app.scan_result.as_ref().unwrap().games[0].app_id;
+        vapourfly_core::progress::set_story_completed(&app.story_dir, id, game, true).unwrap();
+        preferences::set(&app.preferences_dir, id, game, Some(Choice::Interested), 1).unwrap();
+        app.inject_prepared_snapshot();
+        let plan = app.preview_personal_clear(ClearScope::Authored).unwrap();
+        drop(plan);
+        assert!(app.story_dir.join(id).exists());
+        assert!(
+            app.preview_personal_clear(ClearScope::Authored).is_ok(),
+            "cancel releases locks"
+        );
+        app.activity_loading = true;
+        assert!(app.preview_personal_clear(ClearScope::Cached).is_err());
+        app.activity_loading = false;
+        let plan = app.preview_personal_clear(ClearScope::Authored).unwrap();
+        app.config.as_mut().unwrap().account = Some("missing".into());
+        assert!(app.confirm_personal_clear(plan).is_err());
+        assert!(app.story_dir.join(id).exists());
+        app.config.as_mut().unwrap().account = Some("alpha".into());
+        let plan = app.preview_personal_clear(ClearScope::Authored).unwrap();
+        let generation = app.preferences_generation;
+        app.discover_loading = true;
+        app.recommend_loading = true;
+        app.confirm_personal_clear(plan).unwrap();
+        assert!(!app.story_dir.join(id).exists());
+        assert!(!app.preferences_dir.join(id).exists());
+        assert_ne!(app.preferences_generation, generation);
+        assert!(app.prepared_snapshot.is_none());
+        assert!(app.taste_profile().is_err());
+        assert!(!app.recommend_loading);
+        assert!(!app.discover_loading);
+        assert!(app.recommend_job_id.is_none());
+        assert!(app.discover_job_id.is_none());
+        app.inject_prepared_snapshot();
+        assert!(!app.game_progress(game).unwrap().story_completed);
+        assert_eq!(app.prepared_preferences().unwrap().len(), 0);
+        vapourfly_core::progress::set_story_completed(&app.story_dir, id, game, true).unwrap();
+        preferences::set(&app.preferences_dir, id, game, Some(Choice::Interested), 1).unwrap();
+        app.inject_prepared_snapshot();
+        let plan = app.preview_personal_clear(ClearScope::Authored).unwrap();
+        std::fs::remove_dir_all(app.preferences_dir.join(id)).unwrap();
+        assert!(
+            app.confirm_personal_clear(plan)
+                .unwrap_err()
+                .contains("some records may have been removed")
+        );
+        assert!(app.prepared_snapshot.is_none());
+        app.inject_prepared_snapshot();
+        assert!(!app.game_progress(game).unwrap().story_completed);
     }
 
     #[test]
