@@ -13,8 +13,8 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, Context, Div, InteractiveElement, IntoElement, ParentElement, SharedString,
-    Styled, Window, div, prelude::*, px,
+    AnyElement, App, Context, Div, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
+    SharedString, Styled, Window, div, prelude::*, px,
 };
 use vapourfly_core::models::SteamCollection;
 
@@ -314,6 +314,56 @@ impl GuiRoot {
                     .on_click(cx.listener(|this, value: &bool, _, cx| {
                         this.app.offline_mode = *value;
                         cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("personal-inventory")
+                    .ghost()
+                    .label("Personal records")
+                    .disabled(self.app.ui_demo || self.app.active_account().is_none())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let Some(selected) = this.app.active_account() else { return };
+                        let inventory = vapourfly_api::personal_data::inspect(
+                            &vapourfly_api::cache::DiskCache::new(&this.app.cache_dir),
+                            &this.app.story_dir,
+                            &this.app.preferences_dir,
+                            &selected.steam_id64,
+                        );
+                        let mut rows = match inventory {
+                            Ok(inventory) => inventory.summary(),
+                            Err(error) => vec![error.to_string()],
+                        };
+                        let key_configured = !this.app.steam_api_key_edit.trim().is_empty()
+                            || vapourfly_core::config::resolve_steam_api_key().is_some();
+                        rows.push(format!("Steam key configured: {key_configured}. {}",
+                            if this.app.offline_mode { "Refresh disabled offline." }
+                            else if key_configured { "Explicit activity/achievement refresh available; provider permission and visibility still required." }
+                            else { "Refresh requires an authorized Steam Web API key." }));
+                        rows.push("Local selection grants no remote permission. This is a read-only snapshot; reopen to inspect again. Shared metadata, Playlists, settings and Steam contents are separate.".into());
+                        let scroll = ScrollHandle::new();
+                        window.open_dialog(cx, move |dialog, _, cx| {
+                            let keyboard_scroll = scroll.clone();
+                            dialog.title("Selected-account personal records").child(
+                                v_flex().id("personal-inventory-scroll").max_h(px(400.)).overflow_y_scroll().gap_3()
+                                    .focusable().tab_index(0).track_scroll(&scroll)
+                                    .on_key_down(move |event, window, cx| {
+                                        if let Some(y) = super::library::evidence_scroll_offset(
+                                            &event.keystroke.key,
+                                            keyboard_scroll.offset().y.into(),
+                                            keyboard_scroll.max_offset().y.into(),
+                                            keyboard_scroll.bounds().size.height.into(),
+                                        ) {
+                                            let mut offset = keyboard_scroll.offset();
+                                            offset.y = px(y);
+                                            keyboard_scroll.set_offset(offset);
+                                            cx.stop_propagation();
+                                            window.refresh();
+                                        }
+                                    })
+                                    .child(widgets::caption("Tab into records; arrows, Page Up/Down and Home/End scroll. Escape closes.", cx))
+                                    .children(rows.iter().cloned().map(|row| widgets::caption(row, cx)))
+                            )
+                        });
                     })),
             )
             .child(

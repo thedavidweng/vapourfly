@@ -343,3 +343,13 @@ result test exercise state handling. API controlled transports cover request
 limits and provider failures. These are not native renderer, real Steam key,
 privacy or hardware/controller acceptance; run the steps above on target
 devices with an authorized test account before claiming those gates.
+## Personal Record Inventory
+
+- With an offline selected account, open Data Sources > Personal records.
+- Verify activity/achievement/story/preference counts, local write times and
+  unknown/freshness explanations; zero local records must not imply no ownership.
+- Verify key status is boolean only and offline refresh is explicitly disabled.
+- Tab into the inventory; arrows/Page Up/Down/Home/End scroll; Escape closes.
+- Switch accounts and reopen: no retained previous-account inventory. Opening
+  or closing must not change personal files, shared metadata, Playlists or Steam.
+- No clear/delete acceptance is implied by this read-only dialog.

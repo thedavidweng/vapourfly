@@ -47,7 +47,7 @@ const HERO_H: f32 = 400.;
 /// Shortest hero, used on 800px-tall screens such as the Steam Deck.
 const HERO_MIN_H: f32 = 300.;
 
-fn evidence_scroll_offset(key: &str, current: f32, max: f32, page: f32) -> Option<f32> {
+pub(super) fn evidence_scroll_offset(key: &str, current: f32, max: f32, page: f32) -> Option<f32> {
     let next = match key {
         "down" => current - 40.,
         "up" => current + 40.,
