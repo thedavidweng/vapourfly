@@ -271,6 +271,14 @@ enum AccountsAction {
         #[arg(long, value_enum, default_value = "table")]
         format: OutputFormat,
     },
+    /// Preview personal cleanup; deletion requires --confirm (never writes Steam).
+    Clear {
+        #[arg(long, value_enum)]
+        scope: PersonalClearScope,
+        /// Permanently remove records after printing the selected scope preview.
+        #[arg(long)]
+        confirm: bool,
+    },
     /// Derive Top Tags from this account's local/cached evidence (never fetches).
     Profile {
         #[arg(long, value_enum, default_value = "table")]
@@ -716,6 +724,9 @@ fn main() {
             AccountsAction::List => cmd_accounts_list(&cli),
             AccountsAction::Inventory { format } => {
                 inventory_with_paths(&cli, *format, &PersonalPaths::default())
+            }
+            AccountsAction::Clear { scope, confirm } => {
+                clear_personal_with_paths(&cli, *scope, *confirm, &PersonalPaths::default())
             }
             AccountsAction::Profile { format } => cmd_profile(&cli, *format),
             AccountsAction::Preferences { action } => cmd_preferences(&cli, action),
@@ -1318,6 +1329,55 @@ fn inventory_with_paths(
                 "Local account selection does not grant remote permission. Shared metadata, Playlists, settings and Steam contents are separate."
             );
         }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum PersonalClearScope {
+    Cached,
+    Authored,
+}
+
+impl From<PersonalClearScope> for vapourfly_api::personal_data::ClearScope {
+    fn from(scope: PersonalClearScope) -> Self {
+        match scope {
+            PersonalClearScope::Cached => Self::Cached,
+            PersonalClearScope::Authored => Self::Authored,
+        }
+    }
+}
+
+fn clear_personal_with_paths(
+    cli: &Cli,
+    scope: PersonalClearScope,
+    confirm: bool,
+    paths: &PersonalPaths,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resolved = cli.resolved_config()?;
+    let accounts = steam::detect_accounts(&resolved.steam_dir)
+        .map_err(|_| PersonalSelectionError::Discovery)?;
+    let selected = steam::select_account(&accounts, resolved.account.as_deref())
+        .map_err(|_| PersonalSelectionError::Selection)?;
+    let plan = vapourfly_api::personal_data::prepare_clear(
+        &vapourfly_api::cache::DiskCache::new(&paths.cache),
+        &paths.story,
+        &paths.preferences,
+        &selected.steam_id64,
+        scope.into(),
+    )?;
+    println!("{}", plan.scope.warning());
+    for line in plan.inventory.summary() {
+        println!("{line}");
+    }
+    println!("Shared metadata, saved Playlists, settings and Steam files are unchanged.");
+    if confirm {
+        plan.clear()?;
+        println!(
+            "Personal cleanup complete. Subsequent profile/ranking commands reload local evidence."
+        );
+    } else {
+        println!("Preview only; no records removed. Re-run with --confirm to clear this scope.");
     }
     Ok(())
 }
@@ -2970,6 +3030,68 @@ mod tests {
             preferences: root.join("preferences"),
             playlists: root.join("playlists"),
         }
+    }
+
+    #[test]
+    fn personal_clear_cli_requires_explicit_scope_and_confirmation() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = personal_test_paths(root.path());
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
+        let id = "76561198000000000";
+        let other = "76561198000000001";
+        for scope in ["cached", "authored"] {
+            for confirmed in [false, true] {
+                let mut args = vec![
+                    "vapourfly",
+                    "--offline",
+                    "--fixtures",
+                    fixtures.to_str().unwrap(),
+                    "--account",
+                    id,
+                    "accounts",
+                    "clear",
+                    "--scope",
+                    scope,
+                ];
+                if confirmed {
+                    args.push("--confirm");
+                }
+                let cli = Cli::try_parse_from(args).unwrap();
+                for account in [id, other] {
+                    vapourfly_core::preferences::set(
+                        &paths.preferences,
+                        account,
+                        10,
+                        Some(vapourfly_core::preferences::Choice::Interested),
+                        1,
+                    )
+                    .unwrap();
+                }
+                let cache = vapourfly_api::cache::DiskCache::new(&paths.cache);
+                let activity = cache.path_for(vapourfly_api::activity::SOURCE, id);
+                std::fs::create_dir_all(activity.parent().unwrap()).unwrap();
+                std::fs::write(&activity, b"unreadable-private-marker").unwrap();
+                let Commands::Accounts {
+                    action:
+                        AccountsAction::Clear {
+                            scope: parsed,
+                            confirm,
+                        },
+                } = &cli.command
+                else {
+                    panic!("clear command");
+                };
+                clear_personal_with_paths(&cli, *parsed, *confirm, &paths).unwrap();
+                assert_eq!(activity.exists(), !(confirmed && scope == "cached"));
+                assert_eq!(
+                    paths.preferences.join(id).exists(),
+                    !(confirmed && scope == "authored")
+                );
+                assert!(paths.preferences.join(other).join("10.json").exists());
+            }
+        }
+        assert!(Cli::try_parse_from(["vapourfly", "accounts", "clear", "--confirm"]).is_err());
     }
 
     #[test]

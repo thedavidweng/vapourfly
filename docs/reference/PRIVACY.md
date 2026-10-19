@@ -111,6 +111,24 @@ In offline mode, all external API calls are blocked. Only locally cached data an
 
 ## Data Retention
 
+- **Confirmed personal cleanup:** `accounts clear --scope cached|authored`
+  previews the selected account's inventory and removal scope; only `--confirm`
+  deletes. Data Sources offers the same two previews with Cancel/Escape and
+  explicit Confirm clear. Cached removes activity snapshots and per-game player
+  achievement caches. Authored permanently removes local story marks and
+  preference choices, including invalid/temporary authored records; no undo.
+  Both preserve other accounts, shared achievement schemas/metadata, saved
+  Playlists, settings and Steam files. Cleanup never calls a provider.
+- **Synchronization and reload:** A preview holds cross-process account locks
+  shared by personal refresh and authored writes until confirmation/cancellation.
+  Busy operations fail explicitly. Close the preview to release ownership.
+  GUI cleanup is unavailable during personal refresh and immediately invalidates
+  old profile/ranking/jobs, including on partial removal failure, then reloads
+  cache-only evidence. A partial failure reports that some records may already
+  be removed; reopen inventory before retry. Cleared remote evidence is unknown,
+  not an empty owned library; authorized explicit refresh may repopulate caches.
+  Small persistent `.lock` coordination files contain no personal payload and
+  must not be removed while Vapourfly processes are active.
 - **Personal inventory:** `accounts inventory` or Data Sources > Personal records
   reads only the selected SteamID64's activity/achievement caches and authored
   story/preferences, including orphaned title records. Counts and local write

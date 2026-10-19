@@ -134,6 +134,7 @@ pub fn set(
 ) -> Result<Option<Record>> {
     validate(id)?;
     validate_app(app_id)?;
+    let _owner = crate::personal_store::lock_account(root, id)?;
     let directory = root.join(id);
     let path = directory.join(format!("{app_id}.json"));
     let Some(choice) = choice else {
@@ -174,6 +175,7 @@ pub fn set(
 /// Never touches story marks, caches, Playlists, Steam files, or another account.
 pub fn reset_all(root: &Path, id: &str) -> Result<()> {
     validate(id)?;
+    let _owner = crate::personal_store::lock_account(root, id)?;
     match std::fs::remove_dir_all(root.join(id)) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

@@ -140,26 +140,10 @@ fn provider_stop(status: Status) -> bool {
     )
 }
 
-fn batch_lock(cache: &DiskCache, id: &str) -> Result<std::fs::File> {
-    let path = cache.path_for(SOURCE, id).with_extension("lock");
-    std::fs::create_dir_all(path.parent().expect("cache source directory"))
-        .map_err(|_| VapourflyError::Internal("Cannot create achievement lock directory".into()))?;
-    let file = std::fs::File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)
-        .map_err(|_| VapourflyError::Internal("Cannot open achievement refresh lock".into()))?;
-    file.try_lock().map_err(|error| match error {
-        std::fs::TryLockError::WouldBlock => VapourflyError::InvalidInput(
-            "An achievement batch is already refreshing this account".into(),
-        ),
-        std::fs::TryLockError::Error(_) => {
-            VapourflyError::Internal("Cannot lock achievement refresh".into())
-        }
-    })?;
-    Ok(file)
+pub(crate) fn batch_lock(cache: &DiskCache, id: &str) -> Result<std::fs::File> {
+    let path = cache.path_for(SOURCE, id);
+    vapourfly_core::personal_store::lock_account(path.parent().expect("cache source directory"), id)
+        .map_err(VapourflyError::from)
 }
 
 /// Inspect a bounded active set without any network requests.
@@ -421,6 +405,24 @@ pub fn refresh(
     control: &RefreshControl,
 ) -> Result<Option<Progress>> {
     validate_request(id, app_id)?;
+    let _owner = if !offline && api_key.is_some_and(|key| !key.is_empty()) {
+        Some(batch_lock(cache, id)?)
+    } else {
+        None
+    };
+    refresh_owned(cache, http, api_key, id, app_id, offline, control)
+}
+
+// The batch already owns the same account lock for its full request sequence.
+fn refresh_owned(
+    cache: &DiskCache,
+    http: &HttpClient,
+    api_key: Option<&str>,
+    id: &str,
+    app_id: u32,
+    offline: bool,
+    control: &RefreshControl,
+) -> Result<Option<Progress>> {
     let cache_key = format!("{id}-{app_id}");
     let previous = load(cache, id, app_id)?;
     let Some(api_key) = api_key.filter(|k| !k.is_empty() && !offline) else {
@@ -556,7 +558,8 @@ pub fn refresh_batch(
             }
             continue;
         }
-        if let Some(current) = refresh(cache, http, api_key, id, app_id, options.offline, control)?
+        if let Some(current) =
+            refresh_owned(cache, http, api_key, id, app_id, options.offline, control)?
         {
             attempted += 1;
             let stop = provider_stop(current.status);

@@ -165,6 +165,7 @@ pub fn story_completed(root: &Path, id: &str, app_id: u32) -> Result<bool> {
 /// Atomic per-account/AppID edits cannot clobber another game's mark. Undo removes it.
 pub fn set_story_completed(root: &Path, id: &str, app_id: u32, completed: bool) -> Result<()> {
     validate(id, app_id)?;
+    let _owner = crate::personal_store::lock_account(root, id)?;
     let directory = root.join(id);
     let path = directory.join(format!("{app_id}.json"));
     if !completed {
