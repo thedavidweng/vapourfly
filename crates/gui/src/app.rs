@@ -256,7 +256,11 @@ static WRITE_RESULT: JobSlot<String> = JobSlot::new();
 static ENRICH_RESULT: JobSlot<vapourfly_api::enrichment::EnrichmentSummary> = JobSlot::new();
 static ACTIVITY_RESULT: JobSlot<Result<Option<vapourfly_api::activity::ActivitySnapshot>, String>> =
     JobSlot::new();
-static ACHIEVEMENT_RESULT: JobSlot<Option<vapourfly_api::achievements::Progress>> = JobSlot::new();
+type AchievementResult = (
+    vapourfly_api::achievements::BatchSummary,
+    Vec<vapourfly_api::achievements::Progress>,
+);
+static ACHIEVEMENT_RESULT: JobSlot<AchievementResult> = JobSlot::new();
 static DRY_RUN_RESULT: JobSlot<vapourfly_core::write::PreviewedPlan> = JobSlot::new();
 static JUNK_PREVIEW_RESULT: JobSlot<Vec<JunkDecision>> = JobSlot::new();
 static RECOMMEND_RESULT: JobSlot<Vec<Recommendation>> = JobSlot::new();
@@ -473,6 +477,8 @@ pub(crate) struct VapourflyApp {
     activity_account_id: Option<String>,
     pub(crate) achievement_progress: HashMap<u32, vapourfly_api::achievements::Progress>,
     pub(crate) achievement_msg: Option<String>,
+    pub(crate) achievement_coverage: Option<vapourfly_api::achievements::BatchSummary>,
+    pub(crate) achievement_pending: usize,
     achievement_job_id: Option<JobTicket>,
     achievement_control: vapourfly_api::activity::RefreshControl,
 
@@ -1270,6 +1276,8 @@ impl VapourflyApp {
             activity_account_id: None,
             achievement_progress: HashMap::new(),
             achievement_msg: None,
+            achievement_coverage: None,
+            achievement_pending: 0,
             achievement_job_id: None,
             achievement_control: Default::default(),
 
@@ -2303,9 +2311,6 @@ impl VapourflyApp {
     }
 
     pub(crate) fn inspect_achievements(&mut self, app_id: u32) {
-        self.achievement_control.cancel();
-        self.achievement_job_id = None;
-        self.achievement_msg = None;
         let Some(id) = self.active_account().map(|a| a.steam_id64.clone()) else {
             self.achievement_msg = Some("Select a matching Steam account.".into());
             return;
@@ -2325,6 +2330,7 @@ impl VapourflyApp {
         }
         if self.ui_demo
             || self.offline_mode
+            || self.achievement_job_id.is_some()
             || self
                 .achievement_progress
                 .get(&app_id)
@@ -2332,30 +2338,120 @@ impl VapourflyApp {
         {
             return;
         }
-        let Some(key) = self.config.as_ref().and_then(|c| c.steam_api_key.clone()) else {
-            self.achievement_msg = Some("No Steam Web API key; cached evidence only.".into());
+        self.start_achievement_job(vec![app_id], false);
+    }
+
+    /// Selection uses local/cache hints only; the worker performs all batch I/O.
+    pub(crate) fn start_achievement_coverage(&mut self, force: bool) {
+        if self.achievement_job_id.is_some() {
+            return;
+        }
+        let Some(account) = self.active_account() else {
+            self.achievement_msg =
+                Some("Select a Steam account before refreshing achievements.".into());
             return;
         };
+        let Some(scan) = self
+            .scan_result
+            .as_ref()
+            .filter(|scan| scan.account == account.account_name)
+        else {
+            self.achievement_msg = Some("Scan the selected account's Library first.".into());
+            return;
+        };
+        let recent = self
+            .activity_snapshot
+            .as_ref()
+            .filter(|snapshot| snapshot.steam_id64 == account.steam_id64)
+            .map_or(&[][..], |snapshot| snapshot.recent.games.as_slice());
+        match vapourfly_api::achievements::active_app_ids(
+            &scan.games,
+            recent,
+            self.library_selected_app_id,
+            vapourfly_api::achievements::DEFAULT_BATCH_LIMIT,
+        ) {
+            Ok(ids) => self.start_achievement_job(ids, force),
+            Err(error) => self.achievement_msg = Some(error.to_string()),
+        }
+    }
+
+    fn start_achievement_job(&mut self, ids: Vec<u32>, force: bool) {
+        if self.ui_demo || self.achievement_job_id.is_some() {
+            return;
+        }
+        let Some(id) = self
+            .active_account()
+            .map(|account| account.steam_id64.clone())
+        else {
+            return;
+        };
+        let key = self
+            .config
+            .as_ref()
+            .and_then(|config| config.steam_api_key.clone());
         let offline = self.offline_mode;
+        self.achievement_msg = if offline {
+            Some("Offline mode; cached achievement evidence only.".into())
+        } else if key.is_none() {
+            Some("No Steam Web API key; cached achievement evidence only.".into())
+        } else {
+            None
+        };
+        self.achievement_pending = if offline || key.is_none() {
+            0
+        } else {
+            ids.len()
+        };
         let ticket = self.job_runner.next_ticket(WorkflowKind::Achievements, &id);
         let control = vapourfly_api::activity::RefreshControl::default();
         self.achievement_control = control.clone();
         self.achievement_job_id = Some(ticket);
+        ACHIEVEMENT_RESULT.clear();
+        let cache = vapourfly_api::cache::DiskCache::new(self.cache_dir.clone());
         let repaint = self.repaint.clone();
         std::thread::spawn(move || {
-            let result = vapourfly_api::achievements::refresh(
+            let result = vapourfly_api::achievements::refresh_batch(
                 &cache,
                 &vapourfly_api::http::HttpClient::new(),
-                Some(&key),
+                key.as_deref(),
                 &id,
-                app_id,
-                offline,
+                vapourfly_api::achievements::BatchOptions {
+                    app_ids: &ids,
+                    limit: vapourfly_api::achievements::DEFAULT_BATCH_LIMIT,
+                    force,
+                    offline,
+                },
                 &control,
             )
             .map_err(|e| e.to_string());
             ACHIEVEMENT_RESULT.set(ticket, result);
             repaint.request();
         });
+    }
+
+    pub(crate) fn cancel_achievement_refresh(&mut self) {
+        self.achievement_control.cancel();
+        self.achievement_msg =
+            Some("Achievement refresh cancelled; cached evidence retained.".into());
+    }
+
+    pub(crate) fn achievement_refreshing(&self) -> bool {
+        self.achievement_job_id.is_some()
+    }
+
+    pub(crate) fn achievement_coverage_summary(&self) -> String {
+        let coverage = self.achievement_coverage.as_ref().map_or_else(
+            || "coverage not inspected".into(),
+            |coverage| format!(
+                "{} selected; {} available; {} stale; {} unavailable; {} missing; {} attempted; stop {:?}",
+                coverage.selected, coverage.available, coverage.stale, coverage.unavailable,
+                coverage.missing, coverage.attempted, coverage.stop_reason,
+            ),
+        );
+        format!(
+            "Steam achievements (active subset): {coverage}; {} pending",
+            self.achievement_pending
+        )
     }
 
     pub(crate) fn achievement_summary(&self, app_id: u32) -> String {
@@ -3166,6 +3262,9 @@ impl VapourflyApp {
             self.achievement_job_id = None;
             self.achievement_progress.clear();
             self.achievement_msg = None;
+            self.achievement_coverage = None;
+            self.achievement_pending = 0;
+            self.library_selected_app_id = None;
             self.activity_account_id = active_account_id.clone();
             self.activity_msg = None;
             self.activity_snapshot = active_account_id.as_deref().and_then(|id| {
@@ -3215,17 +3314,24 @@ impl VapourflyApp {
             }
         }
 
+        if self.offline_mode && self.achievement_pending > 0 && self.achievement_job_id.is_some() {
+            self.achievement_control.cancel();
+        }
         if let Some(ticket) = self.achievement_job_id
             && let Some(result) = ACHIEVEMENT_RESULT.take_if(ticket)
         {
             self.achievement_job_id = None;
+            self.achievement_pending = 0;
             match result {
-                Ok(Some(progress))
-                    if Some(progress.steam_id64.as_str()) == active_account_id.as_deref() =>
-                {
-                    self.achievement_progress.insert(progress.app_id, progress);
+                Ok((coverage, progress)) => {
+                    self.achievement_pending = coverage.pending;
+                    self.achievement_coverage = Some(coverage);
+                    for progress in progress {
+                        if Some(progress.steam_id64.as_str()) == active_account_id.as_deref() {
+                            self.achievement_progress.insert(progress.app_id, progress);
+                        }
+                    }
                 }
-                Ok(_) => {}
                 Err(error) => {
                     self.achievement_msg = Some(format!("Achievements unavailable: {error}"));
                 }
@@ -3252,6 +3358,7 @@ impl VapourflyApp {
                             Err(e) => self.error = Some(e),
                         }
                         self.start_background_populate();
+                        self.start_achievement_coverage(false);
                     }
                     Err(e) => self.error = Some(e),
                 }
@@ -6072,6 +6179,153 @@ mod tests {
         assert!(app.has_background_work());
     }
 
+    fn achievement_test_app(cache_dir: &std::path::Path) -> VapourflyApp {
+        let mut app = VapourflyApp::new(None, true);
+        app.populate_demo_data();
+        app.cache_dir = cache_dir.to_path_buf();
+        app.detected_accounts = vec![SteamAccount {
+            steam_id64: "76561198000000001".into(),
+            account_name: "alpha".into(),
+            persona_name: "Alpha".into(),
+            most_recent: true,
+        }];
+        app.config.as_mut().unwrap().account = Some("alpha".into());
+        app.config.as_mut().unwrap().steam_api_key = None;
+        app.activity_account_id = Some("76561198000000001".into());
+        app.scan_result.as_mut().unwrap().account = "alpha".into();
+        app.inject_prepared_snapshot();
+        app
+    }
+
+    #[test]
+    #[serial]
+    fn achievement_batch_first_paint_and_selection_do_not_wait_for_coverage() {
+        ACHIEVEMENT_RESULT.clear();
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(temp.path());
+        let scan = app.scan_result.as_mut().unwrap();
+        let base = scan.games[0].clone();
+        scan.games = (1..=1500)
+            .map(|id| Game {
+                app_id: id,
+                last_played_unix: Some(i64::from(id)),
+                ..base.clone()
+            })
+            .collect();
+        app.inject_prepared_snapshot();
+        let ticket = app
+            .job_runner
+            .next_ticket(WorkflowKind::Achievements, "76561198000000001");
+        app.achievement_job_id = Some(ticket);
+        app.achievement_pending = 12;
+        app.tick();
+        assert!(app.library_ready());
+        assert_eq!(app.prepared_games(JunkMode::Default).unwrap().len(), 1500);
+        assert!(app.has_background_work());
+        assert!(app.achievement_coverage_summary().contains("12 pending"));
+        app.start_achievement_coverage(true);
+        app.inspect_achievements(10);
+        assert_eq!(
+            app.achievement_job_id,
+            Some(ticket),
+            "inspection does not supersede the batch"
+        );
+        assert!(app.achievement_control.check().is_ok());
+        ACHIEVEMENT_RESULT.set(
+            ticket,
+            Ok((
+                vapourfly_api::achievements::BatchSummary {
+                    selected: 12,
+                    available: 2,
+                    stale: 1,
+                    unavailable: 1,
+                    missing: 8,
+                    attempted: 4,
+                    pending: 8,
+                    stop_reason: Some(vapourfly_api::achievements::Status::RateLimited),
+                },
+                vec![],
+            )),
+        );
+        app.tick();
+        assert!(!app.achievement_refreshing());
+        let summary = app.achievement_coverage_summary();
+        assert!(summary.contains("2 available; 1 stale; 1 unavailable; 8 missing"));
+        assert!(summary.contains("8 pending"));
+        assert!(!summary.contains("76561198000000001"));
+    }
+
+    #[test]
+    #[serial]
+    fn achievement_batch_offline_and_no_key_inspect_cache_without_writing() {
+        ACHIEVEMENT_RESULT.clear();
+        let temp = tempfile::tempdir().unwrap();
+        for offline in [false, true] {
+            let root = temp.path().join(if offline { "offline" } else { "no-key" });
+            let mut app = achievement_test_app(&root);
+            app.ui_demo = false;
+            app.offline_mode = offline;
+            app.library_selected_app_id = Some(app.scan_result.as_ref().unwrap().games[0].app_id);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            app.repaint = RepaintHook::new(move || {
+                sender.send(()).unwrap();
+            });
+            app.start_achievement_coverage(true);
+            assert!(app.achievement_refreshing());
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            app.tick();
+            assert!(!app.achievement_refreshing());
+            let coverage = app.achievement_coverage.as_ref().unwrap();
+            assert!(coverage.selected > 0 && coverage.selected <= 12);
+            assert_eq!(coverage.missing, coverage.selected);
+            assert_eq!(coverage.attempted, 0);
+            assert_eq!(app.achievement_pending, 0);
+            assert!(
+                !root.exists(),
+                "cache-only worker never creates a lock or cache record"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn achievement_batch_cancel_and_offline_keep_owner_until_worker_exits() {
+        ACHIEVEMENT_RESULT.clear();
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(temp.path());
+        let ticket = app
+            .job_runner
+            .next_ticket(WorkflowKind::Achievements, "76561198000000001");
+        app.achievement_job_id = Some(ticket);
+        app.achievement_pending = 12;
+        let control = vapourfly_api::activity::RefreshControl::default();
+        app.achievement_control = control.clone();
+        app.cancel_achievement_refresh();
+        assert!(control.check().is_err());
+        assert_eq!(app.achievement_job_id, Some(ticket));
+        ACHIEVEMENT_RESULT.set(ticket, Err("Account refresh cancelled".into()));
+        app.tick();
+        assert!(!app.achievement_refreshing());
+        assert_eq!(app.achievement_pending, 0);
+
+        app.achievement_control = Default::default();
+        let control = app.achievement_control.clone();
+        let ticket = app
+            .job_runner
+            .next_ticket(WorkflowKind::Achievements, "76561198000000001");
+        app.achievement_job_id = Some(ticket);
+        app.achievement_pending = 12;
+        app.offline_mode = true;
+        app.tick();
+        assert!(control.check().is_err());
+        assert_eq!(app.achievement_job_id, Some(ticket));
+        ACHIEVEMENT_RESULT.set(ticket, Err("Account refresh cancelled".into()));
+        app.tick();
+        assert!(!app.achievement_refreshing());
+    }
+
     #[test]
     #[serial]
     fn achievement_account_switch_discards_old_result() {
@@ -6101,16 +6355,19 @@ mod tests {
         app.achievement_job_id = Some(ticket);
         ACHIEVEMENT_RESULT.set(
             ticket,
-            Ok(Some(vapourfly_api::achievements::Progress {
-                steam_id64: "76561198000000001".into(),
-                app_id: 10,
-                status: vapourfly_api::achievements::Status::Available,
-                total: Some(1),
-                unlocked: Some(1),
-                unlocks: Default::default(),
-                checked_at: chrono::Utc::now(),
-                fetched_at: Some(chrono::Utc::now()),
-            })),
+            Ok((
+                vapourfly_api::achievements::BatchSummary::default(),
+                vec![vapourfly_api::achievements::Progress {
+                    steam_id64: "76561198000000001".into(),
+                    app_id: 10,
+                    status: vapourfly_api::achievements::Status::Available,
+                    total: Some(1),
+                    unlocked: Some(1),
+                    unlocks: Default::default(),
+                    checked_at: chrono::Utc::now(),
+                    fetched_at: Some(chrono::Utc::now()),
+                }],
+            )),
         );
         app.config.as_mut().unwrap().account = Some("bravo".into());
         app.tick();
