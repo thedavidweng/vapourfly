@@ -81,11 +81,10 @@ See [ADR-0004](docs/adr/0004-editorial-mood-replaces-tag-filter.md).
 ### Discover
 
 A playlist factory that produces a Playlist from taste similarity, optionally
-seeded by an AppID. Builds a taste vector from the user's high-playtime games
-(genre/theme/keyword overlap, log-scaled by playtime), filters to unplayed
-non-junk non-hidden games (excluding Application/Tool/DLC), and scores by:
-seed IGDB-similar membership (+5.0) + taste overlap (normalized) + high rating
-(+0.25). Output is a Manual Playlist with `created_by: "vapourfly"`.
+seeded by an AppID. Filters to unplayed non-junk non-hidden games (excluding
+Application/Tool/DLC) and ranks them with the shared canonical Taste Profile
+attribution; see "Personal Discover ranking". Output is a Manual Playlist with
+`created_by: "vapourfly"`.
 
 Discover owns the entire "similar picks" surface. Same shape as a Dynamic
 Template: a generator, not an artifact. See
