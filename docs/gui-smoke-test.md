@@ -68,6 +68,11 @@ real supported controller before recording each part of #31 native acceptance:
    filter chips. Unknown activity excludes Unfinished, but known playtime alone
    can qualify. Near-perfect requires fresh authoritative 90%..<100% counts,
    not merely high playtime; missing/stale counts never qualify.
+   From Search, Tab to Filters and use Enter to open it. Tab to Unfinished and
+   activate with Enter, then Tab to Near-perfect and activate with Space. Each
+   activation must update the filter chip/results without closing the popover.
+   Shift-Tab to All progress and activate it; Escape must dismiss the popover.
+   This checks the toolkit's child-control routing, not just pointer filtering.
 3. Switch accounts: old marks/counts must not appear before or after the next scan.
    Switch back and confirm the original account's marks remain. Verify the progress
    coverage caption and explicit corrupt-record error state. Demo edits are disabled.
