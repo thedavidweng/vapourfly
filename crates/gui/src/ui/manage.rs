@@ -2,7 +2,7 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Sizable, StyledExt,
+    ActiveTheme, Disableable, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     input::Input,
