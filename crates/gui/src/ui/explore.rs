@@ -19,9 +19,7 @@ use vapourfly_core::models::JunkMode;
 
 use super::widgets::{self, PAGE_PX};
 use super::{GuiRoot, hx};
-use crate::app::{
-    GameSummary, PendingAction, View, format_playtime, proton_tier_label, reason_badge_label,
-};
+use crate::app::{GameSummary, PendingAction, View, format_playtime, proton_tier_label};
 use crate::theme;
 
 const PICK_MIN_W: f32 = 210.;
@@ -143,8 +141,7 @@ impl GuiRoot {
                         div()
                             .text_size(px(13.))
                             .text_color(cx.theme().muted_foreground)
-                            .truncate()
-                            .child(reason.unwrap_or_else(|| "Similar feel".into())),
+                            .child(reason.unwrap_or_else(|| "Limited cached evidence".into())),
                     ),
             )
             .into_any_element()
@@ -278,8 +275,8 @@ impl GuiRoot {
                 .justify_center()
                 .child(widgets::empty_state(
                     IconName::Compass,
-                    "Pick a seed to begin",
-                    "Vapourfly compares genres, tags and play style to surface the closest matches you already own.",
+                    "Discover owned picks",
+                    "Choose an optional seed or Match my taste. Only cached/local evidence is used; missing metadata is not dislike.",
                     None,
                 ))
                 .into_any_element()
@@ -313,10 +310,7 @@ impl GuiRoot {
                                 .gap_x(px(PICK_GAP))
                                 .gap_y(px(26.))
                                 .children(results.iter().map(|pick| {
-                                    let reason = pick
-                                        .reasons
-                                        .first()
-                                        .map(|r| reason_badge_label(r.code, r.description));
+                                    let reason = Some(vapourfly_core::discover::explanation(pick));
                                     self.pick_card(
                                         pick.app_id,
                                         &pick.name,

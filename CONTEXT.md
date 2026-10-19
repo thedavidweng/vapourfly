@@ -81,11 +81,10 @@ See [ADR-0004](docs/adr/0004-editorial-mood-replaces-tag-filter.md).
 ### Discover
 
 A playlist factory that produces a Playlist from taste similarity, optionally
-seeded by an AppID. Builds a taste vector from the user's high-playtime games
-(genre/theme/keyword overlap, log-scaled by playtime), filters to unplayed
-non-junk non-hidden games (excluding Application/Tool/DLC), and scores by:
-seed IGDB-similar membership (+5.0) + taste overlap (normalized) + high rating
-(+0.25). Output is a Manual Playlist with `created_by: "vapourfly"`.
+seeded by an AppID. Filters to unplayed non-junk non-hidden games (excluding
+Application/Tool/DLC) and ranks them with the shared canonical Taste Profile
+attribution; see "Personal Discover ranking". Output is a Manual Playlist with
+`created_by: "vapourfly"`.
 
 Discover owns the entire "similar picks" surface. Same shape as a Dynamic
 Template: a generator, not an artifact. See
@@ -238,3 +237,15 @@ prefix is retained; the `1` is the format generation. See
 
 A Share Code decodes back into a PlaylistFile that can be imported, matched,
 and synced like any other playlist.
+
+### Personal Discover ranking
+
+Discover shares canonical personal attribution and deterministic diversity with
+Recommendations, but owns its existing owned/unplayed eligibility and Manual
+Playlist factory. It does not consume a session duration or Deck planner request.
+Optional seed relatedness is +0.75 only for two confirmed cached IGDB Steam
+mappings linked by the seed's similar IDs; missing seed evidence stays neutral.
+Known-lifetime novelty is bounded by +0.25, unknown activity is not zero. Keep
+eligible cold-start picks even at non-positive scores. CLI/GUI expose all signed
+reasons; story/preference changes invalidate late results without rewriting saved
+playlists. Existing generator slots, share format and Steam guards are unchanged.

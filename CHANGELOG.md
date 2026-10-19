@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Discover consumes the same account-scoped canonical profile, progress and
+  feedback as Recommendations, with bounded validated IGDB seed links, novelty
+  and deterministic variety. CLI and GUI expose full signed reasons, including
+  missing seed/activity evidence; cold libraries retain eligible picks.
+  `DiscoverReason` now aliases the shared `RecommendReason` (owned code and
+  description strings). Existing Manual Playlist formats and write guards
+  are unchanged; no persisted migration is needed.
+
 - Owned-library Recommendations now use canonical continuous account taste,
   bounded quality/recency/explicit progress/feedback and deterministic variety.
   Seed affects ties only, never relevance. CLI and GUI show all signed reasons

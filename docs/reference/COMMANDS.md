@@ -290,6 +290,13 @@ vapourfly playlist match my-playlist.json
 vapourfly playlist match my-playlist.json --format json
 ```
 
+Discover uses the selected account's cached canonical profile, progress and local
+feedback. Its output includes complete signed reasons, cache coverage and missing
+seed evidence. An optional seed only gets a bounded boost from validated cached
+IGDB links; no key/metadata still permits eligible owned picks. It does not fetch
+provider data or alter Steam files; the generated file is the existing Manual
+Playlist type. Use the normal explicit sync workflow to write a Collection.
+
 **Match report columns (table):** Owned, Missing, Played, Unplayed, Hidden, Junk counts, plus Completion price (sum of Steam Store final prices for **missing, non-free** playlist entries; owned/unplayed games are never included; rule playlists have no missing entries so their completion price is absent). In online mode missing prices are fetched on-demand from the Steam Store API; with `--offline` only cached prices are used. Mixed currencies are reported as per-currency grouped totals.
 
 **Playlist types:**

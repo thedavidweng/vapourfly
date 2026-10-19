@@ -402,7 +402,7 @@ pub struct Recommendation {
     pub reasons: Vec<RecommendReason>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RecommendReason {
     pub code: String,
     pub description: String,
