@@ -2602,15 +2602,11 @@ impl VapourflyApp {
         self.prepared_snapshot.as_mut().unwrap().preferences = loaded;
         self.preferences_generation = self.preferences_generation.wrapping_add(1);
         let rerun_recommend = self.recommend_loading || !self.recommend_results.is_empty();
-        let rerun_discover = self.discover_loading || !self.discover_results.is_empty();
         self.clear_personalized_results();
         result.map_err(|e| e.to_string())?;
         self.prepared_preferences()?;
         if rerun_recommend {
             self.start_recommend_preview();
-        }
-        if rerun_discover {
-            self.start_discover_generate();
         }
         Ok(())
     }
@@ -5967,11 +5963,15 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut app = VapourflyApp::new(Some(fixtures), false);
         app.playlist_store_dir = Some(dir.path().to_path_buf());
+        app.preferences_dir = dir.path().join("preferences");
+        app.config.as_mut().unwrap().account = Some("76561198000000000".into());
+        app.load_accounts_quietly();
+        let account = app.active_account().unwrap().account_name.clone();
 
         // Minimal scan so prepared_games has data (empty is fine for empty picks).
         app.scan_result = Some(ScanResult {
             steam_dir: "/tmp".into(),
-            account: "test".into(),
+            account,
             games: Vec::new(),
             warnings: Vec::new(),
         });
@@ -6509,6 +6509,61 @@ mod tests {
         app.scan_result.as_mut().unwrap().account = "alpha".into();
         app.inject_prepared_snapshot();
         app
+    }
+
+    #[test]
+    #[serial]
+    fn local_preferences_preserve_saved_discover_and_unsaved_editor() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(&temp.path().join("cache"));
+        app.preferences_dir = temp.path().join("preferences");
+        app.playlist_store_dir = Some(temp.path().join("playlists"));
+        app.ui_demo = false;
+        app.offline_mode = true;
+        app.inject_prepared_snapshot();
+        let id = app.scan_result.as_ref().unwrap().games[0].app_id;
+        let saved = sample_generator_playlist("discover", vec![id]);
+        let path = playlist_store::put(app.playlist_store_dir.as_ref().unwrap(), &saved).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        app.playlist_edit_id = "unsaved".into();
+        app.playlist_edit_name = "My unfinished edit".into();
+        app.playlist_edit_description = "Do not replace".into();
+        app.playlist_edit_app_ids = "730, 440".into();
+        app.playlist_edit_rules = "[]".into();
+        let options = app.discover_options_from_inputs().unwrap();
+        let old_fp = app.discover_fp(&options);
+        let ticket = app.job_runner.next_ticket(WorkflowKind::Discover, &old_fp);
+        app.discover_loading = true;
+        app.discover_job_id = Some(ticket);
+        app.discover_results = vec![DiscoverPick {
+            app_id: id,
+            name: "old picks".into(),
+            score: 1.,
+            reasons: vec![],
+        }];
+        app.discover_last_playlist = Some(saved.clone());
+
+        app.edit_preference(Some(id), Some(Choice::Interested))
+            .unwrap();
+
+        assert_eq!(app.discover_results, []);
+        assert!(app.discover_job_id.is_none());
+        assert!(!app.discover_loading);
+        assert!(app.discover_last_playlist.is_none());
+        assert_ne!(old_fp, app.discover_fp(&options));
+        // A late pre-edit result must not save a slot or adopt the editor either.
+        DISCOVER_RESULT.set(ticket, Ok((vec![], saved)));
+        app.discover_loading = true;
+        app.discover_job_id = Some(ticket);
+        app.tick();
+        assert!(app.discover_job_id.is_none());
+        assert!(!app.discover_loading);
+        assert_eq!(std::fs::read(path).unwrap(), before);
+        assert_eq!(app.playlist_edit_id, "unsaved");
+        assert_eq!(app.playlist_edit_name, "My unfinished edit");
+        assert_eq!(app.playlist_edit_description, "Do not replace");
+        assert_eq!(app.playlist_edit_app_ids, "730, 440");
+        assert_eq!(app.playlist_edit_rules, "[]");
     }
 
     #[test]

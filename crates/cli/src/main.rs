@@ -103,10 +103,13 @@ impl Cli {
 
     /// Resolve the cloud storage path for the selected account.
     fn cloud_storage_path(&self) -> Result<PathBuf, Box<dyn std::error::Error>> {
-        let steam_dir = self.resolve_steam_dir()?;
-        let accounts = steam::detect_accounts(&steam_dir)?;
-        let selected = steam::select_account(&accounts, self.account.as_deref())?;
-        Ok(steam::cloud_storage_path(&steam_dir, &selected.steam_id64))
+        let resolved = self.resolved_config()?;
+        let accounts = steam::detect_accounts(&resolved.steam_dir)?;
+        let selected = steam::select_account(&accounts, resolved.account.as_deref())?;
+        Ok(steam::cloud_storage_path(
+            &resolved.steam_dir,
+            &selected.steam_id64,
+        ))
     }
 }
 
@@ -2666,6 +2669,74 @@ fn print_match_counts(report: &vapourfly_core::models::PlaylistMatchReport) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_preferences_collection_target_respects_config_account() {
+        const CHILD_ROOT: &str = "VAPOURFLY_TEST_CONFIG_ACCOUNT_ROOT";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            let root = PathBuf::from(root);
+            let steam_dir = root.join("steam");
+            std::fs::create_dir_all(steam_dir.join("config")).unwrap();
+            std::fs::write(
+                steam_dir.join("config/loginusers.vdf"),
+                r#""users" {
+                    "76561198000000000" { "AccountName" "alpha" "MostRecent" "1" }
+                    "76561198000000001" { "AccountName" "bravo" "MostRecent" "0" }
+                }"#,
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                let config_path = config::config_file_path().unwrap();
+                assert!(config_path.starts_with(&root));
+                std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+                std::fs::write(config_path, "account = \"bravo\"\n").unwrap();
+            }
+            let cli = Cli::try_parse_from([
+                "vapourfly",
+                "--fixtures",
+                steam_dir.to_str().unwrap(),
+                "--offline",
+                "scan",
+            ])
+            .unwrap();
+            assert!(cli.account.is_none());
+            assert_eq!(
+                cli.resolved_config().unwrap().account.as_deref(),
+                Some("bravo")
+            );
+            assert_eq!(
+                cli.cloud_storage_path().unwrap(),
+                steam::cloud_storage_path(&steam_dir, "76561198000000001")
+            );
+            return;
+        }
+
+        // Unix config files can be isolated via HOME/XDG; Windows Known Folders
+        // cannot, so exercise the merged environment account there without writes.
+        let temp = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "tests::local_preferences_collection_target_respects_config_account",
+            ])
+            .env(CHILD_ROOT, temp.path())
+            .env("HOME", temp.path())
+            .env("XDG_CONFIG_HOME", temp.path().join("config"))
+            .env("APPDATA", temp.path().join("config"))
+            .env_remove("VAPOURFLY_ACCOUNT")
+            .env_remove("VAPOURFLY_STEAM_DIR");
+        #[cfg(windows)]
+        child.env("VAPOURFLY_ACCOUNT", "bravo");
+        let output = child.output().unwrap();
+        assert!(
+            output.status.success(),
+            "child config regression failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn local_preferences_cli_actions_and_discoverable_reset_confirmation() {

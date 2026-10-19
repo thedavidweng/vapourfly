@@ -106,8 +106,10 @@ explicit excluded-Collection constraints. Collections are not rewritten or treat
 as tags; only existing explicit exclusions take precedence over Interested.
 
 GUI feedback reloads the local snapshot and invalidates old/in-flight picks,
-regenerating previously active candidate views. Account switches reject prior
-preferences and clear prior picks. External CLI edits load on rescan; expiry is
+refreshing previously active Recommendations. Discover picks are cleared until
+the next explicit Find matches action, preserving saved Playlists and unsaved
+editor contents. Account switches reject prior preferences and clear prior picks.
+External CLI edits load on rescan; expiry is
 evaluated at generation time. Preference reads are part of background preparation,
 not per-frame disk/network reads. Existing Playlist files, share codes, exports
 and Steam write gates are unchanged; feedback does not rewrite a saved Playlist.
