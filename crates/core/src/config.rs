@@ -277,6 +277,12 @@ pub fn default_story_dir() -> PathBuf {
         .join("story")
 }
 
+pub fn default_preferences_dir() -> PathBuf {
+    default_playlists_dir()
+        .with_file_name("personal")
+        .join("preferences")
+}
+
 /// Default path for optional junk ManualOverrides JSON
 /// (`{data}/vapourfly/manual_overrides.json`).
 ///

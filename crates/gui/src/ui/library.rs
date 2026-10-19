@@ -9,6 +9,7 @@ use gpui_kit::component::{
     button::{Button, ButtonCustomVariant, ButtonVariants},
     checkbox::Checkbox,
     description_list::DescriptionList,
+    dialog::DialogFooter,
     h_flex,
     input::Input,
     menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
@@ -325,6 +326,72 @@ impl GuiRoot {
         });
     }
 
+    fn preference_controls(&self, id: u32, entity: Entity<Self>, cx: &App) -> AnyElement {
+        let reset = entity.clone();
+        let reset_all = entity.clone();
+        v_flex()
+            .gap_2()
+            .child(widgets::caption(self.app.preference_summary(id), cx))
+            .child(
+                h_flex().gap_2().flex_wrap()
+                    .children(vapourfly_core::preferences::Choice::ALL.into_iter().enumerate().map(|(index, choice)| {
+                        let entity = entity.clone();
+                        Button::new(("detail-preference", index)).outline().label(choice.label())
+                            .disabled(self.app.ui_demo)
+                            .on_click(move |_, window, cx| {
+                                entity.update(cx, |this, cx| {
+                                    match this.app.edit_preference(Some(id), Some(choice)) {
+                                        Ok(()) => window.push_notification("Local preference updated", cx),
+                                        Err(error) => window.push_notification(error, cx),
+                                    }
+                                    this.arm_poll(cx);
+                                    cx.notify();
+                                });
+                            })
+                    }))
+                    .child(Button::new("detail-preference-reset").ghost().label("Reset this preference")
+                        .disabled(self.app.ui_demo)
+                        .on_click(move |_, window, cx| {
+                            reset.update(cx, |this, cx| {
+                                if let Err(error) = this.app.edit_preference(Some(id), None) {
+                                    window.push_notification(error, cx);
+                                }
+                                this.arm_poll(cx);
+                                cx.notify();
+                            });
+                        })),
+            )
+            .child(Button::new("detail-preference-reset-all").ghost().label("Reset all account preferences…")
+                .disabled(self.app.ui_demo)
+                .on_click(move |_, window, cx| {
+                    let entity = reset_all.clone();
+                    let account = entity.read(cx).app.active_account().map(|a| a.steam_id64.clone());
+                    window.open_dialog(cx, move |dialog, _, _| {
+                        let entity = entity.clone();
+                        let account = account.clone();
+                        dialog.title("Reset this account's local preferences?")
+                            .child("Interested, Not interested and Not now choices will be removed. Story marks, Playlists and Steam files are unchanged. This cannot be undone.")
+                            .footer(DialogFooter::new()
+                                .child(Button::new("preferences-cancel").ghost().label("Cancel")
+                                    .on_click(|_, window, cx| window.close_dialog(cx)))
+                                .child(Button::new("preferences-confirm").primary().label("Reset preferences")
+                                    .on_click(move |_, window, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            if this.app.active_account().map(|a| &a.steam_id64) != account.as_ref() {
+                                                window.push_notification("Account changed; reset cancelled", cx);
+                                            } else if let Err(error) = this.app.edit_preference(None, None) {
+                                                window.push_notification(error, cx);
+                                            }
+                                            this.arm_poll(cx);
+                                            cx.notify();
+                                        });
+                                        window.close_dialog(cx);
+                                    })))
+                    });
+                }))
+            .into_any_element()
+    }
+
     fn game_detail(&self, game: &Game, entity: Entity<Self>, cx: &App) -> impl IntoElement {
         let id = game.app_id;
         let t = theme::t();
@@ -467,6 +534,7 @@ impl GuiRoot {
                         });
                     }),
             )
+            .child(self.preference_controls(id, entity.clone(), cx))
             .when_some(description, |this, text| {
                 this.child(
                     div()

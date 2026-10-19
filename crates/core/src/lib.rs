@@ -17,6 +17,7 @@ pub mod models;
 pub mod mood;
 pub mod playlist;
 pub mod playlist_store;
+pub mod preferences;
 pub mod progress;
 pub mod recommend;
 pub mod scoring;

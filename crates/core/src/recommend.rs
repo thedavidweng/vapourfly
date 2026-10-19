@@ -174,10 +174,23 @@ fn score_game(
 /// A random perturbation in [0.0, 0.25) is added to break ties; when `seed`
 /// is provided the perturbation is deterministic.
 pub fn recommend(games: &[Game], request: &RecommendRequest) -> Vec<Recommendation> {
+    recommend_with_preferences(
+        games,
+        request,
+        &crate::preferences::Preferences::new(),
+        chrono::Utc::now().timestamp(),
+    )
+}
+
+pub fn recommend_with_preferences(
+    games: &[Game],
+    request: &RecommendRequest,
+    preferences: &crate::preferences::Preferences,
+    now_unix: i64,
+) -> Vec<Recommendation> {
     use crate::eligibility::{EligibilityOptions, is_eligible};
 
     let taste_vector = scoring::build_taste_vector(games);
-    let now_unix = chrono::Utc::now().timestamp();
     let mut rng = request.seed.map(SplitMix64::new);
 
     let mut candidates: Vec<Recommendation> = games
@@ -189,13 +202,22 @@ pub fn recommend(games: &[Game], request: &RecommendRequest) -> Vec<Recommendati
                     unplayed_only: false,
                     installed_only: request.include_installed_only,
                 },
-            ) && !g
-                .steam_collections
-                .iter()
-                .any(|c| request.exclude_collections.contains(c))
+            ) && !crate::preferences::excludes(preferences, g.app_id, now_unix)
+                && !g
+                    .steam_collections
+                    .iter()
+                    .any(|c| request.exclude_collections.contains(c))
         })
         .map(|game| {
-            let (base_score, reasons) = score_game(game, request, &taste_vector, now_unix);
+            let (mut base_score, mut reasons) = score_game(game, request, &taste_vector, now_unix);
+            if crate::preferences::interested(preferences, game.app_id, now_unix) {
+                base_score += crate::preferences::INTERESTED_WEIGHT;
+                reasons.push(RecommendReason {
+                    code: "local_interested".into(),
+                    description: "Interested (your local preference)".into(),
+                    weight: crate::preferences::INTERESTED_WEIGHT,
+                });
+            }
             let perturbation: f32 = match &mut rng {
                 Some(r) => (r.next_f64() as f32) * 0.25,
                 None => 0.0, // no seed => no perturbation (purely score-based)
