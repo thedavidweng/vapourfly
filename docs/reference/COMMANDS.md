@@ -455,6 +455,23 @@ Most commands that produce tabular output support `--format`:
 | `RUST_LOG` | Override log level (default: `warn`, or `debug` with `--verbose`) |
 # Account achievement progress
 
+## Account taste profile
+
+`accounts profile [--format table|json]` derives reproducible Top Tags for the
+selected account. This command is always local/cache-only, even without
+`--offline`; it does not refresh providers or persist the derived profile.
+Output separates long-term/recent strengths, genre/descriptor kind, library-relative
+lift (never a population percentile), supporting titles and source/time/coverage
+evidence. A bare fixture/no-metadata library produces an honest empty explanation.
+Account selection follows the same resolved CLI/environment/config choice as scan.
+
+```bash
+vapourfly --offline accounts profile
+vapourfly --account 76561198000000000 accounts profile --format json
+```
+
+## Achievement progress
+
 `accounts achievements <AppID> [--refresh] [--format table|json]` inspects
 official progress for an owned Library game. The default and `--offline`
 are cache-only. Explicit refresh makes at most two documented Steam user-key
