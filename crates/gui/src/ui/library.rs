@@ -311,6 +311,17 @@ impl GuiRoot {
         };
         let long = summary("Long-term", &profile.taste.long_term);
         let recent = summary("Recent", &profile.taste.recent);
+        let supported = profile
+            .traits
+            .iter()
+            .filter(|t| t.supported)
+            .map(|t| t.label.as_str())
+            .collect::<Vec<_>>();
+        let traits = if supported.is_empty() {
+            "Playstyle: insufficient evidence for a supported trait".into()
+        } else {
+            format!("Playstyle: {}", supported.join(" / "))
+        };
         let c = &profile.taste.coverage;
         let coverage = format!(
             "{}/{} titles with descriptors; {} played, {} Interested. Cached/local evidence only.",
@@ -337,13 +348,23 @@ impl GuiRoot {
                                     }
                                 }
                             }
-                            dialog.title("Top Tags evidence").child(
+                            for item in &profile.traits {
+                                rows.push(format!("{}: {}. Rule: {}", item.label, if item.supported { "supported" } else { "insufficient evidence" }, item.rule));
+                                for (label, examples) in [("Supporting", &item.supporting), ("Contrary", &item.contrary), ("Unknown", &item.unknown)] {
+                                    rows.push(format!("{label}: {} titles", examples.len()));
+                                    for example in examples {
+                                        rows.push(format!("{} [{}]: {}", example.name, example.app_id, example.evidence));
+                                    }
+                                }
+                            }
+                            dialog.title("Top Tags and playstyle evidence").child(
                                 v_flex().id("top-tags-evidence-scroll").max_h(px(480.)).overflow_y_scroll().gap_3()
                                     .children(rows.into_iter().map(|row| widgets::caption(row, cx)))
                             )
                         });
                     })))
             .child(widgets::caption(coverage, cx))
+            .child(widgets::caption(traits, cx))
             .into_any_element()
     }
 

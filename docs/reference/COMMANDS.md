@@ -463,6 +463,10 @@ selected account. This command is always local/cache-only, even without
 Output separates long-term/recent strengths, genre/descriptor kind, library-relative
 lift (never a population percentile), supporting titles and source/time/coverage
 evidence. A bare fixture/no-metadata library produces an honest empty explanation.
+The same output includes rule-based playstyle traits (Completion-focused, Deep
+diver, Explorer), thresholds and supporting/contrary/unknown titles. JSON retains
+eligible title activity provenance even without metadata. Missing story marks
+remain unknown; stale achievement counts never support completion-focused.
 Account selection follows the same resolved CLI/environment/config choice as scan.
 
 ```bash

@@ -12,6 +12,7 @@ pub struct AccountProfile {
     pub steam_id64: String,
     pub activity_status: String,
     pub taste: taste::TasteProfile,
+    pub traits: Vec<vapourfly_core::traits::Trait>,
 }
 
 pub fn derive(
@@ -19,6 +20,7 @@ pub fn derive(
     games: &[Game],
     prefs: &Preferences,
     snapshot: Option<&ActivitySnapshot>,
+    progress: &BTreeMap<u32, vapourfly_core::progress::Summary>,
     now: i64,
 ) -> Result<AccountProfile> {
     activity::validate_steam_id64(id)?;
@@ -51,6 +53,8 @@ pub fn derive(
             }
         }
     }
+    let taste = taste::derive(games, prefs, &samples, now);
+    let traits = vapourfly_core::traits::derive(&taste, progress);
     Ok(AccountProfile {
         steam_id64: id.into(),
         activity_status: snapshot.map_or_else(
@@ -65,7 +69,8 @@ pub fn derive(
                 )
             },
         ),
-        taste: taste::derive(games, prefs, &samples, now),
+        taste,
+        traits,
     })
 }
 
@@ -130,25 +135,58 @@ mod tests {
             })
             .unwrap();
         let activity = activity::load(&cache, ID).unwrap().unwrap();
-        let profile = derive(ID, &[game()], &Preferences::new(), Some(&activity), NOW).unwrap();
+        let profile = derive(
+            ID,
+            &[game()],
+            &Preferences::new(),
+            Some(&activity),
+            &BTreeMap::new(),
+            NOW,
+        )
+        .unwrap();
         assert_eq!(profile.taste.long_term.len(), 1);
         assert_eq!(
             profile.taste.recent,
             [] as [vapourfly_core::taste::TagStrength; 0]
         );
         assert!(profile.activity_status.contains("TransportFailure"));
-        assert!(derive(OTHER, &[game()], &Preferences::new(), Some(&activity), NOW).is_err());
+        assert!(
+            derive(
+                OTHER,
+                &[game()],
+                &Preferences::new(),
+                Some(&activity),
+                &BTreeMap::new(),
+                NOW
+            )
+            .is_err()
+        );
         assert!(activity::load(&cache, OTHER).unwrap().is_none());
         assert_eq!(
-            derive(OTHER, &[game()], &Preferences::new(), None, NOW)
-                .unwrap()
-                .taste
-                .long_term,
+            derive(
+                OTHER,
+                &[game()],
+                &Preferences::new(),
+                None,
+                &BTreeMap::new(),
+                NOW
+            )
+            .unwrap()
+            .taste
+            .long_term,
             [] as [vapourfly_core::taste::TagStrength; 0]
         );
         assert_eq!(
             profile,
-            derive(ID, &[game()], &Preferences::new(), Some(&activity), NOW).unwrap()
+            derive(
+                ID,
+                &[game()],
+                &Preferences::new(),
+                Some(&activity),
+                &BTreeMap::new(),
+                NOW
+            )
+            .unwrap()
         );
     }
 
@@ -183,12 +221,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!(scan.games.len(), 3);
-        let p = derive(ID, &scan.games, &Preferences::new(), None, NOW).unwrap();
+        let p = derive(
+            ID,
+            &scan.games,
+            &Preferences::new(),
+            None,
+            &BTreeMap::new(),
+            NOW,
+        )
+        .unwrap();
         assert_eq!(
             p.taste.long_term,
             [] as [vapourfly_core::taste::TagStrength; 0]
         );
         assert!(p.taste.explanation.contains("No eligible titles"));
+        assert!(p.traits.iter().all(|t| !t.supported));
+        assert_eq!(p.traits[0].unknown.len(), scan.games.len());
         assert!(
             !temp.path().join("profile").exists(),
             "derived data is never persisted"

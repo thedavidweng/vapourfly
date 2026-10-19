@@ -18,6 +18,20 @@ document covers the interactive flows that require a running GUI.
    until rebuilt. Compare `accounts profile --format json` using the same account,
    metadata and local evidence; missing providers require no key/network request.
 
+## Player-style traits
+
+1. In the existing Library, verify the compact Playstyle line. An account below
+   the documented thresholds shows insufficient evidence, not invented labels.
+2. Open Evidence with Tab/Enter; inspect each rule, its supporting, contrary and
+   unknown title counts/examples. Escape closes. Compare the same account's
+   `accounts profile --format table|json`; no network or new page is involved.
+3. Mark a third qualifying story complete: Completion-focused should update
+   immediately when at least 60% of known completion evidence supports it.
+   Unmarked stories remain unknown, even with incomplete achievement counts.
+4. Switch accounts, restart offline and refresh cached achievements. Verify
+   isolation/recomputation; stale perfected achievements alone must not support
+   completion. Repeat controller navigation on real hardware separately.
+
 ## Local Preferences
 
 Run real keyboard acceptance separately from real controller acceptance. State

@@ -25,6 +25,7 @@ pub mod share_code;
 pub mod signal;
 pub mod steam;
 pub mod taste;
+pub mod traits;
 pub mod write;
 
 pub use error::{Result, SafePath, VapourflyError};

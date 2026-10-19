@@ -114,6 +114,28 @@ evaluated at generation time. Preference reads are part of background preparatio
 not per-frame disk/network reads. Existing Playlist files, share codes, exports
 and Steam write gates are unchanged; feedback does not rewrite a saved Playlist.
 
+## Explainable playstyle
+
+The existing Library/Discover profile panel and `accounts profile` expose the
+same deterministic rules. Only supported labels appear in the compact summary;
+Evidence/table/JSON include all rules and supporting/contrary/unknown examples.
+No PlayTracker dependency, imported text, cohort data or new personal store.
+
+- Completion-focused: at least 3 completed titles and 60% of known completion
+  evidence. Local story marks and fresh authoritative perfected achievements
+  support it. Fresh incomplete achievements are contrary achievement evidence,
+  not proof of an unfinished story; missing marks/stale counts stay unknown.
+- Deep diver: at least 2 titles with 1200+ lifetime minutes and at least half of
+  played titles with known lifetime minutes. Unknown minutes are not zero.
+- Explorer: at least 5 titles with 60+ lifetime minutes spanning 3 canonical
+  broad genres. Missing metadata stays unknown; Interested/ownership alone are
+  never play. These are descriptive thresholds, not psychological claims or
+  completion-duration estimates. Partial coverage remains visible.
+
+Local story edits recompute traits immediately; account switches and cached
+refreshes invalidate the same prepared profile. Keyboard and real-controller
+acceptance are separate; automated fixtures cannot certify physical hardware.
+
 ## Derived Top Tags
 
 Library and Discover show a compact Top Tags summary with an Evidence dialog;
