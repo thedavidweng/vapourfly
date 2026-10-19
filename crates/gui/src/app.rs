@@ -2960,6 +2960,8 @@ impl VapourflyApp {
         };
 
         self.discover_loading = true;
+        self.discover_results.clear();
+        self.discover_last_playlist = None;
         let preferences = match self.prepared_preferences() {
             Ok(prefs) => prefs.clone(),
             Err(error) => {
@@ -6666,6 +6668,33 @@ mod tests {
         app.scan_result.as_mut().unwrap().account = "alpha".into();
         app.inject_prepared_snapshot();
         app
+    }
+
+    #[test]
+    #[serial]
+    fn discover_restart_drops_previous_results_even_when_preparation_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(&temp.path().join("cache"));
+        app.preferences_dir = temp.path().join("preferences");
+        app.ui_demo = false;
+        app.offline_mode = true;
+        app.inject_prepared_snapshot();
+        app.discover_results = vec![DiscoverPick {
+            app_id: 730,
+            name: "previous generation".into(),
+            score: 1.,
+            reasons: vec![],
+        }];
+        app.discover_last_playlist = Some(sample_generator_playlist("discover", vec![730]));
+        app.prepared_snapshot.as_mut().unwrap().preferences =
+            Err("Invalid local preferences".into());
+
+        app.start_discover_generate();
+
+        assert!(!app.discover_loading);
+        assert_eq!(app.discover_results, Vec::<DiscoverPick>::new());
+        assert!(app.discover_last_playlist.is_none());
+        assert_eq!(app.error.as_deref(), Some("Invalid local preferences"));
     }
 
     #[test]
