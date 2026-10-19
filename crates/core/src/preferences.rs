@@ -260,6 +260,7 @@ mod tests {
         let prefs = load(temp.path(), A).unwrap();
         let request = crate::models::RecommendRequest {
             available_minutes: 60,
+            intent: crate::models::RecommendIntent::Session,
             count: 20,
             deck_mode: false,
             include_installed_only: false,

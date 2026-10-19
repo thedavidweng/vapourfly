@@ -303,3 +303,14 @@ Steam sync retain the existing Manual Playlist contract and safety guards.
 Story/feedback edits invalidate old displayed/in-flight picks, but do not silently
 regenerate and overwrite a saved playlist or unsaved editor: generate again when
 ready. Reads use prepared local caches, never trigger provider refreshes.
+
+### Session intent versus completion estimates
+
+Recommendations defaults to a play session: long campaigns remain eligible and
+full completion duration never awards a fit bonus. An explicit Planner switch /
+CLI `--finish-short-game` instead requires a positive cached full completion
+estimate within the requested window. Complete signed reasons label source and
+unknown remaining time. A bounded +0.25 cached short-loop-tag heuristic for
+1-60 minute sessions is not measured duration; absent evidence stays neutral.
+No remote request, new store/navigation or Playlist/VF1 migration is introduced.
+#27 source-rights disposition and native/controller acceptance remain separate.

@@ -169,6 +169,7 @@ mod tests {
             &games,
             &RecommendRequest {
                 available_minutes: 120,
+                intent: crate::models::RecommendIntent::Session,
                 count: 10,
                 deck_mode: false,
                 include_installed_only: false,

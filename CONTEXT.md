@@ -166,8 +166,14 @@ Profile. Signed, bounded contributions are shared by CLI and GUI:
 
 - `low_playtime` (+2): known lifetime playtime under 120 minutes; unknown is not zero.
 - `deck_compatible` (Native +2 / Platinum +1.5 / Gold +1, Deck mode only).
-- `time_match` (+1.5): legacy cached whole-story estimate fits the window; this
-  is not remaining time, session shape, or proof of provider rights (#27/#36).
+- Default intent is a play Session: long campaigns and unknown full durations
+  remain eligible; no full-duration bonus applies. `session_heuristic` (+0.25)
+  uses only cached Arcade/Puzzle/Racing/Sport(s)/Roguelike concepts for 1-60
+  minute windows, not measured sitting length. Other evidence is neutral/unknown.
+- Explicit FinishShortGame intent requires a positive known full estimate no
+  longer than the window and adds `time_match` (+1.5). Cached IGDB normally,
+  legacy HLTB and manual provenance remain distinct; no playtime/achievement
+  subtraction fabricates remaining hours. This is not proof of #27 source rights.
 - `high_rating` (0..1): continuous above-midpoint maximum of normalized cached RAWG/IGDB quality; low and missing ratings are neutral.
 - `taste_similarity` (0..3) and `recent_taste` (0..0.5): fraction of canonical
   profile mass covered by a candidate's cached concepts, not a binary bonus.
@@ -188,7 +194,7 @@ changes ties only, keyed by AppID, so input ordering cannot affect selection.
 Relative fit compares this result set, not probability or population percentiles.
 
 **Weights are fixed** — internal constants, not user-tunable. Users control
-only external parameters (available minutes, count, deck mode, seed, excluded
+only external parameters (intent, available minutes, count, deck mode, seed, excluded
 collections). The contract is "Vapourfly knows how to score; you pick the
 session shape." A Recommendation carries human-readable reason codes so the
 user can see *why* each game scored the way it did.
