@@ -2328,7 +2328,7 @@ impl VapourflyApp {
             || self
                 .achievement_progress
                 .get(&app_id)
-                .is_some_and(|p| !p.stale())
+                .is_some_and(|p| !p.automatic_refresh_due())
         {
             return;
         }
