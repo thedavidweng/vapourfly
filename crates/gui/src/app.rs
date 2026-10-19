@@ -269,10 +269,6 @@ static DISCOVER_RESULT: JobSlot<(Vec<DiscoverPick>, PlaylistFile)> = JobSlot::ne
 static DYNAMIC_RESULT: JobSlot<GeneratorJobResult> = JobSlot::new();
 static MOOD_RESULT: JobSlot<GeneratorJobResult> = JobSlot::new();
 static PLAYLIST_MATCH_RESULT: JobSlot<PlaylistMatchReport> = JobSlot::new();
-/// Background-prepared library snapshot (hydrated games, pre-junk-classification).
-/// Produced off the UI frame so the Library view does not re-hydrate from
-/// the disk cache every frame.
-static PREPARED_LIBRARY_RESULT: JobSlot<PreparedLibrarySnapshot> = JobSlot::new();
 
 /// Cached library snapshot: hydrated games + the manual overrides that were
 /// loaded alongside them, plus the fingerprint identifying the inputs used to
@@ -546,6 +542,8 @@ pub(crate) struct VapourflyApp {
     /// Reused across frames when the fingerprint matches so the Library view
     /// does not re-hydrate from the disk cache every frame.
     pub(crate) prepared_snapshot: Option<PreparedLibrarySnapshot>,
+    /// Prepare workers can outlive an app; their results belong only to its slot.
+    prepare_result: Arc<JobSlot<PreparedLibrarySnapshot>>,
     /// JobId of an in-flight background library prepare.
     pub(crate) prepare_job_id: Option<JobTicket>,
     /// Fingerprint of the in-flight prepare (to set on the snapshot).
@@ -1342,6 +1340,7 @@ impl VapourflyApp {
             mood_job_id: None,
             playlist_match_job_id: None,
             prepared_snapshot: None,
+            prepare_result: Arc::new(JobSlot::new()),
             prepare_job_id: None,
             prepare_fingerprint: None,
             cache_refresh_generation: 0,
@@ -3518,7 +3517,8 @@ impl VapourflyApp {
             .next_ticket(WorkflowKind::Prepare, &format!("prepare:{fp}"));
         self.prepare_job_id = Some(job_id);
         self.prepare_fingerprint = Some(fp);
-        PREPARED_LIBRARY_RESULT.clear();
+        self.prepare_result.clear();
+        let prepare_result = Arc::clone(&self.prepare_result);
 
         let games = self
             .scan_result
@@ -3570,7 +3570,7 @@ impl VapourflyApp {
             let taste =
                 library_taste_profile(&cache, account.as_deref(), &games, &preferences, &progress);
             repaint.request();
-            PREPARED_LIBRARY_RESULT.set(
+            prepare_result.set(
                 job_id,
                 Ok(PreparedLibrarySnapshot {
                     fingerprint: fp,
@@ -3905,7 +3905,7 @@ impl VapourflyApp {
     /// Consume a finished background library prepare result.
     pub(crate) fn poll_library_prepare(&mut self) {
         if let Some(expected) = self.prepare_job_id
-            && let Some(result) = PREPARED_LIBRARY_RESULT.take_if(expected)
+            && let Some(result) = self.prepare_result.take_if(expected)
         {
             self.prepare_job_id = None;
             self.prepare_fingerprint = None;
@@ -4993,7 +4993,6 @@ mod tests {
     #[test]
     #[serial]
     pub(crate) fn library_prepare_snapshot_populates_and_is_reused() {
-        PREPARED_LIBRARY_RESULT.clear();
         let mut app = VapourflyApp::new(None, true);
         app.populate_demo_data();
 
@@ -5052,11 +5051,43 @@ mod tests {
         assert!(app.library_ready());
     }
 
+    #[test]
+    #[serial]
+    fn library_prepare_results_are_owned_by_each_app() {
+        let mut earlier = VapourflyApp::new(None, true);
+        let mut current = VapourflyApp::new(None, true);
+        let earlier_ticket = earlier
+            .job_runner
+            .next_ticket(WorkflowKind::Prepare, "same-input");
+        let current_ticket = current
+            .job_runner
+            .next_ticket(WorkflowKind::Prepare, "same-input");
+        assert_eq!(earlier_ticket, current_ticket);
+        earlier.prepare_job_id = Some(earlier_ticket);
+        current.prepare_job_id = Some(current_ticket);
+
+        // A worker can outlive its app. Its late result must not replace the
+        // current app's result, even when app-local tickets are identical.
+        current
+            .prepare_result
+            .set(current_ticket, Err("current owner".into()));
+        let earlier_worker_result = Arc::clone(&earlier.prepare_result);
+        drop(earlier);
+        earlier_worker_result.set(earlier_ticket, Err("earlier owner".into()));
+        assert_eq!(
+            current
+                .prepare_result
+                .take_if(current_ticket)
+                .unwrap()
+                .unwrap_err(),
+            "current owner"
+        );
+    }
+
     /// Cache refresh generation bump invalidates the snapshot.
     #[test]
     #[serial]
     pub(crate) fn cache_refresh_generation_invalidates_snapshot() {
-        PREPARED_LIBRARY_RESULT.clear();
         let mut app = VapourflyApp::new(None, true);
         app.populate_demo_data();
 
@@ -5095,7 +5126,6 @@ mod tests {
     #[test]
     #[serial]
     pub(crate) fn rescan_with_same_game_count_invalidates_snapshot() {
-        PREPARED_LIBRARY_RESULT.clear();
         let mut app = VapourflyApp::new(None, true);
         app.populate_demo_data();
         let game_count = app.scan_result.as_ref().unwrap().games.len();

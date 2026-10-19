@@ -361,3 +361,14 @@ devices with an authorized test account before claiming those gates.
   the displayed picks. Tab/Space reaches the switch without new navigation.
 - Repeat offline/no IGDB and with installed/Deck options; verify cached/manual
   provenance and missing duration honestly. This is not #27 rights acceptance.
+
+## Personal Record Inventory
+
+- With an offline selected account, open Data Sources > Personal records.
+- Verify activity/achievement/story/preference counts, local write times and
+  unknown/freshness explanations; zero local records must not imply no ownership.
+- Verify key status is boolean only and offline refresh is explicitly disabled.
+- Tab into the inventory; arrows/Page Up/Down/Home/End scroll; Escape closes.
+- Switch accounts and reopen: no retained previous-account inventory. Opening
+  or closing must not change personal files, shared metadata, Playlists or Steam.
+- No clear/delete acceptance is implied by this read-only dialog.

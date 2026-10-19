@@ -44,6 +44,27 @@ These flags are available on all commands:
 
 ## Commands
 
+### Personal Record Inventory (Read-Only)
+
+```bash
+vapourfly --offline accounts inventory
+vapourfly --account <steamid64> accounts inventory --format json
+```
+
+Inspect selected-account cached activity, cached achievements, local story marks
+and preference files, including titles no longer in the Library. This performs
+no network requests or writes. Counts describe on-disk records, not ownership,
+valid records or achievement coverage. Local write timestamps are not provider
+freshness. Activity evidence separately reports its cached availability and
+freshness; absent or unreadable snapshots mean unknown, not an empty library.
+Storage access failures are errors, not zero counts.
+
+Data Sources > Personal records shows the same inventory, credential-configured
+boolean and refresh prerequisites. Local selection grants no remote permission;
+refresh still requires an authorized key and provider visibility, and is disabled
+offline. Reopen the dialog for a fresh snapshot. Inventory exports omit account
+identifiers, per-game payloads and credentials. This command does not clear data.
+
 ### Account Progress (Local And Cache-Only)
 
 ```bash

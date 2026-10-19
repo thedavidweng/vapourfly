@@ -270,6 +270,11 @@ enum Commands {
 enum AccountsAction {
     /// List detected accounts.
     List,
+    /// Inspect selected-account personal storage (read-only, no network).
+    Inventory {
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Derive Top Tags from this account's local/cached evidence (never fetches).
     Profile {
         #[arg(long, value_enum, default_value = "table")]
@@ -714,6 +719,9 @@ fn main() {
         Commands::Doctor => cmd_doctor(&cli),
         Commands::Accounts { action } => match action {
             AccountsAction::List => cmd_accounts_list(&cli),
+            AccountsAction::Inventory { format } => {
+                inventory_with_paths(&cli, *format, &PersonalPaths::default())
+            }
             AccountsAction::Profile { format } => cmd_profile(&cli, *format),
             AccountsAction::Preferences { action } => cmd_preferences(&cli, action),
             AccountsAction::Progress {
@@ -1271,6 +1279,55 @@ impl std::fmt::Display for PersonalSelectionError {
 }
 
 impl std::error::Error for PersonalSelectionError {}
+
+fn inventory_with_paths(
+    cli: &Cli,
+    format: OutputFormat,
+    paths: &PersonalPaths,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resolved = cli.resolved_config()?;
+    let accounts = steam::detect_accounts(&resolved.steam_dir)
+        .map_err(|_| PersonalSelectionError::Discovery)?;
+    let selected = steam::select_account(&accounts, resolved.account.as_deref())
+        .map_err(|_| PersonalSelectionError::Selection)?;
+    let inventory = vapourfly_api::personal_data::inspect(
+        &vapourfly_api::cache::DiskCache::new(&paths.cache),
+        &paths.story,
+        &paths.preferences,
+        &selected.steam_id64,
+    )?;
+    let configured = resolved.steam_api_key.is_some();
+    let refresh = if cli.offline {
+        "disabled offline"
+    } else if configured {
+        "explicit activity/achievement refresh available; provider permission/visibility still required"
+    } else {
+        "requires an authorized Steam Web API key"
+    };
+    match format {
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "inventory": inventory,
+                "steam_key_configured": configured,
+                "refresh": refresh,
+                "local_selection_grants_remote_permission": false,
+                "read_only": true,
+            }))?
+        ),
+        OutputFormat::Table => {
+            println!("Selected-account personal storage (read-only; no network)");
+            for line in inventory.summary() {
+                println!("{line}");
+            }
+            println!("Steam key configured: {configured}; refresh: {refresh}");
+            println!(
+                "Local account selection does not grant remote permission. Shared metadata, Playlists, settings and Steam contents are separate."
+            );
+        }
+    }
+    Ok(())
+}
 
 fn personal_evidence_for_scan(
     cli: &Cli,
@@ -2929,6 +2986,83 @@ mod tests {
             preferences: root.join("preferences"),
             playlists: root.join("playlists"),
         }
+    }
+
+    #[test]
+    fn personal_inventory_cli_is_read_only_offline_and_exports_no_identifiers() {
+        const CHILD: &str = "VAPOURFLY_TEST_INVENTORY_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let root = tempfile::tempdir().unwrap();
+            let paths = personal_test_paths(root.path());
+            let fixtures =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
+            vapourfly_core::preferences::set(
+                &paths.preferences,
+                "76561198000000000",
+                999999,
+                Some(vapourfly_core::preferences::Choice::NotInterested),
+                1,
+            )
+            .unwrap();
+            let before =
+                std::fs::read(paths.preferences.join("76561198000000000/999999.json")).unwrap();
+            for format in ["json", "table"] {
+                let cli = Cli::try_parse_from([
+                    "vapourfly",
+                    "--fixtures",
+                    fixtures.to_str().unwrap(),
+                    "--account",
+                    "76561198000000000",
+                    "--offline",
+                    "accounts",
+                    "inventory",
+                    "--format",
+                    format,
+                ])
+                .unwrap();
+                let Commands::Accounts {
+                    action: AccountsAction::Inventory { format },
+                } = &cli.command
+                else {
+                    panic!("inventory command")
+                };
+                inventory_with_paths(&cli, *format, &paths).unwrap();
+            }
+            assert_eq!(
+                std::fs::read(paths.preferences.join("76561198000000000/999999.json")).unwrap(),
+                before
+            );
+            assert!(!paths.cache.exists());
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::personal_inventory_cli_is_read_only_offline_and_exports_no_identifiers",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HOME", root.path())
+            .env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env_remove("VAPOURFLY_ACCOUNT")
+            .env_remove("VAPOURFLY_STEAM_DIR")
+            .env_remove("VAPOURFLY_STEAM_API_KEY")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(text.contains("disabled offline"));
+        assert!(text.contains("Local preferences: 1 on-disk records"));
+        assert!(text.contains("\"local_selection_grants_remote_permission\": false"));
+        assert!(!text.contains("76561198000000000"));
+        assert!(!text.contains("999999"));
+        assert!(!text.contains("not_interested"));
     }
 
     #[test]
