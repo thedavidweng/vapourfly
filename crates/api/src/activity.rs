@@ -154,13 +154,15 @@ pub(crate) fn encode_query(value: &str) -> String {
 
 pub fn load(cache: &DiskCache, id: &str) -> Result<Option<ActivitySnapshot>> {
     validate_steam_id64(id)?;
-    let record = cache.get::<ActivitySnapshot>(SOURCE, id)?;
-    match record {
-        Some(record) if record.data.steam_id64 != id => Err(VapourflyError::InvalidInput(
-            "Activity cache account mismatch".into(),
-        )),
-        other => Ok(other.map(|r| r.data)),
-    }
+    let record = match cache.get::<ActivitySnapshot>(SOURCE, id) {
+        Ok(record) => record,
+        // Unparseable or foreign records cannot establish account evidence.
+        Err(VapourflyError::ParseError { .. }) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    Ok(record
+        .filter(|record| record.data.steam_id64 == id)
+        .map(|record| record.data))
 }
 
 #[derive(Deserialize)]
@@ -263,16 +265,7 @@ pub fn refresh(
     control: &RefreshControl,
 ) -> Result<Option<ActivitySnapshot>> {
     validate_steam_id64(id)?;
-    let previous = match load(cache, id) {
-        Ok(snapshot) => snapshot,
-        Err(VapourflyError::ParseError { .. }) => None,
-        Err(VapourflyError::InvalidInput(reason))
-            if reason == "Activity cache account mismatch" =>
-        {
-            None
-        }
-        Err(error) => return Err(error),
-    };
+    let previous = load(cache, id)?;
     let Some(key) = api_key.filter(|key| !key.is_empty()) else {
         return Ok(previous);
     };
@@ -519,7 +512,8 @@ mod tests {
         let (cache, _dir) = cache();
         let path = cache.path_for(SOURCE, FIRST);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, b"not-json").unwrap();
+        std::fs::write(&path, b"not-json").unwrap();
+        assert!(load(&cache, FIRST).unwrap().is_none());
 
         let mut backend = MockBackend::new();
         backend.register(
@@ -546,6 +540,29 @@ mod tests {
             load(&cache, FIRST).unwrap().unwrap().owned.availability,
             Availability::Empty
         );
+        let foreign = ActivitySnapshot {
+            steam_id64: SECOND.into(),
+            ..snapshot
+        };
+        cache
+            .put(&CacheRecord {
+                source: SOURCE.into(),
+                key: FIRST.into(),
+                data: foreign,
+                fetched_at: Utc::now(),
+                ttl: TTL,
+                stale: false,
+                etag: None,
+            })
+            .unwrap();
+        assert!(load(&cache, FIRST).unwrap().is_none());
+        assert!(load(&cache, "invalid").is_err());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(matches!(
+            load(&cache, FIRST),
+            Err(VapourflyError::FileNotFound { .. })
+        ));
     }
 
     #[test]
