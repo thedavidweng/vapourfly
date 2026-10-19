@@ -64,6 +64,32 @@ contains AppID and progress only, without account identifiers or unlock history.
 No network requests or API credentials are required. Local marks survive cache
 clears; corrupt records report an error instead of silently losing the mark.
 
+### Local Preferences (Selected Account)
+
+```bash
+vapourfly accounts preferences list --format json
+vapourfly accounts preferences set 730 interested
+vapourfly accounts preferences set 730 not-interested
+vapourfly accounts preferences set 730 not-now
+vapourfly accounts preferences reset 730
+vapourfly accounts preferences reset-all --confirm
+```
+
+All preference operations are local/cache-only, use the resolved selected account,
+and never write Steam files. Set requires an owned AppID; reset can remove an old
+record even if the game is no longer scanned. List includes expired Not now
+records, with an explicit expiry in JSON; output omits account identifiers.
+Reset all requires confirmation and removes only this account's choices, not
+story marks, caches, Playlists or settings. It cannot be undone.
+
+Last choice wins. Not interested and active Not now exclude before scoring in
+`recommend` and `playlist discover`; Not now expires exactly 30 days after setting
+it. Interested adds an explained +0.5 without overriding existing eligibility or
+excluded Collections. Preferences are not Steam/community tags. Rescan the GUI
+after CLI edits; newly generated picks evaluate expiry using the current time.
+Corrupt preference records report errors rather than silently restoring excluded
+candidates. Existing dry-run/confirmation/backup/Steam-running write gates remain.
+
 ### `vapourfly doctor`
 
 Diagnose the Steam installation, accounts, credentials, and cache.

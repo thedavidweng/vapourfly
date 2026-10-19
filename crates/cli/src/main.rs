@@ -263,6 +263,11 @@ enum Commands {
 enum AccountsAction {
     /// List detected accounts.
     List,
+    /// Inspect or change local tastes (no network or Steam writes).
+    Preferences {
+        #[command(subcommand)]
+        action: PreferenceAction,
+    },
     /// Inspect local story/achievement evidence, optionally mark or undo story completion.
     Progress {
         /// Owned AppID; omit to inspect/filter the whole local Library.
@@ -309,6 +314,45 @@ enum AccountsAction {
 enum StoryAction {
     Completed,
     Undo,
+}
+
+#[derive(Subcommand)]
+enum PreferenceAction {
+    /// List explicit choices, including expired Not now choices.
+    List {
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Set an owned game's local choice; last choice wins.
+    Set {
+        app_id: u32,
+        #[arg(value_enum)]
+        choice: PreferenceChoice,
+    },
+    /// Remove one local choice, including a game no longer in the Library.
+    Reset { app_id: u32 },
+    /// Remove only this account's explicit choices (irreversible).
+    ResetAll {
+        #[arg(long, required = true)]
+        confirm: bool,
+    },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum PreferenceChoice {
+    Interested,
+    NotInterested,
+    NotNow,
+}
+
+impl From<PreferenceChoice> for vapourfly_core::preferences::Choice {
+    fn from(value: PreferenceChoice) -> Self {
+        match value {
+            PreferenceChoice::Interested => Self::Interested,
+            PreferenceChoice::NotInterested => Self::NotInterested,
+            PreferenceChoice::NotNow => Self::NotNow,
+        }
+    }
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -657,6 +701,7 @@ fn main() {
         Commands::Doctor => cmd_doctor(&cli),
         Commands::Accounts { action } => match action {
             AccountsAction::List => cmd_accounts_list(&cli),
+            AccountsAction::Preferences { action } => cmd_preferences(&cli, action),
             AccountsAction::Progress {
                 app_id,
                 story,
@@ -999,6 +1044,92 @@ fn section_status(section: &vapourfly_api::activity::ActivitySection) -> String 
         "fresh"
     };
     format!("{availability}; {freshness}")
+}
+
+fn selected_preference_account(
+    cli: &Cli,
+) -> Result<steam::SteamAccount, Box<dyn std::error::Error>> {
+    let resolved = cli.resolved_config()?;
+    let accounts = steam::detect_accounts(&resolved.steam_dir)?;
+    Ok(steam::select_account(&accounts, resolved.account.as_deref())?.clone())
+}
+
+fn cmd_preferences(cli: &Cli, action: &PreferenceAction) -> Result<(), Box<dyn std::error::Error>> {
+    run_preference_action(
+        cli,
+        action,
+        &config::default_preferences_dir(),
+        chrono::Utc::now().timestamp(),
+    )
+}
+
+fn run_preference_action(
+    cli: &Cli,
+    action: &PreferenceAction,
+    root: &Path,
+    now: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use vapourfly_core::preferences;
+    let account = selected_preference_account(cli)?;
+    match action {
+        PreferenceAction::List { format } => {
+            let prefs = preferences::load(root, &account.steam_id64)?;
+            match format {
+                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&prefs)?),
+                OutputFormat::Table => {
+                    println!("Local preferences (Not now expires after 30 days; no Steam writes):");
+                    for (id, p) in prefs {
+                        println!("{id}: {}", p.label(now));
+                    }
+                }
+            }
+        }
+        PreferenceAction::Set { app_id, choice } => {
+            let resolved = cli.resolved_config()?;
+            let scan = steam::scan_library(&steam::ScanOptions {
+                steam_dir: resolved.steam_dir,
+                account: Some(account.steam_id64.clone()),
+                fixtures: cli.fixtures.clone(),
+            })?;
+            if !scan.games.iter().any(|g| g.app_id == *app_id) {
+                return Err("AppID is not in the selected account's Library".into());
+            }
+            preferences::set(
+                root,
+                &account.steam_id64,
+                *app_id,
+                Some((*choice).into()),
+                now,
+            )?;
+            println!("Local preference updated.");
+        }
+        PreferenceAction::Reset { app_id } => {
+            preferences::set(root, &account.steam_id64, *app_id, None, now)?;
+            println!("Local preference reset.");
+        }
+        PreferenceAction::ResetAll { confirm } => {
+            if !confirm {
+                return Err("Reset all requires --confirm".into());
+            }
+            preferences::reset_all(root, &account.steam_id64)?;
+            println!("Selected account's local preferences reset.");
+        }
+    }
+    Ok(())
+}
+
+fn preferences_for_scan(
+    cli: &Cli,
+    scan: &ScanResult,
+) -> Result<vapourfly_core::preferences::Preferences, Box<dyn std::error::Error>> {
+    let account = selected_preference_account(cli)?;
+    if scan.account != account.account_name {
+        return Err("Scan does not match the selected account".into());
+    }
+    Ok(vapourfly_core::preferences::load(
+        &config::default_preferences_dir(),
+        &account.steam_id64,
+    )?)
 }
 
 fn cmd_progress(
@@ -1472,10 +1603,10 @@ fn scan_library_hydrated(
     cli: &Cli,
     junk_mode: JunkMode,
 ) -> Result<ScanResult, Box<dyn std::error::Error>> {
-    let steam_dir = cli.resolve_steam_dir()?;
+    let resolved = cli.resolved_config()?;
     let result = vapourfly_api::workflow::prepare(&vapourfly_api::workflow::WorkflowOptions {
-        steam_dir,
-        account: cli.account.clone(),
+        steam_dir: resolved.steam_dir,
+        account: resolved.account,
         fixtures: cli.fixtures.clone(),
         junk_mode,
         offline: cli.offline,
@@ -1710,7 +1841,13 @@ fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::erro
         exclude_collections,
     };
 
-    let recommendations = recommend::recommend(&scan_result.games, &request);
+    let preferences = preferences_for_scan(cli, &scan_result)?;
+    let recommendations = recommend::recommend_with_preferences(
+        &scan_result.games,
+        &request,
+        &preferences,
+        chrono::Utc::now().timestamp(),
+    );
 
     if to_collection {
         let app_ids: Vec<u32> = recommendations.iter().map(|r| r.app_id).collect();
@@ -1928,13 +2065,18 @@ fn cmd_playlist_discover(
     out: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
-    let pf = discover::generate_discover_playlist(
+    let preferences = preferences_for_scan(cli, &scan_result)?;
+    let options = DiscoverOptions {
+        seed_app_id: seed,
+        count,
+    };
+    let picks = discover::rank_discover_with_preferences(
         &scan_result.games,
-        &DiscoverOptions {
-            seed_app_id: seed,
-            count,
-        },
+        &options,
+        &preferences,
+        chrono::Utc::now().timestamp(),
     );
+    let pf = discover::playlist_from_discover_picks(&scan_result.games, &options, &picks);
 
     store_playlist(&pf)?;
     println!("Generated Discover playlist: {}", pf.playlist.name);
@@ -2524,6 +2666,100 @@ fn print_match_counts(report: &vapourfly_core::models::PlaylistMatchReport) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_preferences_cli_actions_and_discoverable_reset_confirmation() {
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
+        let fixture_arg = fixtures.to_str().unwrap();
+        let cli = Cli::try_parse_from([
+            "vapourfly",
+            "--fixtures",
+            fixture_arg,
+            "--offline",
+            "accounts",
+            "preferences",
+            "set",
+            "730",
+            "not-now",
+        ])
+        .unwrap();
+        let Commands::Accounts {
+            action: AccountsAction::Preferences { ref action },
+        } = cli.command
+        else {
+            panic!("preferences command");
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let account = selected_preference_account(&cli).unwrap();
+        run_preference_action(&cli, action, temp.path(), 100).unwrap();
+        let prefs = vapourfly_core::preferences::load(temp.path(), &account.steam_id64).unwrap();
+        assert!(vapourfly_core::preferences::excludes(&prefs, 730, 100));
+        assert!(!vapourfly_core::preferences::excludes(
+            &prefs,
+            730,
+            100 + vapourfly_core::preferences::NOT_NOW_SECONDS
+        ));
+        run_preference_action(
+            &cli,
+            &PreferenceAction::List {
+                format: OutputFormat::Json,
+            },
+            temp.path(),
+            100,
+        )
+        .unwrap();
+        run_preference_action(
+            &cli,
+            &PreferenceAction::Reset { app_id: 730 },
+            temp.path(),
+            100,
+        )
+        .unwrap();
+        assert!(
+            vapourfly_core::preferences::load(temp.path(), &account.steam_id64)
+                .unwrap()
+                .is_empty()
+        );
+        run_preference_action(&cli, action, temp.path(), 100).unwrap();
+        run_preference_action(
+            &cli,
+            &PreferenceAction::ResetAll { confirm: true },
+            temp.path(),
+            100,
+        )
+        .unwrap();
+        assert!(
+            vapourfly_core::preferences::load(temp.path(), &account.steam_id64)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            Cli::try_parse_from(["vapourfly", "accounts", "preferences", "reset-all"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "vapourfly",
+                "accounts",
+                "preferences",
+                "reset-all",
+                "--confirm"
+            ])
+            .is_ok()
+        );
+        assert!(
+            run_preference_action(
+                &cli,
+                &PreferenceAction::Set {
+                    app_id: u32::MAX,
+                    choice: PreferenceChoice::Interested
+                },
+                temp.path(),
+                100
+            )
+            .is_err()
+        );
+    }
     use vapourfly_core::models::Playlist;
 
     #[test]

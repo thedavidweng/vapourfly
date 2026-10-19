@@ -4,13 +4,35 @@ Manual testing steps for the Vapourfly GUI. Automated unit tests cover app
 creation, fixture scanning, navigation contract, and playtime formatting; this
 document covers the interactive flows that require a running GUI.
 
+## Local Preferences
+
+Run real keyboard acceptance separately from real controller acceptance. State
+tests are not native execution; demo mode intentionally disables personal edits.
+
+1. Offline with a selected account, open an owned game's details from Library,
+   Recommendations or Discover. Use Tab/Enter/Space to choose Interested and
+   verify the local label and +0.5 explanation on regenerated eligible picks.
+2. Choose Not interested, then Not now: verify both candidate surfaces exclude
+   the game before scoring. Not now expires 30 days after setting, not on restart.
+3. Reset this preference. Verify refreshed picks, persistence across rescan/restart,
+   and no override of hidden/junk/excluded Collections. Compare CLI table/JSON.
+4. Open Reset all account preferences, cancel once, then confirm. Verify only
+   current-account choices disappear and story marks/Playlists/Steam files remain.
+   Switch accounts while confirmation is open: confirmation must cancel safely.
+5. Switch accounts and back; no prior choices or in-flight picks may leak. Repeat
+   with an invalid local record and verify explicit failure, not silent exclusion
+   loss. Use reset to repair. Repeat on a real supported controller when available;
+   record keyboard, controller and real-account/provider acceptance independently.
+
 ## Story Completion And Progress Filters
 
 Automated store/rule/CLI/GUI-state tests are not native interaction evidence.
-Run these steps on the target device before recording #31 native acceptance:
+Run these steps with real keyboard input on a runnable GUI, then separately on a
+real supported controller before recording each part of #31 native acceptance:
 
 1. Offline, select an account and scan. Open an owned game's Library details.
-   Activate **Mark story completed** with keyboard Enter/Space, then controller A.
+   Activate **Mark story completed** with keyboard Enter/Space (controller A in the
+   separate hardware run).
    Verify **Story completed (local)** appears independently of the achievement
    count and Perfected state. Rescan/restart and confirm persistence.
 2. Activate **Undo story completion**; confirm it disappears and survives rescan.

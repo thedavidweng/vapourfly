@@ -81,6 +81,37 @@ even without `--offline`. JSON excludes account identity and unlock history.
 The automated fixture/state tests do not establish native keyboard/controller
 or authorized live Steam provider acceptance; those remain separately tracked.
 
+## Explicit Local Preferences
+
+Game details (also opened from Recommendations/Discover cards) offer Interested,
+Not interested, Not now, Reset this preference, and a confirmed Reset all account
+preferences action. These are personal choices, not community tags or Steam
+Collections. Demo edits are disabled. CLI parity lives under `accounts preferences`.
+
+State is atomic per SteamID64/AppID in
+`{data}/vapourfly/personal/preferences/<SteamID64>/<AppID>.json`, separate from
+provider caches, story marks and Playlists. Only the choice, record version and
+optional expiry are stored. No network service, telemetry or Steam writes are
+introduced. Reset one removes one choice; reset all removes only the selected
+account's choices. Reset is irreversible, while a choice can be changed at any time.
+Malformed/unreadable preferences report an error and block personalized generation
+rather than silently ignoring exclusions; reset can remove corrupt local records.
+
+The latest explicit choice replaces the previous one. Not interested excludes
+before Recommendations and Discover scoring. Not now does the same until exactly
+30 days after setting it, with no automatic renewal. Expired records are labeled
+and no longer affect newly generated picks. Interested adds an explained **+0.5**,
+never overriding hidden/junk/non-game, installed-only, unplayed Discover or
+explicit excluded-Collection constraints. Collections are not rewritten or treated
+as tags; only existing explicit exclusions take precedence over Interested.
+
+GUI feedback reloads the local snapshot and invalidates old/in-flight picks,
+regenerating previously active candidate views. Account switches reject prior
+preferences and clear prior picks. External CLI edits load on rescan; expiry is
+evaluated at generation time. Preference reads are part of background preparation,
+not per-frame disk/network reads. Existing Playlist files, share codes, exports
+and Steam write gates are unchanged; feedback does not rewrite a saved Playlist.
+
 ## Current Data Flow
 
 1. `scan` reads local Steam files and builds the library model.

@@ -19,7 +19,8 @@ use vapourfly_core::models::*;
 use vapourfly_core::mood::{self, EditorialMood};
 use vapourfly_core::playlist;
 use vapourfly_core::playlist_store;
-use vapourfly_core::recommend::recommend;
+use vapourfly_core::preferences::{self, Choice, Preferences};
+use vapourfly_core::recommend::recommend_with_preferences;
 use vapourfly_core::signal;
 use vapourfly_core::steam::BackupInfo;
 use vapourfly_core::steam::backup::list_backups;
@@ -289,6 +290,7 @@ pub(crate) struct PreparedLibrarySnapshot {
     /// Manual overrides snapshot (for non-Default reclassification in background jobs).
     overrides: ManualOverrides,
     progress: Result<std::collections::BTreeMap<u32, vapourfly_core::progress::Summary>, String>,
+    preferences: Result<Preferences, String>,
 }
 
 pub(crate) struct VapourflyApp {
@@ -318,6 +320,8 @@ pub(crate) struct VapourflyApp {
     /// Cache directory (temp dir in --ui-demo mode, default otherwise).
     pub(crate) cache_dir: PathBuf,
     pub(crate) story_dir: PathBuf,
+    pub(crate) preferences_dir: PathBuf,
+    preferences_generation: u64,
     pub(crate) progress_filter: vapourfly_core::progress::Filter,
     /// Optional override for the manual overrides JSON path. In --ui-demo mode
     /// this points inside the demo temp root so the real platform default path
@@ -1187,6 +1191,12 @@ impl VapourflyApp {
                     root.join("personal/story")
                 }),
             progress_filter: Default::default(),
+            preferences_dir: demo_root
+                .as_ref()
+                .map_or_else(vapourfly_core::config::default_preferences_dir, |root| {
+                    root.join("personal/preferences")
+                }),
+            preferences_generation: 0,
             cache_dir: cache_root,
             manual_overrides_path,
             demo_root,
@@ -2527,6 +2537,95 @@ impl VapourflyApp {
         }
     }
 
+    fn prepared_preferences(&self) -> Result<&Preferences, String> {
+        self.prepared_snapshot
+            .as_ref()
+            .filter(|s| s.fingerprint == self.library_prepare_fingerprint())
+            .ok_or_else(|| "Prepare the selected account's Library first.".to_string())?
+            .preferences
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    pub(crate) fn preference_summary(&self, app_id: u32) -> String {
+        match self.prepared_preferences() {
+            Ok(prefs) => prefs.get(&app_id).map_or_else(
+                || "No explicit preference".into(),
+                |p| p.label(chrono::Utc::now().timestamp()),
+            ),
+            Err(error) => format!("Preferences unavailable: {error}"),
+        }
+    }
+
+    pub(crate) fn edit_preference(
+        &mut self,
+        app_id: Option<u32>,
+        choice: Option<Choice>,
+    ) -> Result<(), String> {
+        if self.ui_demo {
+            return Err("Preference edits are disabled in demo mode.".into());
+        }
+        let account = self.active_account().ok_or("Select a Steam account.")?;
+        let snapshot = self
+            .prepared_snapshot
+            .as_ref()
+            .filter(|s| s.fingerprint == self.library_prepare_fingerprint())
+            .ok_or("Prepare the selected account's Library first.")?;
+        if self
+            .scan_result
+            .as_ref()
+            .is_none_or(|s| s.account != account.account_name)
+        {
+            return Err("Scan the selected account's Library first.".into());
+        }
+        let id = account.steam_id64.clone();
+        let result = if let Some(app_id) = app_id {
+            if !snapshot.games.iter().any(|g| g.app_id == app_id) {
+                return Err("AppID is not in the selected account's Library.".into());
+            }
+            preferences::set(
+                &self.preferences_dir,
+                &id,
+                app_id,
+                choice,
+                chrono::Utc::now().timestamp(),
+            )
+            .map(|_| ())
+        } else {
+            if choice.is_some() {
+                return Err("Account-wide choices are not supported.".into());
+            }
+            preferences::reset_all(&self.preferences_dir, &id)
+        };
+        // Reload even on partial reset failure; never leave old feedback active in memory.
+        let loaded = preferences::load(&self.preferences_dir, &id).map_err(|e| e.to_string());
+        self.prepared_snapshot.as_mut().unwrap().preferences = loaded;
+        self.preferences_generation = self.preferences_generation.wrapping_add(1);
+        let rerun_recommend = self.recommend_loading || !self.recommend_results.is_empty();
+        let rerun_discover = self.discover_loading || !self.discover_results.is_empty();
+        self.clear_personalized_results();
+        result.map_err(|e| e.to_string())?;
+        self.prepared_preferences()?;
+        if rerun_recommend {
+            self.start_recommend_preview();
+        }
+        if rerun_discover {
+            self.start_discover_generate();
+        }
+        Ok(())
+    }
+
+    fn clear_personalized_results(&mut self) {
+        self.recommend_results.clear();
+        self.recommend_selected = None;
+        self.recommend_job_id = None;
+        self.recommend_loading = false;
+        self.discover_results.clear();
+        self.discover_last_playlist = None;
+        self.discover_job_id = None;
+        self.discover_loading = false;
+    }
+
     pub(crate) fn set_story_completed(
         &mut self,
         app_id: u32,
@@ -2671,11 +2770,19 @@ impl VapourflyApp {
     }
 
     pub(crate) fn recommend_fp(&self, request: &RecommendRequest) -> String {
-        format!("recommend:{request:?}:lib={}", self.scan_generation)
+        format!(
+            "recommend:{request:?}:lib={}:prefs={}",
+            self.library_prepare_fingerprint(),
+            self.preferences_generation
+        )
     }
 
     pub(crate) fn discover_fp(&self, options: &DiscoverOptions) -> String {
-        format!("discover:{options:?}:lib={}", self.scan_generation)
+        format!(
+            "discover:{options:?}:lib={}:prefs={}",
+            self.library_prepare_fingerprint(),
+            self.preferences_generation
+        )
     }
 
     pub(crate) fn dynamic_fp(
@@ -2760,6 +2867,14 @@ impl VapourflyApp {
         };
 
         self.recommend_loading = true;
+        let preferences = match self.prepared_preferences() {
+            Ok(prefs) => prefs.clone(),
+            Err(error) => {
+                self.recommend_loading = false;
+                self.error = Some(error);
+                return;
+            }
+        };
         // The request is captured at start time (recommend_request_at_start)
         // so Match % is computed against the request the user actually
         // submitted, not the current inputs (e.g. if Deck mode changes mid-job).
@@ -2773,7 +2888,12 @@ impl VapourflyApp {
 
         let repaint = self.repaint.clone();
         std::thread::spawn(move || {
-            let results = recommend(&games, &request);
+            let results = recommend_with_preferences(
+                &games,
+                &request,
+                &preferences,
+                chrono::Utc::now().timestamp(),
+            );
             repaint.request();
             RECOMMEND_RESULT.set(job_id, Ok(results));
         });
@@ -2792,6 +2912,14 @@ impl VapourflyApp {
         };
 
         self.discover_loading = true;
+        let preferences = match self.prepared_preferences() {
+            Ok(prefs) => prefs.clone(),
+            Err(error) => {
+                self.discover_loading = false;
+                self.error = Some(error);
+                return;
+            }
+        };
         let fingerprint = self.discover_fp(&options);
         let job_id = self
             .job_runner
@@ -2801,7 +2929,12 @@ impl VapourflyApp {
 
         let repaint = self.repaint.clone();
         std::thread::spawn(move || {
-            let picks = discover::rank_discover_picks(&games, &options);
+            let picks = discover::rank_discover_with_preferences(
+                &games,
+                &options,
+                &preferences,
+                chrono::Utc::now().timestamp(),
+            );
             let pf = discover::playlist_from_discover_picks(&games, &options, &picks);
             repaint.request();
             DISCOVER_RESULT.set(job_id, Ok((picks, pf)));
@@ -3283,13 +3416,14 @@ impl VapourflyApp {
         let cache_dir = self.cache_dir.to_string_lossy();
         let account = self.active_account().map(|a| a.steam_id64.as_str());
         let story_dir = self.story_dir.to_string_lossy();
+        let preferences_dir = self.preferences_dir.to_string_lossy();
         let overrides = self
             .manual_overrides_path
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
         fingerprint_u64(&format!(
-            "prepare:scan_gen={scan_gen}:gen={refresh_gen}:cache={cache_dir}:ovr={overrides}:account={account:?}:story={story_dir}"
+            "prepare:scan_gen={scan_gen}:gen={refresh_gen}:cache={cache_dir}:ovr={overrides}:account={account:?}:story={story_dir}:preferences={preferences_dir}"
         ))
     }
 
@@ -3324,6 +3458,8 @@ impl VapourflyApp {
         let cache_dir = self.cache_dir.clone();
         let overrides_path = self.manual_overrides_path.clone();
         let story_dir = self.story_dir.clone();
+        let preferences_dir = self.preferences_dir.clone();
+        let ui_demo = self.ui_demo;
         let account = self
             .active_account()
             .filter(|a| {
@@ -3343,6 +3479,8 @@ impl VapourflyApp {
                     vapourfly_api::achievements::library_progress(&cache, &story_dir, id, &games)
                         .map_err(|e| e.to_string())
                 });
+            let preferences =
+                load_library_preferences(&preferences_dir, account.as_deref(), ui_demo);
             vapourfly_api::enrichment::hydrate_from_cache(&mut games, &cache);
             // Load overrides off-frame so prepared_games never touches the
             // overrides file on the UI frame.
@@ -3367,6 +3505,7 @@ impl VapourflyApp {
                     games,
                     overrides,
                     progress,
+                    preferences,
                 }),
             );
         });
@@ -3379,6 +3518,7 @@ impl VapourflyApp {
             .active_account()
             .map(|account| account.steam_id64.clone());
         if self.activity_account_id != active_account_id {
+            self.clear_personalized_results();
             self.achievement_control.cancel();
             self.achievement_job_id = None;
             self.achievement_progress.clear();
@@ -3791,11 +3931,23 @@ impl VapourflyApp {
             &overrides,
         );
         let games: Arc<[Game]> = Arc::from(games);
+        let preferences = load_library_preferences(
+            &self.preferences_dir,
+            self.active_account()
+                .filter(|a| {
+                    self.scan_result
+                        .as_ref()
+                        .is_some_and(|s| s.account == a.account_name)
+                })
+                .map(|a| a.steam_id64.as_str()),
+            self.ui_demo,
+        );
         self.prepared_snapshot = Some(PreparedLibrarySnapshot {
             fingerprint: fp,
             games,
             overrides,
             progress,
+            preferences,
         });
     }
 
@@ -4256,7 +4408,13 @@ impl VapourflyApp {
         let games = self
             .prepared_games(JunkMode::Default)
             .ok_or_else(|| "Scan your library before generating.".to_string())?;
-        let picks = discover::rank_discover_picks(&games, &options);
+        let preferences = self.prepared_preferences()?;
+        let picks = discover::rank_discover_with_preferences(
+            &games,
+            &options,
+            preferences,
+            chrono::Utc::now().timestamp(),
+        );
         let pf = discover::playlist_from_discover_picks(&games, &options, &picks);
         let stored = self.store_generator_playlist(GeneratorIdentity::Discover, pf)?;
         self.discover_results = picks;
@@ -4266,6 +4424,18 @@ impl VapourflyApp {
         self.refresh_playlist_store_ids();
         Ok(stored)
     }
+}
+
+fn load_library_preferences(
+    root: &Path,
+    account: Option<&str>,
+    demo: bool,
+) -> Result<Preferences, String> {
+    if demo {
+        return Ok(Preferences::new());
+    }
+    let id = account.ok_or("Scan the selected account's Library first.")?;
+    preferences::load(root, id).map_err(|e| e.to_string())
 }
 
 /// Generate a [`WritePlan`] without executing it, so the GUI can display a
@@ -4797,6 +4967,7 @@ mod tests {
             games: Arc::from(vec![]),
             overrides: ManualOverrides::default(),
             progress: Ok(Default::default()),
+            preferences: Ok(Default::default()),
         });
 
         // Bump the generation — fingerprint changes, snapshot is stale.
@@ -4846,6 +5017,7 @@ mod tests {
             games: Arc::from(vec![sentinel.clone()]),
             overrides: ManualOverrides::default(),
             progress: Ok(Default::default()),
+            preferences: Ok(Default::default()),
         });
 
         // Simulate a rescan accepted with the SAME game count but changed
@@ -6337,6 +6509,75 @@ mod tests {
         app.scan_result.as_mut().unwrap().account = "alpha".into();
         app.inject_prepared_snapshot();
         app
+    }
+
+    #[test]
+    #[serial]
+    fn local_preferences_gui_edits_reset_and_reject_stale_account_results() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(&temp.path().join("cache"));
+        app.preferences_dir = temp.path().join("personal/preferences");
+        app.ui_demo = false;
+        app.offline_mode = true;
+        app.inject_prepared_snapshot();
+        let id = app.scan_result.as_ref().unwrap().games[0].app_id;
+        let request = app.recommend_request_from_inputs().unwrap();
+        let old_fp = app.recommend_fp(&request);
+        let ticket = app
+            .job_runner
+            .next_ticket(WorkflowKind::RecommendPreview, &old_fp);
+        app.edit_preference(Some(id), Some(Choice::NotInterested))
+            .unwrap();
+        assert_ne!(old_fp, app.recommend_fp(&request));
+        assert!(preferences::excludes(
+            app.prepared_preferences().unwrap(),
+            id,
+            chrono::Utc::now().timestamp()
+        ));
+        app.recommend_loading = true;
+        app.recommend_job_id = Some(ticket);
+        RECOMMEND_RESULT.set(
+            ticket,
+            Ok(vec![Recommendation {
+                app_id: id,
+                name: "stale".into(),
+                score: 100.,
+                reasons: vec![],
+            }]),
+        );
+        app.tick();
+        assert!(app.recommend_results.is_empty());
+        assert!(app.recommend_job_id.is_none());
+        app.inject_prepared_snapshot();
+        assert!(app.preference_summary(id).contains("Not interested"));
+        app.edit_preference(Some(id), None).unwrap();
+        assert!(app.prepared_preferences().unwrap().is_empty());
+        app.edit_preference(Some(id), Some(Choice::Interested))
+            .unwrap();
+        app.detected_accounts.push(SteamAccount {
+            steam_id64: "76561198000000002".into(),
+            account_name: "bravo".into(),
+            persona_name: "Bravo".into(),
+            most_recent: false,
+        });
+        app.config.as_mut().unwrap().account = Some("bravo".into());
+        assert!(app.prepared_preferences().is_err());
+        assert!(app.edit_preference(Some(id), None).is_err());
+        app.tick();
+        app.scan_result.as_mut().unwrap().account = "bravo".into();
+        app.inject_prepared_snapshot();
+        assert!(app.prepared_preferences().unwrap().is_empty());
+        app.edit_preference(Some(id), Some(Choice::NotNow)).unwrap();
+        app.edit_preference(None, None).unwrap();
+        assert!(app.prepared_preferences().unwrap().is_empty());
+        assert!(preferences::interested(
+            &preferences::load(&app.preferences_dir, "76561198000000001").unwrap(),
+            id,
+            0
+        ));
+        app.ui_demo = true;
+        assert!(app.edit_preference(Some(id), None).is_err());
+        assert!(!temp.path().join("cache").exists());
     }
 
     #[test]

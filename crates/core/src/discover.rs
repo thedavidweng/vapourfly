@@ -50,14 +50,37 @@ pub struct DiscoverReason {
 /// positive score are returned, sorted highest-first and truncated to
 /// `options.count`.
 pub fn rank_discover_picks(games: &[Game], options: &DiscoverOptions) -> Vec<DiscoverPick> {
+    rank_discover_with_preferences(
+        games,
+        options,
+        &crate::preferences::Preferences::new(),
+        chrono::Utc::now().timestamp(),
+    )
+}
+
+pub fn rank_discover_with_preferences(
+    games: &[Game],
+    options: &DiscoverOptions,
+    preferences: &crate::preferences::Preferences,
+    now: i64,
+) -> Vec<DiscoverPick> {
     let taste_vector = scoring::build_taste_vector(games);
     let seed_similar = seed_similar_ids(games, options.seed_app_id);
 
     let mut picks: Vec<DiscoverPick> = games
         .iter()
         .filter(|g| crate::eligibility::is_discover_eligible(g))
+        .filter(|g| !crate::preferences::excludes(preferences, g.app_id, now))
         .filter_map(|game| {
-            let (score, reasons) = score_candidate(game, &taste_vector, &seed_similar);
+            let (mut score, mut reasons) = score_candidate(game, &taste_vector, &seed_similar);
+            if crate::preferences::interested(preferences, game.app_id, now) {
+                score += crate::preferences::INTERESTED_WEIGHT;
+                reasons.push(DiscoverReason {
+                    code: "local_interested",
+                    description: "Interested (your local preference)",
+                    weight: crate::preferences::INTERESTED_WEIGHT,
+                });
+            }
             if score > 0.0 {
                 Some(DiscoverPick {
                     app_id: game.app_id,
