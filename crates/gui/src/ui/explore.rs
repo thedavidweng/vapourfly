@@ -54,6 +54,25 @@ fn discover_empty_copy(loading: bool, generated: bool) -> (&'static str, &'stati
     }
 }
 
+fn recommend_empty_copy(loading: bool, generated: bool) -> (&'static str, &'static str) {
+    if loading {
+        (
+            "Finding session picks",
+            "Ranking your eligible owned library using cached/local evidence.",
+        )
+    } else if generated {
+        (
+            "No eligible recommendations",
+            "No owned titles meet the generated request. Finish a short game requires a positive known full estimate within its limit; unknown is not short. Check the request and filters above.",
+        )
+    } else {
+        (
+            "What should you play tonight?",
+            "Generate cache-only owned-library picks. Relative fit compares this result set, not probability or player percentiles.",
+        )
+    }
+}
+
 /// Ranker scores are additive weights, so show them relative to the best
 /// result in the same set.
 fn relative(score: f32, best: f32) -> f32 {
@@ -486,6 +505,10 @@ impl GuiRoot {
         let best = results.iter().map(|r| r.score).fold(0., f32::max);
 
         let body = if results.is_empty() {
+            let (title, detail) = recommend_empty_copy(
+                self.app.recommend_loading,
+                self.app.recommend_request_at_start.is_some(),
+            );
             div()
                 .flex_1()
                 .flex()
@@ -493,8 +516,8 @@ impl GuiRoot {
                 .justify_center()
                 .child(widgets::empty_state(
                     IconName::Sparkles,
-                    "What should you play tonight?",
-                    "Generate cache-only owned-library picks. Relative fit compares this result set, not probability or player percentiles.",
+                    title,
+                    detail,
                     None,
                 ))
                 .into_any_element()
@@ -730,7 +753,22 @@ impl GuiRoot {
 
 #[cfg(test)]
 mod tests {
-    use super::discover_empty_copy;
+    use super::{discover_empty_copy, recommend_empty_copy};
+
+    #[test]
+    fn recommend_empty_distinguishes_generated_request_from_initial_prompt() {
+        assert_eq!(
+            recommend_empty_copy(false, false).0,
+            "What should you play tonight?"
+        );
+        assert_eq!(recommend_empty_copy(true, false).0, "Finding session picks");
+        assert_eq!(recommend_empty_copy(true, true).0, "Finding session picks");
+        let (title, detail) = recommend_empty_copy(false, true);
+        assert_eq!(title, "No eligible recommendations");
+        assert!(detail.contains("generated request"));
+        assert!(detail.contains("positive known full estimate"));
+        assert!(detail.contains("unknown is not short"));
+    }
 
     #[test]
     fn discover_empty_distinguishes_initial_loading_and_completed_generation() {
