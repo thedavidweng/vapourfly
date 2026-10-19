@@ -61,10 +61,19 @@ No build, lockfile edit or dependency removal was performed.
 Reproduce each target's three views, retaining stdout and stderr separately:
 
 ```bash
+set -euo pipefail
+out=$(mktemp -d)
+printf 'Audit output: %s\n' "$out"
 for target in aarch64-apple-darwin x86_64-unknown-linux-gnu x86_64-pc-windows-msvc; do
-  cargo tree --locked --workspace --target "$target" -e features > "$target-features.txt"
-  cargo tree --locked --workspace --target "$target" -d > "$target-duplicates.txt"
-  cargo tree --locked --workspace --target "$target" -e normal,build > "$target-normal.txt"
+  cargo tree --locked --workspace --target "$target" -e features \
+    > "$out/$target-features.txt" 2> "$out/$target-features.stderr"
+  cargo tree --locked --workspace --target "$target" -d \
+    > "$out/$target-duplicates.txt" 2> "$out/$target-duplicates.stderr"
+  cargo tree --locked --workspace --target "$target" -e normal,build \
+    > "$out/$target-normal.txt" 2> "$out/$target-normal.stderr"
+  for view in features duplicates normal; do
+    test -s "$out/$target-$view.txt"
+  done
 done
 ```
 
