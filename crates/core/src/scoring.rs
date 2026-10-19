@@ -17,6 +17,40 @@ use std::collections::HashMap;
 use crate::models::Game;
 use crate::signal;
 
+/// L1-normalized profile mass covered by this game's canonical concepts.
+pub fn profile_affinity(game: &Game, strengths: &[crate::taste::TagStrength]) -> f32 {
+    let tags = crate::taste::canonical_tags(game);
+    let total: f64 = strengths.iter().map(|t| t.strength).sum();
+    if total == 0.0 {
+        return 0.0;
+    }
+    (strengths
+        .iter()
+        .filter(|t| tags.contains(&t.tag))
+        .map(|t| t.strength)
+        .sum::<f64>()
+        / total) as f32
+}
+
+/// Cached quality contributes at most one point, independently of taste.
+pub fn quality(game: &Game) -> Option<f32> {
+    [
+        game.rawg
+            .as_ref()
+            .and_then(|r| r.rating_0_5)
+            .map(|r| r / 5.0),
+        game.igdb
+            .as_ref()
+            .and_then(|i| i.rating_0_100.or(i.total_rating_0_100))
+            .map(|r| r / 100.0),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|r| r.is_finite())
+    .map(|r| r.clamp(0.0, 1.0))
+    .max_by(f32::total_cmp)
+}
+
 /// Build a taste vector from the user's library.
 ///
 /// Each entry maps a keyword (genre, theme, or tag) to a weight derived from

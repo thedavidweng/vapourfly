@@ -118,6 +118,11 @@ fn concepts(game: &Game) -> BTreeMap<String, (TagKind, BTreeSet<String>)> {
     result
 }
 
+/// The same deduplicated concepts used by Top Tags and personal rankers.
+pub fn canonical_tags(game: &Game) -> BTreeSet<String> {
+    concepts(game).into_keys().collect()
+}
+
 fn bounded(minutes: u32, scale: f64) -> f64 {
     f64::from(minutes) / (f64::from(minutes) + scale)
 }

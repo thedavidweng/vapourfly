@@ -1951,11 +1951,31 @@ fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::erro
     };
 
     let preferences = preferences_for_scan(cli, &scan_result)?;
-    let recommendations = recommend::recommend_with_preferences(
+    let account = selected_preference_account(cli)?;
+    let cache = vapourfly_api::cache::DiskCache::new(config::default_cache_dir());
+    let activity = vapourfly_api::activity::load(&cache, &account.steam_id64)?;
+    let progress = vapourfly_api::achievements::library_progress(
+        &cache,
+        &config::default_story_dir(),
+        &account.steam_id64,
+        &scan_result.games,
+    )?;
+    let now = chrono::Utc::now().timestamp();
+    let profile = vapourfly_api::profile::derive(
+        &account.steam_id64,
+        &scan_result.games,
+        &preferences,
+        activity.as_ref(),
+        &progress,
+        now,
+    )?;
+    let recommendations = recommend::recommend_personalized(
         &scan_result.games,
         &request,
         &preferences,
-        chrono::Utc::now().timestamp(),
+        &profile.taste,
+        &progress,
+        now,
     );
 
     if to_collection {
@@ -1990,13 +2010,12 @@ fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::erro
             println!("{:<10} {:<40} {:>8}  Reasons", "AppID", "Name", "Score");
             println!("{}", "-".repeat(86));
             for rec in &recommendations {
-                let reasons: Vec<String> = rec.reasons.iter().map(|r| r.code.clone()).collect();
                 println!(
                     "{:<10} {:<40} {:>8.2}  {}",
                     rec.app_id,
                     format::truncate(&rec.name, 38),
                     rec.score,
-                    reasons.join(", ")
+                    recommend::explanation(rec)
                 );
             }
             println!();
@@ -2775,6 +2794,89 @@ fn print_match_counts(report: &vapourfly_core::models::PlaylistMatchReport) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn personalized_recommend_cli_is_account_scoped_and_offline() {
+        const CHILD: &str = "VAPOURFLY_TEST_RECOMMEND_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let fixtures =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
+            let id = "76561198000000000";
+            vapourfly_core::progress::set_story_completed(
+                &config::default_story_dir(),
+                id,
+                427520,
+                true,
+            )
+            .unwrap();
+            vapourfly_core::preferences::set(
+                &config::default_preferences_dir(),
+                "76561198000000001",
+                427520,
+                Some(vapourfly_core::preferences::Choice::NotInterested),
+                100,
+            )
+            .unwrap();
+            let cli = Cli::try_parse_from([
+                "vapourfly",
+                "--fixtures",
+                fixtures.to_str().unwrap(),
+                "--account",
+                id,
+                "--offline",
+                "recommend",
+                "--minutes",
+                "120",
+            ])
+            .unwrap();
+            for format in [OutputFormat::Json, OutputFormat::Table] {
+                cmd_recommend(
+                    &cli,
+                    RecommendArgs {
+                        minutes: 120,
+                        count: 5,
+                        deck: false,
+                        installed_only: false,
+                        seed: Some(42),
+                        exclude_collections: vec![],
+                        to_collection: false,
+                        dry_run: false,
+                        confirm: false,
+                        format,
+                    },
+                )
+                .unwrap();
+            }
+            assert!(!config::default_cache_dir().exists());
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::personalized_recommend_cli_is_account_scoped_and_offline",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HOME", root.path())
+            .env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env("XDG_DATA_HOME", root.path().join("data"))
+            .env("XDG_CACHE_HOME", root.path().join("cache"))
+            .env_remove("VAPOURFLY_ACCOUNT")
+            .env_remove("VAPOURFLY_STEAM_DIR")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(text.contains("story_completed"));
+        assert!(text.contains("-1.25 Story completed"));
+        assert!(text.contains("not probability or player percentile"));
+    }
 
     #[test]
     fn account_profile_cli_fixture_json_and_table() {

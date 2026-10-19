@@ -1,183 +1,192 @@
-//! Recommendation engine.
-//!
-//! Scores games from a user's library based on multiple weighted signals and
-//! returns the top-N recommendations with human-readable reason codes.
-//! Designed to be deterministic when a seed is supplied.
+//! Cache-only owned-library ranking with attributable, bounded contributions.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use crate::models::{Game, ProtonTier, RecommendReason, RecommendRequest, Recommendation};
-use crate::scoring;
+use crate::{preferences, progress, scoring, taste};
 
-const LOW_PLAYTIME_THRESHOLD_MINUTES: u32 = 120;
-const RECENTLY_PLAYED_DAYS: i64 = 14;
-const LIKELY_FINISHED_MULTIPLIER: f32 = 1.5;
+const RECENT_SECONDS: i64 = 14 * 86400;
+const DIVERSITY_WEIGHT: f32 = 0.35;
 
-// Score weights
-const W_LOW_PLAYTIME: f32 = 2.0;
-const W_DECK_NATIVE: f32 = 2.0;
-const W_DECK_PLATINUM: f32 = 1.5;
-const W_DECK_GOLD: f32 = 1.0;
-const W_TIME_MATCH: f32 = 1.5;
-const W_HIGH_RATING: f32 = 1.0;
-const W_TASTE_SIMILARITY: f32 = 1.0;
-const W_RECENTLY_PLAYED: f32 = -1.0;
-const W_LIKELY_FINISHED: f32 = -0.5;
-
-/// Minimal SplitMix64 PRNG for deterministic perturbation.
-struct SplitMix64 {
-    state: u64,
+fn tie_key(seed: Option<u64>, app_id: u32) -> u64 {
+    let Some(seed) = seed else {
+        return u64::from(app_id);
+    };
+    let mut z = (seed ^ u64::from(app_id)).wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
-impl SplitMix64 {
-    fn new(seed: u64) -> Self {
-        Self { state: seed }
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    /// Return a float in [0.0, 1.0).
-    fn next_f64(&mut self) -> f64 {
-        (self.next_u64() >> 11) as f64 / ((1u64 << 53) as f64)
-    }
+fn contribution(reasons: &mut Vec<RecommendReason>, code: &str, description: String, weight: f32) {
+    reasons.push(RecommendReason {
+        code: code.into(),
+        description,
+        weight,
+    });
 }
 
-/// Score a single candidate game and produce reasons.
 fn score_game(
     game: &Game,
     request: &RecommendRequest,
-    taste_vector: &HashMap<String, f32>,
-    now_unix: i64,
-) -> (f32, Vec<RecommendReason>) {
-    let mut score: f32 = 0.0;
-    let mut reasons: Vec<RecommendReason> = Vec::new();
-
-    let playtime = game.playtime_minutes.unwrap_or(0);
-    if playtime < LOW_PLAYTIME_THRESHOLD_MINUTES {
-        let desc = if playtime == 0 {
-            "Never played".to_string()
-        } else {
-            format!("Low playtime ({playtime} min)")
-        };
-        score += W_LOW_PLAYTIME;
-        reasons.push(RecommendReason {
-            code: "low_playtime".into(),
-            description: desc,
-            weight: W_LOW_PLAYTIME,
-        });
+    profile: &taste::TasteProfile,
+    progress: Option<&progress::Summary>,
+    prefs: &preferences::Preferences,
+    now: i64,
+) -> Recommendation {
+    let mut reasons = Vec::new();
+    let title = profile.titles.iter().find(|t| t.app_id == game.app_id);
+    let playtime = title.and_then(|t| t.activity.iter().filter_map(|a| a.lifetime_minutes).max());
+    if let Some(minutes) = playtime.filter(|m| *m < 120) {
+        contribution(
+            &mut reasons,
+            "low_playtime",
+            format!("Known low playtime ({minutes} min)"),
+            2.0,
+        );
+    } else if playtime.is_none() {
+        contribution(
+            &mut reasons,
+            "activity_unknown",
+            "Lifetime activity unknown, not zero or unplayed".into(),
+            0.0,
+        );
     }
 
     if request.deck_mode {
-        let deck_score = game.protondb.as_ref().and_then(|pdb| match pdb.tier {
-            ProtonTier::Native => Some((W_DECK_NATIVE, "Native Steam Deck support")),
-            ProtonTier::Platinum => Some((W_DECK_PLATINUM, "Platinum on Steam Deck")),
-            ProtonTier::Gold => Some((W_DECK_GOLD, "Gold on Steam Deck")),
+        let deck = game.protondb.as_ref().and_then(|p| match p.tier {
+            ProtonTier::Native => Some((2.0, "Native Steam Deck support")),
+            ProtonTier::Platinum => Some((1.5, "Platinum on Steam Deck")),
+            ProtonTier::Gold => Some((1.0, "Gold on Steam Deck")),
             _ => None,
         });
-        if let Some((w, desc)) = deck_score {
-            score += w;
-            reasons.push(RecommendReason {
-                code: "deck_compatible".into(),
-                description: desc.into(),
-                weight: w,
-            });
+        if let Some((weight, label)) = deck {
+            contribution(&mut reasons, "deck_compatible", label.into(), weight);
         }
     }
-
     if request.available_minutes > 0 {
-        // A game is a time match when its known main-story completion time
-        // fits inside the available window. The shared accessor prefers a
-        // cached legacy HLTB value before documented IGDB `normally` data.
-        // Games with no known completion time get no time_match.
-        let main_secs = crate::signal::main_story_seconds(game);
-        if let Some(secs) = main_secs
+        if let Some(secs) = crate::signal::main_story_seconds(game)
             && secs / 60 <= request.available_minutes
         {
-            score += W_TIME_MATCH;
-            reasons.push(RecommendReason {
-                code: "time_match".into(),
-                description: format!("Fits in {} minutes", request.available_minutes),
-                weight: W_TIME_MATCH,
-            });
+            contribution(
+                &mut reasons,
+                "time_match",
+                format!(
+                    "Cached whole-story estimate fits {} min; not remaining time or session evidence",
+                    request.available_minutes
+                ),
+                1.5,
+            );
         }
     }
-
-    if scoring::is_high_rating(game) {
-        score += W_HIGH_RATING;
-        reasons.push(RecommendReason {
-            code: "high_rating".into(),
-            description: "Highly rated".into(),
-            weight: W_HIGH_RATING,
-        });
+    if let Some(weight) = scoring::quality(game) {
+        contribution(
+            &mut reasons,
+            "high_rating",
+            "Cached game quality (bounded 0..1; not personal completion)".into(),
+            weight,
+        );
     }
-
-    if !taste_vector.is_empty() {
-        let similarity = scoring::taste_overlap(game, taste_vector);
-        if similarity > 0.05 {
-            score += W_TASTE_SIMILARITY;
-            reasons.push(RecommendReason {
-                code: "taste_similarity".into(),
-                description: "Matches your taste profile".into(),
-                weight: W_TASTE_SIMILARITY,
-            });
+    for (code, tags, weight) in [
+        ("taste_similarity", &profile.long_term, 3.0),
+        ("recent_taste", &profile.recent, 0.5),
+    ] {
+        let affinity = scoring::profile_affinity(game, tags);
+        if affinity > 0.0 {
+            let concepts = taste::canonical_tags(game);
+            let matches = tags
+                .iter()
+                .filter(|t| concepts.contains(&t.tag))
+                .map(|t| t.tag.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            contribution(
+                &mut reasons,
+                code,
+                format!("Cached canonical profile affinity {affinity:.3}: {matches}"),
+                weight * affinity,
+            );
         }
     }
+    contribution(
+        &mut reasons,
+        "evidence_limits",
+        format!(
+            "Cache/local only; descriptors {}/{} eligible titles; absent matches are not dislike; fit is not probability or player percentile",
+            profile.coverage.metadata_titles, profile.coverage.eligible_titles
+        ),
+        0.0,
+    );
 
-    if let Some(last_played) = game.last_played_unix {
-        let days_since = (now_unix - last_played) / 86400;
-        if days_since < RECENTLY_PLAYED_DAYS {
-            let desc = match days_since {
-                0 => "Played today".to_string(),
-                1 => "Played 1 day ago".to_string(),
+    if let Some(last) = title.and_then(|t| t.last_played_at) {
+        let age = now - last;
+        if (0..RECENT_SECONDS).contains(&age) {
+            let days = age / 86400;
+            let label = match days {
+                0 => "Played today".into(),
+                1 => "Played 1 day ago".into(),
                 n => format!("Played {n} days ago"),
             };
-            score += W_RECENTLY_PLAYED;
-            reasons.push(RecommendReason {
-                code: "recently_played_penalty".into(),
-                description: desc,
-                weight: W_RECENTLY_PLAYED,
-            });
+            contribution(
+                &mut reasons,
+                "recently_played_penalty",
+                label,
+                -(1.0 - age as f32 / RECENT_SECONDS as f32),
+            );
         }
     }
-
-    if let Some(main_secs) = crate::signal::main_story_seconds(game) {
-        let main_mins = main_secs as f32 / 60.0;
-        if main_mins > 0.0 && playtime as f32 > main_mins * LIKELY_FINISHED_MULTIPLIER {
-            score += W_LIKELY_FINISHED;
-            reasons.push(RecommendReason {
-                code: "likely_finished_penalty".into(),
-                description: "Likely finished based on playtime".into(),
-                weight: W_LIKELY_FINISHED,
-            });
+    match progress {
+        Some(p) if p.story_completed => contribution(&mut reasons, "story_completed", "Story completed (your local mark); achievements are separate".into(), -1.25),
+        Some(p) if p.achievements.is_some_and(|e| !e.stale && e.total > 0 && e.unlocked == e.total) => contribution(&mut reasons, "perfected", "Fresh authoritative achievements: all unlocked; not a story inference".into(), -1.0),
+        Some(p) if p.achievements.is_some_and(|e| !e.stale && e.total > 0 && e.unlocked > 0 && e.unlocked < e.total) => {
+            let e = p.achievements.unwrap();
+            contribution(&mut reasons, "achievement_progress", format!("Fresh authoritative achievements {}/{}; incomplete achievements do not imply unfinished story", e.unlocked, e.total), 0.5 * e.unlocked as f32 / e.total as f32);
         }
+        _ => contribution(&mut reasons, "progress_unknown", "Story unmarked; achievement completion missing/stale/zero; no playtime or duration completion guess".into(), 0.0),
     }
-
-    (score, reasons)
+    if preferences::interested(prefs, game.app_id, now) {
+        contribution(
+            &mut reasons,
+            "local_interested",
+            "Interested (your local preference)".into(),
+            preferences::INTERESTED_WEIGHT,
+        );
+    }
+    if game
+        .steam_collections
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case("favorites"))
+    {
+        contribution(
+            &mut reasons,
+            "favorite",
+            "Steam Favorites (explicit choice, not a game tag)".into(),
+            0.25,
+        );
+    }
+    Recommendation {
+        app_id: game.app_id,
+        name: game.name.clone(),
+        score: reasons.iter().map(|r| r.weight).sum(),
+        reasons,
+    }
 }
 
-/// Recommend games from a library.
-///
-/// Filtering rules:
-/// - Hidden games are always excluded.
-/// - Junk games are always excluded.
-/// - Non-game app types (Application, Tool, Dlc) are excluded by default.
-/// - If `include_installed_only` is set, only installed games pass.
-/// - Games in any of the `exclude_collections` are filtered out.
-///
-/// Scoring uses a weighted sum of several signals (see reason codes).
-/// A random perturbation in [0.0, 0.25) is added to break ties; when `seed`
-/// is provided the perturbation is deterministic.
+/// Complete signed contributions and limitations, shared by human CLI/GUI output.
+pub fn explanation(rec: &Recommendation) -> String {
+    rec.reasons
+        .iter()
+        .map(|r| format!("{:+.2} {}", r.weight, r.description))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Identity-free local-library convenience API; account callers provide their prepared profile/progress.
 pub fn recommend(games: &[Game], request: &RecommendRequest) -> Vec<Recommendation> {
     recommend_with_preferences(
         games,
         request,
-        &crate::preferences::Preferences::new(),
+        &preferences::Preferences::new(),
         chrono::Utc::now().timestamp(),
     )
 }
@@ -185,15 +194,24 @@ pub fn recommend(games: &[Game], request: &RecommendRequest) -> Vec<Recommendati
 pub fn recommend_with_preferences(
     games: &[Game],
     request: &RecommendRequest,
-    preferences: &crate::preferences::Preferences,
-    now_unix: i64,
+    prefs: &preferences::Preferences,
+    now: i64,
+) -> Vec<Recommendation> {
+    let profile = taste::derive(games, prefs, &BTreeMap::new(), now);
+    recommend_personalized(games, request, prefs, &profile, &BTreeMap::new(), now)
+}
+
+/// Eligibility precedes scoring. Seed affects ties only, never relevance weights.
+pub fn recommend_personalized(
+    games: &[Game],
+    request: &RecommendRequest,
+    prefs: &preferences::Preferences,
+    profile: &taste::TasteProfile,
+    progress: &BTreeMap<u32, progress::Summary>,
+    now: i64,
 ) -> Vec<Recommendation> {
     use crate::eligibility::{EligibilityOptions, is_eligible};
-
-    let taste_vector = scoring::build_taste_vector(games);
-    let mut rng = request.seed.map(SplitMix64::new);
-
-    let mut candidates: Vec<Recommendation> = games
+    let mut candidates: Vec<_> = games
         .iter()
         .filter(|g| {
             is_eligible(
@@ -202,51 +220,256 @@ pub fn recommend_with_preferences(
                     unplayed_only: false,
                     installed_only: request.include_installed_only,
                 },
-            ) && !crate::preferences::excludes(preferences, g.app_id, now_unix)
+            ) && !preferences::excludes(prefs, g.app_id, now)
                 && !g
                     .steam_collections
                     .iter()
                     .any(|c| request.exclude_collections.contains(c))
         })
-        .map(|game| {
-            let (mut base_score, mut reasons) = score_game(game, request, &taste_vector, now_unix);
-            if crate::preferences::interested(preferences, game.app_id, now_unix) {
-                base_score += crate::preferences::INTERESTED_WEIGHT;
-                reasons.push(RecommendReason {
-                    code: "local_interested".into(),
-                    description: "Interested (your local preference)".into(),
-                    weight: crate::preferences::INTERESTED_WEIGHT,
-                });
-            }
-            let perturbation: f32 = match &mut rng {
-                Some(r) => (r.next_f64() as f32) * 0.25,
-                None => 0.0, // no seed => no perturbation (purely score-based)
-            };
-
-            Recommendation {
-                app_id: game.app_id,
-                name: game.name.clone(),
-                score: base_score + perturbation,
-                reasons,
-            }
-        })
+        .map(|g| score_game(g, request, profile, progress.get(&g.app_id), prefs, now))
         .collect();
-
-    candidates.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.app_id.cmp(&b.app_id))
-    });
-
-    candidates.truncate(request.count);
-    candidates
+    let tags: BTreeMap<_, _> = games
+        .iter()
+        .map(|g| (g.app_id, taste::canonical_tags(g)))
+        .collect();
+    let mut result: Vec<Recommendation> = Vec::new();
+    while !candidates.is_empty() && result.len() < request.count {
+        let penalty = |candidate: &Recommendation| {
+            result
+                .iter()
+                .map(|picked| {
+                    let a = &tags[&candidate.app_id];
+                    let b = &tags[&picked.app_id];
+                    let union = a.union(b).count();
+                    if union == 0 {
+                        0.0
+                    } else {
+                        DIVERSITY_WEIGHT * a.intersection(b).count() as f32 / union as f32
+                    }
+                })
+                .fold(0.0, f32::max)
+        };
+        let (index, amount) = candidates
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (i, penalty(c)))
+            .max_by(|(ai, ap), (bi, bp)| {
+                let a = &candidates[*ai];
+                let b = &candidates[*bi];
+                (a.score - ap)
+                    .total_cmp(&(b.score - bp))
+                    .then_with(|| {
+                        tie_key(request.seed, b.app_id).cmp(&tie_key(request.seed, a.app_id))
+                    })
+                    .then_with(|| b.app_id.cmp(&a.app_id))
+            })
+            .unwrap();
+        let mut selected = candidates.swap_remove(index);
+        if amount > 0.0 {
+            selected.score -= amount;
+            contribution(
+                &mut selected.reasons,
+                "diversity",
+                "Bounded canonical-concept overlap with an earlier pick".into(),
+                -amount,
+            );
+        }
+        result.push(selected);
+    }
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::{HltbData, HltbSource, IgdbData, ProtonDbData, RawgData, SteamAppType};
+
+    fn tagged(id: u32, tags: &[&str]) -> Game {
+        let mut game = make_game(id, "Candidate");
+        game.rawg = Some(RawgData {
+            rawg_id: u64::from(id),
+            rating_0_5: None,
+            ratings_count: None,
+            genres: vec![],
+            tags: tags.iter().map(|t| (*t).into()).collect(),
+            stores: vec![],
+        });
+        game
+    }
+
+    #[test]
+    fn continuous_affinity_diversity_and_signed_explanations_are_stable() {
+        let mut engaged = tagged(100, &["Strategy", "Co-op"]);
+        engaged.playtime_minutes = Some(600);
+        let games = vec![
+            engaged,
+            tagged(1, &["strategy", "cooperative"]),
+            tagged(2, &["Strategy"]),
+            tagged(3, &["Puzzle"]),
+        ];
+        let prefs = preferences::Preferences::new();
+        let profile = taste::derive(&games, &prefs, &BTreeMap::new(), 100);
+        let req = default_request();
+        let result = recommend_personalized(&games, &req, &prefs, &profile, &BTreeMap::new(), 100);
+        assert_eq!(result[0].app_id, 1);
+        let weight = |id| {
+            result
+                .iter()
+                .find(|r| r.app_id == id)
+                .unwrap()
+                .reasons
+                .iter()
+                .find(|r| r.code == "taste_similarity")
+                .unwrap()
+                .weight
+        };
+        assert_eq!(weight(1), 3.0);
+        assert_eq!(weight(2), 1.5);
+        for rec in &result {
+            assert!((rec.score - rec.reasons.iter().map(|r| r.weight).sum::<f32>()).abs() < 1e-5);
+            let text = explanation(rec);
+            assert!(text.contains("not probability or player percentile"));
+            for reason in &rec.reasons {
+                assert!(text.contains(&format!("{:+.2}", reason.weight)));
+            }
+        }
+        let mut reversed = games.clone();
+        reversed.reverse();
+        let reversed_profile = taste::derive(&reversed, &prefs, &BTreeMap::new(), 100);
+        assert_eq!(
+            serde_json::to_value(&result).unwrap(),
+            serde_json::to_value(recommend_personalized(
+                &reversed,
+                &req,
+                &prefs,
+                &reversed_profile,
+                &BTreeMap::new(),
+                100
+            ))
+            .unwrap()
+        );
+        // With no engagement, variety should beat an exact duplicate, not relevance.
+        let cold = vec![
+            tagged(1, &["Strategy"]),
+            tagged(2, &["Strategy"]),
+            tagged(3, &["Puzzle"]),
+        ];
+        let mut request = default_request();
+        request.seed = None;
+        let picks = recommend_with_preferences(&cold, &request, &prefs, 100);
+        assert_eq!(
+            picks.iter().map(|r| r.app_id).collect::<Vec<_>>(),
+            vec![1, 3, 2]
+        );
+        assert!(
+            picks[2]
+                .reasons
+                .iter()
+                .any(|r| r.code == "diversity" && r.weight == -0.35)
+        );
+    }
+
+    #[test]
+    fn progress_uses_only_local_story_or_fresh_authoritative_counts() {
+        let games: Vec<_> = (1..=5).map(|id| make_game(id, "Progress")).collect();
+        let prefs = preferences::Preferences::new();
+        let profile = taste::derive(&games, &prefs, &BTreeMap::new(), 100);
+        let counts = |unlocked, total, stale| {
+            Some(progress::AchievementEvidence {
+                unlocked,
+                total,
+                stale,
+            })
+        };
+        let progress = BTreeMap::from([
+            (1, progress::Summary::new(Some(0), true, None)),
+            (
+                2,
+                progress::Summary::new(Some(0), false, counts(10, 10, false)),
+            ),
+            (
+                3,
+                progress::Summary::new(Some(0), false, counts(5, 10, false)),
+            ),
+            (
+                4,
+                progress::Summary::new(Some(0), false, counts(10, 10, true)),
+            ),
+            (
+                5,
+                progress::Summary::new(Some(0), false, counts(0, 0, false)),
+            ),
+        ]);
+        let result =
+            recommend_personalized(&games, &default_request(), &prefs, &profile, &progress, 100);
+        for (id, code, weight) in [
+            (1, "story_completed", -1.25),
+            (2, "perfected", -1.0),
+            (3, "achievement_progress", 0.25),
+            (4, "progress_unknown", 0.0),
+            (5, "progress_unknown", 0.0),
+        ] {
+            assert!(
+                result
+                    .iter()
+                    .find(|r| r.app_id == id)
+                    .unwrap()
+                    .reasons
+                    .iter()
+                    .any(|r| r.code == code && r.weight == weight)
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_activity_feedback_expiry_and_favorites_remain_distinct() {
+        let temp = tempfile::tempdir().unwrap();
+        let id = "76561198000000000";
+        for (app, choice) in [
+            (1, preferences::Choice::NotInterested),
+            (2, preferences::Choice::NotNow),
+            (3, preferences::Choice::Interested),
+        ] {
+            preferences::set(temp.path(), id, app, Some(choice), 100).unwrap();
+        }
+        let prefs = preferences::load(temp.path(), id).unwrap();
+        let mut games: Vec<_> = (1..=4).map(|id| make_game(id, "Feedback")).collect();
+        games[2].steam_collections.push("Favorites".into());
+        games[3].playtime_minutes = None;
+        games[3].last_played_unix = Some(200); // future activity is not recent evidence
+        let picks = recommend_with_preferences(&games, &default_request(), &prefs, 100);
+        assert_eq!(
+            picks.iter().map(|r| r.app_id).collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        assert!(
+            picks[0]
+                .reasons
+                .iter()
+                .any(|r| r.code == "local_interested" && r.weight == 0.5)
+        );
+        assert!(
+            picks[0]
+                .reasons
+                .iter()
+                .any(|r| r.code == "favorite" && r.weight == 0.25)
+        );
+        assert!(
+            picks[1]
+                .reasons
+                .iter()
+                .any(|r| r.code == "activity_unknown")
+        );
+        assert_eq!(picks[1].score, 0.0);
+        let expired = recommend_with_preferences(
+            &games,
+            &default_request(),
+            &prefs,
+            100 + preferences::NOT_NOW_SECONDS,
+        );
+        assert!(expired.iter().any(|r| r.app_id == 2));
+        assert!(expired.iter().all(|r| r.app_id != 1));
+    }
 
     fn make_game(app_id: u32, name: &str) -> Game {
         Game {
@@ -612,7 +835,7 @@ mod tests {
     }
 
     #[test]
-    fn likely_finished_penalty_applied() {
+    fn playtime_and_duration_do_not_infer_completion() {
         // Played 2x the main story length.
         let mut finished = make_game(1, "Finished");
         finished.playtime_minutes = Some(600);
@@ -632,8 +855,8 @@ mod tests {
             result[0]
                 .reasons
                 .iter()
-                .any(|r| r.code == "likely_finished_penalty"),
-            "likely finished game should get penalty"
+                .all(|r| r.code != "likely_finished_penalty"),
+            "playtime must not infer completion"
         );
     }
 
@@ -808,25 +1031,29 @@ mod tests {
     }
 
     #[test]
-    fn different_seeds_give_different_scores() {
-        // Create a game with identical base scores. With different seeds
-        // the perturbation values should differ, giving different final scores.
-        let games: Vec<Game> = vec![make_game(100, "Game A")];
-
-        let mut req1 = default_request();
-        req1.seed = Some(1);
-        let result1 = recommend(&games, &req1);
-
-        let mut req2 = default_request();
-        req2.seed = Some(999);
-        let result2 = recommend(&games, &req2);
-
-        assert_eq!(result1.len(), 1);
-        assert_eq!(result2.len(), 1);
-        assert_ne!(
-            result1[0].score, result2[0].score,
-            "different seeds should produce different scores"
+    fn seeded_ties_are_input_order_independent_without_relevance_noise() {
+        let games: Vec<Game> = (1..20).map(|id| make_game(id, "Same evidence")).collect();
+        let req = default_request();
+        let first = recommend(&games, &req);
+        let mut reversed = games.clone();
+        reversed.reverse();
+        let second = recommend(&reversed, &req);
+        assert_eq!(
+            serde_json::to_value(&first).unwrap(),
+            serde_json::to_value(&second).unwrap()
         );
+        let other = recommend(
+            &games,
+            &RecommendRequest {
+                seed: Some(999),
+                ..req
+            },
+        );
+        assert_ne!(
+            first.iter().map(|r| r.app_id).collect::<Vec<_>>(),
+            other.iter().map(|r| r.app_id).collect::<Vec<_>>()
+        );
+        assert!(first.iter().all(|r| r.score == 2.0));
     }
 
     #[test]

@@ -262,3 +262,17 @@ Available rule operators: `ProtonAtLeast`, `HltbMaxMinutes`,
 
 The interactive GUI checklist lives in [gui-smoke-test.md](../gui-smoke-test.md).
 Run it with `--ui-demo` and at 1024px / 1280px / 1440px before a release.
+
+## Personal Owned-Library Ranking
+
+Recommendations use the same cache-only canonical account Taste Profile as
+Library Evidence. Continuous long-term/recent affinity, known low activity,
+bounded quality/recency, explicit story/authoritative achievement evidence and
+Interested/Favorites have signed explanations. Not interested/active Not now
+and existing eligibility/exclusion constraints apply before scoring. Missing or
+stale completion evidence is not a completion guess. A seeded AppID tie-break
+and bounded canonical overlap reranking provide reproducible variety without
+random relevance noise. The GUI's relative fit is within the current result set,
+not a probability or global percentile. CLI/GUI show full contributions and
+coverage limitations; local story edits invalidate stale/in-flight picks.
+Existing Steam write preview/confirmation/backup/running guards remain unchanged.
