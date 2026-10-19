@@ -343,3 +343,16 @@ result test exercise state handling. API controlled transports cover request
 limits and provider failures. These are not native renderer, real Steam key,
 privacy or hardware/controller acceptance; run the steps above on target
 devices with an authorized test account before claiming those gates.
+
+### Session intent (#36)
+
+- In Recommendations, generate a 60-minute default session with a cached 40-hour
+  campaign, a short narrative title, a sandbox and unknown-length game. Long and
+  unknown games remain eligible. Full estimate/source/remaining-unknown reasons
+  must not imply exact session length.
+- Enable **Finish a short game** and Generate: only positive known full estimates
+  within 60 minutes qualify; playtime and achievements must not subtract hours.
+- Edit controls after generation: the generated-request label still identifies
+  the displayed picks. Tab/Space reaches the switch without new navigation.
+- Repeat offline/no IGDB and with installed/Deck options; verify cached/manual
+  provenance and missing duration honestly. This is not #27 rights acceptance.

@@ -12,33 +12,36 @@ Nothing here writes to Steam until you pass `--confirm`.
 vapourfly recommend --minutes 120
 ```
 
-```text
-AppID      Name                                        Score  Reasons
---------------------------------------------------------------------------------------
-8650       RACE 07: Andy Priaulx Crowne Plaza Ra…       3.50  low_playtime, time_match
-234140     Mad Max                                      3.50  low_playtime, time_match
-267940     Glacier 3: The Meltdown                      3.50  low_playtime, time_match
-283330     Desert Thunder                               3.50  low_playtime, time_match
-301690     Cobi Treasure Deluxe                         3.50  low_playtime, time_match
+The default plans a sitting, not finishing the campaign. A 40-hour RPG can be
+recommended for an hour. Complete signed reasons distinguish neutral unknown
+session suitability from a small cached short-loop-tag heuristic; neither
+promises an exact session duration. Full completion estimates show provenance
+and unknown remaining time separately.
 
-5 recommendations (865 games scanned)
+To deliberately seek a short game to finish instead:
+
+```bash
+vapourfly recommend --minutes 60 --finish-short-game
 ```
 
-Each pick carries its reasons (`time_match` means the game's estimated
-completion time fits your window). Useful flags:
+Only positive known full estimates within the window qualify. Unknown estimates
+are excluded, not zeroed; neither playtime nor achievements infer remaining hours.
+Useful flags:
 
 - `--count 3` -- fewer picks
 - `--installed-only` -- only games already on disk
 - `--deck` -- weigh Steam Deck compatibility
-- `--seed 42` -- reproducible shuffle
-- `--exclude-collection "Favorites"` -- skip games you have already
-  curated (repeatable)
+- `--seed 42` -- reproducible tie ordering
+- `--exclude-collection "Favorites"` -- skip curated games (repeatable)
 
 ## 2. Or compile the Deck Session template
 
 The `deck-session` dynamic template filters by hard criteria instead of
-scoring: installed, not hidden, not junk, ProtonDB Gold or better, full
-controller support, and completion time inside your session length.
+scoring. Its legacy serialized duration rule still constrains **full completion
+time**, not measured session length: installed, not hidden, not junk, ProtonDB Gold or better, full
+controller support, and a full completion estimate inside the requested limit.
+This compatibility template is deliberately unchanged; use default Recommendations
+for long-campaign session picks.
 
 ```bash
 vapourfly collections dynamic deck-session --minutes 90 --out deck-session.json

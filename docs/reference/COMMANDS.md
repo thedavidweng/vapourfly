@@ -515,3 +515,26 @@ authorization, rate-limit, HTTP or transport failure stops the batch; prior
 counts remain stale evidence. Coverage reports available/stale/unavailable/
 missing counts, attempted games and pending games left after a stop.
 Offline and no-key refreshes inspect cached evidence without requests.
+
+### Recommendation intent and duration
+
+`recommend --minutes 60` plans a **play session**, not an entire campaign. A
+40-hour game remains eligible. Cached Arcade/Puzzle/Racing/Sport(s)/Roguelike
+concepts give a transparent +0.25 short-loop heuristic only for 1-60 minute
+windows; this is not measured session length or a promise of a stopping point.
+Missing session evidence is neutral/unknown. No completion-time bonus applies.
+
+Use `recommend --minutes 60 --finish-short-game` to deliberately restrict picks
+to positive cached **full completion estimates** within that window. Unknown,
+zero and longer estimates are excluded rather than called suitable. Reasons
+identify cached IGDB normally, legacy cached HLTB or explicitly supplied manual
+provenance. Playtime and achievements are never subtracted to invent remaining
+hours. Manual Junk overrides retain their existing Junk-only scope; this flag
+adds no override store. Offline/no credentials work without a provider request.
+
+The existing Planner uses the same default and an explicit **Finish a short
+game** switch; displayed results identify their generated request even when
+controls are subsequently edited. JSON requests add `intent` and human guidance;
+old core request JSON without `intent` means `session`. Existing duration-rule
+names, Playlist JSON, VF1 codes and explicit Steam-write confirmation are unchanged.
+This software distinction does not resolve the external #27 rights disposition.

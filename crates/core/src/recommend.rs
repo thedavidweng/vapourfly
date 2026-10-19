@@ -2,8 +2,37 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::models::{Game, ProtonTier, RecommendRequest, Recommendation};
+use crate::models::{
+    Game, HltbSource, ProtonTier, RecommendIntent, RecommendRequest, Recommendation,
+};
 use crate::{preferences, progress, scoring, taste};
+
+pub fn completion_estimate_label(game: &Game) -> String {
+    match crate::signal::completion_time(game).filter(|(seconds, _)| *seconds > 0) {
+        Some((seconds, source)) => {
+            let source = match source {
+                HltbSource::IgdbGameTimeToBeat => "cached IGDB normally",
+                HltbSource::HltbScrape => "legacy cached HLTB main story",
+                HltbSource::ManualOverride => "manual override",
+            };
+            format!("Full completion estimate: {seconds} sec ({source}); remaining time unknown")
+        }
+        None => "Full completion estimate unknown; remaining time unknown".into(),
+    }
+}
+
+pub fn intent_guidance(request: &RecommendRequest) -> String {
+    match request.intent {
+        RecommendIntent::Session => format!(
+            "Play a {} min session: long campaigns remain eligible. Session length is not measured; cached loop tags give at most +0.25 for windows up to 60 min, not an exact duration.",
+            request.available_minutes
+        ),
+        RecommendIntent::FinishShortGame => format!(
+            "Finish a short game: positive cached full completion estimate must fit {} min. Unknown/long estimates are excluded; playtime/achievements are not subtracted to invent remaining hours.",
+            request.available_minutes
+        ),
+    }
+}
 
 fn score_game(
     game: &Game,
@@ -43,19 +72,45 @@ fn score_game(
             scoring::contribution(&mut reasons, "deck_compatible", label.into(), weight);
         }
     }
-    if request.available_minutes > 0 {
-        if let Some(secs) = crate::signal::main_story_seconds(game)
-            && secs / 60 <= request.available_minutes
-        {
+    scoring::contribution(
+        &mut reasons,
+        "completion_estimate",
+        completion_estimate_label(game),
+        0.0,
+    );
+    match request.intent {
+        RecommendIntent::FinishShortGame => {
             scoring::contribution(
                 &mut reasons,
                 "time_match",
                 format!(
-                    "Cached whole-story estimate fits {} min; not remaining time or session evidence",
+                    "Explicit finish intent: full estimate fits {} min; not remaining time or session evidence",
                     request.available_minutes
                 ),
                 1.5,
             );
+        }
+        RecommendIntent::Session => {
+            let loop_tag = ["arcade", "puzzle", "racing", "sport", "sports", "roguelike"]
+                .into_iter()
+                .find(|tag| concepts.contains(*tag));
+            if let Some(tag) = loop_tag.filter(|_| (1..=60).contains(&request.available_minutes)) {
+                scoring::contribution(
+                    &mut reasons,
+                    "session_heuristic",
+                    format!(
+                        "Cached {tag} tag: bounded short-loop heuristic, not measured session length"
+                    ),
+                    0.25,
+                );
+            } else {
+                scoring::contribution(
+                    &mut reasons,
+                    "session_unknown",
+                    "Session suitability unknown; full completion estimate does not measure a sitting".into(),
+                    0.0,
+                );
+            }
         }
     }
     reasons.extend(scoring::personal_reasons(
@@ -117,7 +172,11 @@ pub fn recommend_personalized(
                     unplayed_only: false,
                     installed_only: request.include_installed_only,
                 },
-            ) && !preferences::excludes(prefs, g.app_id, now)
+            ) && (request.intent == RecommendIntent::Session
+                || crate::signal::completion_time(g).is_some_and(|(seconds, _)| {
+                    seconds > 0 && u64::from(seconds) <= u64::from(request.available_minutes) * 60
+                }))
+                && !preferences::excludes(prefs, g.app_id, now)
                 && !g
                     .steam_collections
                     .iter()
@@ -387,6 +446,7 @@ mod tests {
     fn default_request() -> RecommendRequest {
         RecommendRequest {
             available_minutes: 120,
+            intent: crate::models::RecommendIntent::Session,
             count: 5,
             deck_mode: false,
             include_installed_only: false,
@@ -506,14 +566,16 @@ mod tests {
         let short_rec = result.iter().find(|r| r.app_id == 1).unwrap();
         let long_rec = result.iter().find(|r| r.app_id == 2).unwrap();
 
-        assert!(
-            short_rec.reasons.iter().any(|r| r.code == "time_match"),
-            "short game should get time_match"
-        );
+        assert!(!short_rec.reasons.iter().any(|r| r.code == "time_match"));
         assert!(
             !long_rec.reasons.iter().any(|r| r.code == "time_match"),
             "long game should NOT get time_match"
         );
+        req.intent = RecommendIntent::FinishShortGame;
+        let result = recommend(&games, &req);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].app_id, 1);
+        assert!(result[0].reasons.iter().any(|r| r.code == "time_match"));
     }
 
     // time_match requires a known effective completion time.
@@ -555,10 +617,12 @@ mod tests {
             !unknown_rec.reasons.iter().any(|r| r.code == "time_match"),
             "game without completion-time data must not get time_match"
         );
-        assert!(
-            fallback_rec.reasons.iter().any(|r| r.code == "time_match"),
-            "IGDB time-to-beat fallback should grant time_match"
-        );
+        assert!(explanation(fallback_rec).contains("cached IGDB normally"));
+        assert!(explanation(unknown_rec).contains("Full completion estimate unknown"));
+        req.intent = RecommendIntent::FinishShortGame;
+        let result = recommend(&games, &req);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].app_id, 2);
     }
 
     #[test]
@@ -574,12 +638,77 @@ mod tests {
         let games = vec![tiny];
         let mut req = default_request();
         req.available_minutes = 10;
+        req.intent = RecommendIntent::FinishShortGame;
         req.seed = None;
         let result = recommend(&games, &req);
         assert!(
             result[0].reasons.iter().any(|r| r.code == "time_match"),
             "a game fitting a sub-15-minute window should still get time_match"
         );
+    }
+
+    #[test]
+    fn session_and_finish_intents_keep_long_unknown_and_loop_evidence_separate() {
+        let mut long = tagged(1, &["Role-playing (RPG)"]);
+        long.hltb = Some(HltbData {
+            main_story_seconds: Some(40 * 3600),
+            main_extra_seconds: None,
+            completionist_seconds: None,
+            source: HltbSource::HltbScrape,
+        });
+        long.playtime_minutes = Some(39 * 60);
+        let mut short = tagged(2, &["Adventure"]);
+        short.hltb = Some(HltbData {
+            main_story_seconds: Some(60 * 60),
+            source: HltbSource::ManualOverride,
+            ..long.hltb.clone().unwrap()
+        });
+        let sandbox = tagged(3, &["Sandbox", "Multiplayer", "Puzzle"]);
+        let unknown = make_game(4, "Unknown, no IGDB");
+        let mut over_boundary = short.clone();
+        over_boundary.app_id = 5;
+        over_boundary.hltb.as_mut().unwrap().main_story_seconds = Some(3601);
+        let games = vec![long, short, sandbox, unknown, over_boundary];
+        let mut prefs = preferences::Preferences::new();
+        prefs.insert(
+            1,
+            serde_json::from_value(serde_json::json!({
+                "version": 1, "choice": "interested", "expires_at": null
+            }))
+            .unwrap(),
+        );
+        let mut request = default_request();
+        request.available_minutes = 60;
+        request.count = 10;
+        let session = recommend_with_preferences(&games, &request, &prefs, 100);
+        assert_eq!(session.len(), 5);
+        assert!(session.iter().any(|r| r.app_id == 1));
+        assert!(
+            session
+                .iter()
+                .all(|r| r.reasons.iter().all(|r| r.code != "time_match"))
+        );
+        let loop_pick = session.iter().find(|r| r.app_id == 3).unwrap();
+        let heuristic = loop_pick
+            .reasons
+            .iter()
+            .find(|r| r.code == "session_heuristic")
+            .unwrap();
+        assert_eq!(heuristic.weight, 0.25);
+        assert!(heuristic.description.contains("not measured"));
+        assert!(explanation(loop_pick).contains("Full completion estimate unknown"));
+
+        request.intent = RecommendIntent::FinishShortGame;
+        let finish = recommend_with_preferences(&games, &request, &prefs, 100);
+        assert_eq!(finish.iter().map(|r| r.app_id).collect::<Vec<_>>(), vec![2]);
+        assert!(explanation(&finish[0]).contains("manual override"));
+        assert!(explanation(&finish[0]).contains("remaining time unknown"));
+        let mut not_installed = games.clone();
+        not_installed[1].installed = false;
+        request.include_installed_only = true;
+        assert_eq!(recommend(&not_installed, &request).len(), 0);
+        request.available_minutes = 0;
+        assert_eq!(recommend(&games, &request).len(), 0);
     }
 
     #[test]
