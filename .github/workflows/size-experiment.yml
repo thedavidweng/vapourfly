@@ -16,6 +16,7 @@ permissions:
 concurrency:
   group: size-profile-experiment
   cancel-in-progress: false
+  queue: max
 
 env:
   CARGO_BUILD_JOBS: '2'
