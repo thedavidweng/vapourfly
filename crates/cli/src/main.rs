@@ -1059,8 +1059,13 @@ fn selected_preference_account(
     cli: &Cli,
 ) -> Result<steam::SteamAccount, Box<dyn std::error::Error>> {
     let resolved = cli.resolved_config()?;
-    let accounts = steam::detect_accounts(&resolved.steam_dir)?;
-    Ok(steam::select_account(&accounts, resolved.account.as_deref())?.clone())
+    let accounts = steam::detect_accounts(&resolved.steam_dir)
+        .map_err(|_| PersonalSelectionError::Discovery)?;
+    Ok(
+        steam::select_account(&accounts, resolved.account.as_deref())
+            .map_err(|_| PersonalSelectionError::Selection)?
+            .clone(),
+    )
 }
 
 fn cmd_profile(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error::Error>> {
@@ -2257,10 +2262,11 @@ fn scan_personal_library(
     paths: &PersonalPaths,
 ) -> Result<ScanResult, Box<dyn std::error::Error>> {
     let resolved = cli.resolved_config()?;
+    let selected = selected_preference_account(cli)?;
     Ok(vapourfly_api::workflow::prepare(
         &vapourfly_api::workflow::WorkflowOptions {
             steam_dir: resolved.steam_dir,
-            account: resolved.account,
+            account: Some(selected.steam_id64),
             fixtures: cli.fixtures.clone(),
             junk_mode: JunkMode::Default,
             offline: cli.offline,
@@ -2951,6 +2957,35 @@ mod tests {
             assert!(!format!("{error:?}").contains("private-persona-marker"));
             assert!(!error.to_string().contains("private-persona-marker"));
             assert!(error.source().is_none());
+            for error in [
+                profile_with_paths(&cli, OutputFormat::Json, &paths).unwrap_err(),
+                recommend_with_paths(
+                    &cli,
+                    RecommendArgs {
+                        minutes: 120,
+                        count: 5,
+                        deck: false,
+                        installed_only: false,
+                        seed: None,
+                        exclude_collections: vec![],
+                        to_collection: false,
+                        dry_run: false,
+                        confirm: false,
+                        format: OutputFormat::Json,
+                    },
+                    &paths,
+                )
+                .unwrap_err(),
+                discover_with_paths(&cli, None, 5, None, &paths).unwrap_err(),
+            ] {
+                assert_eq!(
+                    error.downcast_ref::<PersonalSelectionError>(),
+                    Some(&expected)
+                );
+                assert_eq!(error.to_string(), expected.to_string());
+                assert!(!format!("{error:?}").contains("private-persona-marker"));
+                assert!(error.source().is_none());
+            }
         }
         assert!(!paths.cache.exists());
         assert!(!paths.story.exists());
