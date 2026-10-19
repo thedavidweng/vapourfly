@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Library Filters retain focused-button Enter/Space activation instead of
+  toggling the ancestor popover, using the released GPUI Kit 0.8.0 repair.
+
 ### Added
 
 - Account-scoped playstyle traits explain original Completion-focused, Deep diver,
