@@ -23,7 +23,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     Anchor, AnyElement, App, ClipboardItem, Context, Entity, Hsla, InteractiveElement, IntoElement,
-    ObjectFit, ParentElement, SharedString, Styled, StyledImage, Window, div, img,
+    ObjectFit, ParentElement, ScrollHandle, SharedString, Styled, StyledImage, Window, div, img,
     linear_color_stop, linear_gradient, list, prelude::*, px, rgb, uniform_list,
 };
 use vapourfly_core::models::{ControllerSupport, Game, JunkMode, ProtonTier};
@@ -46,6 +46,19 @@ const CARD_TEXT_H: f32 = 46.;
 const HERO_H: f32 = 400.;
 /// Shortest hero, used on 800px-tall screens such as the Steam Deck.
 const HERO_MIN_H: f32 = 300.;
+
+fn evidence_scroll_offset(key: &str, current: f32, max: f32, page: f32) -> Option<f32> {
+    let next = match key {
+        "down" => current - 40.,
+        "up" => current + 40.,
+        "pagedown" => current - page * 0.9,
+        "pageup" => current + page * 0.9,
+        "home" => 0.,
+        "end" => -max,
+        _ => return None,
+    };
+    Some(next.clamp(-max, 0.))
+}
 
 /// Hero height for a window `viewport_h` tall: full size on desktop, cut
 /// down on short screens so the Recently played shelf starts above the fold.
@@ -335,7 +348,9 @@ impl GuiRoot {
                 .child(Button::new("top-tags-evidence").ghost().label("Evidence")
                     .on_click(move |_, window, cx| {
                         let profile = profile.clone();
+                        let scroll = ScrollHandle::new();
                         window.open_dialog(cx, move |dialog, _, cx| {
+                            let keyboard_scroll = scroll.clone();
                             let mut rows = vec![
                                 profile.taste.explanation.clone(),
                                 format!("Account {}; as of {}. {}", profile.steam_id64, profile.taste.as_of, profile.activity_status),
@@ -359,6 +374,22 @@ impl GuiRoot {
                             }
                             dialog.title("Top Tags and playstyle evidence").child(
                                 v_flex().id("top-tags-evidence-scroll").max_h(px(480.)).overflow_y_scroll().gap_3()
+                                    .focusable().tab_index(0).track_scroll(&scroll)
+                                    .on_key_down(move |event, window, cx| {
+                                        if let Some(y) = evidence_scroll_offset(
+                                            &event.keystroke.key,
+                                            keyboard_scroll.offset().y.into(),
+                                            keyboard_scroll.max_offset().y.into(),
+                                            keyboard_scroll.bounds().size.height.into(),
+                                        ) {
+                                            let mut offset = keyboard_scroll.offset();
+                                            offset.y = px(y);
+                                            keyboard_scroll.set_offset(offset);
+                                            cx.stop_propagation();
+                                            window.refresh();
+                                        }
+                                    })
+                                    .child(widgets::caption("Tab into evidence; arrows, Page Up/Down and Home/End scroll. Escape closes.", cx))
                                     .children(rows.into_iter().map(|row| widgets::caption(row, cx)))
                             )
                         });
@@ -2062,7 +2093,32 @@ impl GuiRoot {
 
 #[cfg(test)]
 mod tests {
-    use super::{HERO_H, HERO_MIN_H, hero_height};
+    use super::{HERO_H, HERO_MIN_H, evidence_scroll_offset, hero_height};
+
+    #[test]
+    fn evidence_keyboard_scroll_reaches_both_ends_and_clamps() {
+        assert_eq!(
+            evidence_scroll_offset("pagedown", 0., 1000., 480.),
+            Some(-432.)
+        );
+        assert_eq!(
+            evidence_scroll_offset("pageup", -1000., 1000., 480.),
+            Some(-568.)
+        );
+        assert_eq!(evidence_scroll_offset("end", 0., 1000., 480.), Some(-1000.));
+        assert_eq!(
+            evidence_scroll_offset("home", -1000., 1000., 480.),
+            Some(0.)
+        );
+        assert_eq!(
+            evidence_scroll_offset("down", -990., 1000., 480.),
+            Some(-1000.)
+        );
+        assert_eq!(evidence_scroll_offset("up", -10., 1000., 480.), Some(0.));
+        assert_eq!(evidence_scroll_offset("end", 0., 0., 480.), Some(0.));
+        assert_eq!(evidence_scroll_offset("escape", 0., 1000., 480.), None);
+        assert_eq!(evidence_scroll_offset("tab", 0., 1000., 480.), None);
+    }
 
     #[test]
     fn hero_shrinks_on_short_screens() {

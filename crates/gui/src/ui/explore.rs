@@ -35,6 +35,25 @@ const TIME_OPTIONS: [(&str, u32); 5] = [
 const COUNT_OPTIONS: [u32; 3] = [5, 10, 20];
 const DISCOVER_COUNTS: [u32; 3] = [10, 20, 40];
 
+fn discover_empty_copy(loading: bool, generated: bool) -> (&'static str, &'static str) {
+    if loading {
+        (
+            "Finding owned picks",
+            "Ranking your eligible library using cached/local evidence.",
+        )
+    } else if generated {
+        (
+            "No eligible owned picks",
+            "No owned titles meet the current unplayed and preference filters. Missing metadata is not dislike; no seed similarity or remote activity is assumed.",
+        )
+    } else {
+        (
+            "Discover owned picks",
+            "Choose an optional seed or Match my taste. Only cached/local evidence is used; missing metadata is not dislike.",
+        )
+    }
+}
+
 /// Ranker scores are additive weights, so show them relative to the best
 /// result in the same set.
 fn relative(score: f32, best: f32) -> f32 {
@@ -268,6 +287,7 @@ impl GuiRoot {
         let results: Vec<_> = self.app.discover_results.clone();
         let best = results.iter().map(|p| p.score).fold(0., f32::max);
         let body = if results.is_empty() {
+            let (title, description) = discover_empty_copy(self.app.discover_loading, has_playlist);
             div()
                 .flex_1()
                 .flex()
@@ -275,8 +295,8 @@ impl GuiRoot {
                 .justify_center()
                 .child(widgets::empty_state(
                     IconName::Compass,
-                    "Discover owned picks",
-                    "Choose an optional seed or Match my taste. Only cached/local evidence is used; missing metadata is not dislike.",
+                    title,
+                    description,
                     None,
                 ))
                 .into_any_element()
@@ -677,5 +697,21 @@ impl GuiRoot {
             ))
             .child(controls)
             .child(body)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::discover_empty_copy;
+
+    #[test]
+    fn discover_empty_distinguishes_initial_loading_and_completed_generation() {
+        assert_eq!(discover_empty_copy(false, false).0, "Discover owned picks");
+        assert_eq!(discover_empty_copy(true, true).0, "Finding owned picks");
+        assert_eq!(discover_empty_copy(true, false).0, "Finding owned picks");
+        let (title, reason) = discover_empty_copy(false, true);
+        assert_eq!(title, "No eligible owned picks");
+        assert!(reason.contains("unplayed and preference filters"));
+        assert!(reason.contains("no seed similarity or remote activity is assumed"));
     }
 }
