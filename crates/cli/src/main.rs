@@ -1064,6 +1064,14 @@ fn selected_preference_account(
 }
 
 fn cmd_profile(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error::Error>> {
+    profile_with_paths(cli, format, &PersonalPaths::default())
+}
+
+fn profile_with_paths(
+    cli: &Cli,
+    format: OutputFormat,
+    paths: &PersonalPaths,
+) -> Result<(), Box<dyn std::error::Error>> {
     let resolved = cli.resolved_config()?;
     let account = selected_preference_account(cli)?;
     let scan = vapourfly_api::workflow::prepare(&vapourfly_api::workflow::WorkflowOptions {
@@ -1072,12 +1080,12 @@ fn cmd_profile(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error
         fixtures: cli.fixtures.clone(),
         junk_mode: JunkMode::Default,
         offline: true,
-        cache_root: None,
+        cache_root: Some(paths.cache.clone()),
     })?;
     if scan.account != account.account_name {
         return Err("Scan does not match the selected account".into());
     }
-    let profile = personal_evidence_for_scan(cli, &scan)?.profile;
+    let profile = personal_evidence_for_scan(cli, &scan, paths)?.profile;
     match format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&profile)?),
         OutputFormat::Table => {
@@ -1210,18 +1218,22 @@ fn run_preference_action(
     Ok(())
 }
 
-fn preferences_for_scan(
-    cli: &Cli,
-    scan: &ScanResult,
-) -> Result<vapourfly_core::preferences::Preferences, Box<dyn std::error::Error>> {
-    let account = selected_preference_account(cli)?;
-    if scan.account != account.account_name {
-        return Err("Scan does not match the selected account".into());
+struct PersonalPaths {
+    cache: PathBuf,
+    story: PathBuf,
+    preferences: PathBuf,
+    playlists: PathBuf,
+}
+
+impl Default for PersonalPaths {
+    fn default() -> Self {
+        Self {
+            cache: config::default_cache_dir(),
+            story: config::default_story_dir(),
+            preferences: config::default_preferences_dir(),
+            playlists: config::default_playlists_dir(),
+        }
     }
-    Ok(vapourfly_core::preferences::load(
-        &config::default_preferences_dir(),
-        &account.steam_id64,
-    )?)
 }
 
 struct PersonalLibraryEvidence {
@@ -1234,20 +1246,28 @@ struct PersonalLibraryEvidence {
 fn personal_evidence_for_scan(
     cli: &Cli,
     scan: &ScanResult,
+    paths: &PersonalPaths,
 ) -> Result<PersonalLibraryEvidence, Box<dyn std::error::Error>> {
-    let preferences = preferences_for_scan(cli, scan)?;
-    let account = selected_preference_account(cli)?;
-    let cache = vapourfly_api::cache::DiskCache::new(config::default_cache_dir());
-    let activity = vapourfly_api::activity::load(&cache, &account.steam_id64)?;
+    let resolved = cli.resolved_config()?;
+    let accounts = steam::detect_accounts(&resolved.steam_dir)?;
+    // Borrow one selection for validation and cache keys; do not return or clone
+    // the complete account metadata through the derived-evidence boundary.
+    let selected = steam::select_account(&accounts, resolved.account.as_deref())?;
+    if scan.account != selected.account_name {
+        return Err("Scan does not match the selected account".into());
+    }
+    let preferences = vapourfly_core::preferences::load(&paths.preferences, &selected.steam_id64)?;
+    let cache = vapourfly_api::cache::DiskCache::new(&paths.cache);
+    let activity = vapourfly_api::activity::load(&cache, &selected.steam_id64)?;
     let progress = vapourfly_api::achievements::library_progress(
         &cache,
-        &config::default_story_dir(),
-        &account.steam_id64,
+        &paths.story,
+        &selected.steam_id64,
         &scan.games,
     )?;
     let now = chrono::Utc::now().timestamp();
     let profile = vapourfly_api::profile::derive(
-        &account.steam_id64,
+        &selected.steam_id64,
         &scan.games,
         &preferences,
         activity.as_ref(),
@@ -1943,6 +1963,14 @@ fn cmd_junk_hide(
 }
 
 fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::error::Error>> {
+    recommend_with_paths(cli, args, &PersonalPaths::default())
+}
+
+fn recommend_with_paths(
+    cli: &Cli,
+    args: RecommendArgs,
+    paths: &PersonalPaths,
+) -> Result<(), Box<dyn std::error::Error>> {
     let RecommendArgs {
         minutes,
         count,
@@ -1960,7 +1988,7 @@ fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::erro
         validate_write_flags(dry_run, confirm)?;
     }
 
-    let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
+    let scan_result = scan_personal_library(cli, paths)?;
 
     let request = RecommendRequest {
         available_minutes: minutes,
@@ -1976,7 +2004,7 @@ fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::erro
         profile,
         progress,
         now,
-    } = personal_evidence_for_scan(cli, &scan_result)?;
+    } = personal_evidence_for_scan(cli, &scan_result, paths)?;
     let recommendations = recommend::recommend_personalized(
         &scan_result.games,
         &request,
@@ -2200,13 +2228,40 @@ fn cmd_playlist_discover(
     count: usize,
     out: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
+    discover_with_paths(cli, seed, count, out, &PersonalPaths::default())
+}
+
+fn scan_personal_library(
+    cli: &Cli,
+    paths: &PersonalPaths,
+) -> Result<ScanResult, Box<dyn std::error::Error>> {
+    let resolved = cli.resolved_config()?;
+    Ok(vapourfly_api::workflow::prepare(
+        &vapourfly_api::workflow::WorkflowOptions {
+            steam_dir: resolved.steam_dir,
+            account: resolved.account,
+            fixtures: cli.fixtures.clone(),
+            junk_mode: JunkMode::Default,
+            offline: cli.offline,
+            cache_root: Some(paths.cache.clone()),
+        },
+    )?)
+}
+
+fn discover_with_paths(
+    cli: &Cli,
+    seed: Option<u32>,
+    count: usize,
+    out: Option<PathBuf>,
+    paths: &PersonalPaths,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let scan_result = scan_personal_library(cli, paths)?;
     let PersonalLibraryEvidence {
         preferences,
         profile,
         progress,
         now,
-    } = personal_evidence_for_scan(cli, &scan_result)?;
+    } = personal_evidence_for_scan(cli, &scan_result, paths)?;
     let options = DiscoverOptions {
         seed_app_id: seed,
         count,
@@ -2221,7 +2276,7 @@ fn cmd_playlist_discover(
     );
     let pf = discover::playlist_from_discover_picks(&scan_result.games, &options, &picks);
 
-    store_playlist(&pf)?;
+    playlist_store::put(&paths.playlists, &pf)?;
     println!("{}", profile.activity_status);
     for pick in &picks {
         println!(
@@ -2819,17 +2874,28 @@ fn print_match_counts(report: &vapourfly_core::models::PlaylistMatchReport) {
 mod tests {
     use super::*;
 
+    fn personal_test_paths(root: &Path) -> PersonalPaths {
+        PersonalPaths {
+            cache: root.join("cache"),
+            story: root.join("story"),
+            preferences: root.join("preferences"),
+            playlists: root.join("playlists"),
+        }
+    }
+
     #[test]
     fn personalized_discover_cli_is_offline_scoped_and_keeps_manual_playlist_contract() {
         const CHILD: &str = "VAPOURFLY_TEST_DISCOVER_CHILD";
         if std::env::var_os(CHILD).is_some() {
+            let data = tempfile::tempdir().unwrap();
+            let paths = personal_test_paths(data.path());
             let fixtures =
                 PathBuf::from(std::env::var_os("VAPOURFLY_TEST_DISCOVER_FIXTURES").unwrap());
             let local = fixtures.join("userdata/76561198000000000/config/localconfig.vdf");
             let before = std::fs::read(&local).unwrap();
             let id = "76561198000000000";
             vapourfly_core::preferences::set(
-                &config::default_preferences_dir(),
+                &paths.preferences,
                 "76561198000000001",
                 427520,
                 Some(vapourfly_core::preferences::Choice::NotInterested),
@@ -2837,20 +2903,14 @@ mod tests {
             )
             .unwrap();
             vapourfly_core::preferences::set(
-                &config::default_preferences_dir(),
+                &paths.preferences,
                 id,
                 427520,
                 Some(vapourfly_core::preferences::Choice::Interested),
                 100,
             )
             .unwrap();
-            vapourfly_core::progress::set_story_completed(
-                &config::default_story_dir(),
-                id,
-                427520,
-                true,
-            )
-            .unwrap();
+            vapourfly_core::progress::set_story_completed(&paths.story, id, 427520, true).unwrap();
             let cli = Cli::try_parse_from([
                 "vapourfly",
                 "--fixtures",
@@ -2863,8 +2923,8 @@ mod tests {
             ])
             .unwrap();
             for seed in [None, Some(730)] {
-                let out = config::default_playlists_dir().join("export-check.json");
-                cmd_playlist_discover(&cli, seed, 5, Some(out.clone())).unwrap();
+                let out = paths.playlists.join("export-check.json");
+                discover_with_paths(&cli, seed, 5, Some(out.clone()), &paths).unwrap();
                 let pf = playlist::import_playlist(&out).unwrap();
                 let PlaylistContent::Manual { app_ids } = &pf.playlist.content else {
                     panic!("manual");
@@ -2882,7 +2942,7 @@ mod tests {
                 assert_eq!(*app_ids, decoded_ids);
             }
             assert_eq!(std::fs::read(&local).unwrap(), before);
-            assert!(!config::default_cache_dir().exists());
+            assert!(!paths.cache.exists());
             return;
         }
         fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
@@ -2932,18 +2992,14 @@ mod tests {
     fn personalized_recommend_cli_is_account_scoped_and_offline() {
         const CHILD: &str = "VAPOURFLY_TEST_RECOMMEND_CHILD";
         if std::env::var_os(CHILD).is_some() {
+            let data = tempfile::tempdir().unwrap();
+            let paths = personal_test_paths(data.path());
             let fixtures =
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
             let id = "76561198000000000";
-            vapourfly_core::progress::set_story_completed(
-                &config::default_story_dir(),
-                id,
-                427520,
-                true,
-            )
-            .unwrap();
+            vapourfly_core::progress::set_story_completed(&paths.story, id, 427520, true).unwrap();
             vapourfly_core::preferences::set(
-                &config::default_preferences_dir(),
+                &paths.preferences,
                 "76561198000000001",
                 427520,
                 Some(vapourfly_core::preferences::Choice::NotInterested),
@@ -2963,7 +3019,7 @@ mod tests {
             ])
             .unwrap();
             for format in [OutputFormat::Json, OutputFormat::Table] {
-                cmd_recommend(
+                recommend_with_paths(
                     &cli,
                     RecommendArgs {
                         minutes: 120,
@@ -2977,17 +3033,14 @@ mod tests {
                         confirm: false,
                         format,
                     },
+                    &paths,
                 )
                 .unwrap();
             }
-            assert!(!config::default_cache_dir().exists());
+            assert!(!paths.cache.exists());
             // Personal edits are not disposable provider caches: corruption must be visible.
-            std::fs::write(
-                config::default_story_dir().join(id).join("427520.json"),
-                b"{broken",
-            )
-            .unwrap();
-            let error = cmd_recommend(
+            std::fs::write(paths.story.join(id).join("427520.json"), b"{broken").unwrap();
+            let error = recommend_with_paths(
                 &cli,
                 RecommendArgs {
                     minutes: 120,
@@ -3001,6 +3054,7 @@ mod tests {
                     confirm: false,
                     format: OutputFormat::Json,
                 },
+                &paths,
             )
             .unwrap_err();
             assert!(
@@ -3042,6 +3096,8 @@ mod tests {
     fn account_profile_cli_fixture_json_and_table() {
         const CHILD: &str = "VAPOURFLY_TEST_PROFILE_CHILD";
         if std::env::var_os(CHILD).is_some() {
+            let data = tempfile::tempdir().unwrap();
+            let paths = personal_test_paths(data.path());
             let fixtures =
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
             for format in ["json", "table"] {
@@ -3064,7 +3120,7 @@ mod tests {
                 else {
                     panic!("profile command");
                 };
-                cmd_profile(&cli, *format).unwrap();
+                profile_with_paths(&cli, *format, &paths).unwrap();
             }
             return;
         }
