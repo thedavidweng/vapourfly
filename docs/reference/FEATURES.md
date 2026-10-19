@@ -114,6 +114,38 @@ evaluated at generation time. Preference reads are part of background preparatio
 not per-frame disk/network reads. Existing Playlist files, share codes, exports
 and Steam write gates are unchanged; feedback does not rewrite a saved Playlist.
 
+## Derived Top Tags
+
+Library and Discover show a compact Top Tags summary with an Evidence dialog;
+`accounts profile --format table|json` provides the same derived account profile.
+Reads use existing local Steam activity, the selected SteamID64's cached owned/
+recent snapshots, cached game descriptors and local Interested choices. No HTTP
+requests, profile database, Game schema changes or new navigation destination.
+No optional Steam Spy source is enabled. Missing metadata produces explicit
+coverage/empty explanations, not invented tastes. Invalid preferences are errors.
+
+Genres, themes, keywords, tags and categories from cached Steam/IGDB/RAWG records
+are normalized and merged, with conservative aliases (RPG/role-playing, co-op,
+single-player, sci-fi). Each concept counts once per title and retains all its
+source labels; genre evidence takes precedence over descriptor classification.
+Hidden/junk and known non-games do not contribute. Ownership alone has no weight.
+Lifetime weights are `minutes/(minutes+600)`, recent weights
+`minutes/(minutes+120)`: continuous and bounded, so one huge playtime cannot grow
+without limit. Interested adds 0.25 to long-term only and resetting removes it.
+Existing Recommendations/Discover ranking remains unchanged by this view.
+
+Local/cached minutes are combined by maximum, never added across sources. Cached
+recent samples older than 14 days and observations whose known last-played time
+is outside that window do not contribute to recent strength. Failed refreshes
+may retain historical data with its original fetch time and explicit availability;
+they do not refresh that time. Local evidence has no fetch timestamp, which is
+stated rather than represented as fresh authoritative data. Strength is a
+non-exclusive share of engagement among metadata-covered titles. Library-relative
+lift divides that share by the concept's frequency in this library: it is **not a
+player-population percentile**. Evidence includes title IDs/names, activity values,
+interest, timestamps, sources and coverage. Preference edits recompute the view;
+rescan/cache/activity refresh and account switches invalidate the prepared view.
+
 ## Current Data Flow
 
 1. `scan` reads local Steam files and builds the library model.

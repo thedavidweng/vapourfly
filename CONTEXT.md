@@ -99,6 +99,15 @@ overwrites that slot rather than creating a new Playlist id each time. The
 slot is a presentation/store convenience for “latest generation”; it is not a
 separate domain artifact type. See [ADR-0007](docs/adr/0007-generator-playlist-slots.md).
 
+### Taste Profile / Top Tags
+
+A derived, account-scoped summary of long-term and recent engagement with
+normalized game genres and descriptors, supported by cached/local activity and
+explicit Interested preferences. Top Tags are its inspectable presentation.
+Strength describes weighted engagement within this library; library-relative
+lift compares it to this library's descriptor coverage, never to other players.
+A Taste Profile is not a separate personal database or a Playlist ranker.
+
 ## Library and games
 
 ### Game

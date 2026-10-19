@@ -4,6 +4,20 @@ Manual testing steps for the Vapourfly GUI. Automated unit tests cover app
 creation, fixture scanning, navigation contract, and playtime formatting; this
 document covers the interactive flows that require a running GUI.
 
+## Top Tags
+
+1. Offline, scan the selected account. Library and Discover show long-term/recent
+   Top Tags and metadata/activity/interest coverage without a new navigation item.
+   Bare fixtures without descriptors show honest empty supported-tags text.
+2. Open Evidence using keyboard Tab/Enter. Verify strengths, supporting titles,
+   genre/descriptor kind, source labels, original data times and the explicit
+   library-relative/not-player-percentile explanation. Close with Escape.
+3. Set Interested on an unplayed described title: long-term changes modestly,
+   recent does not invent playtime. Reset/remove via CLI then rescan; verify reversal.
+4. Switch account or refresh cached activity: old prepared profile must disappear
+   until rebuilt. Compare `accounts profile --format json` using the same account,
+   metadata and local evidence; missing providers require no key/network request.
+
 ## Local Preferences
 
 Run real keyboard acceptance separately from real controller acceptance. State

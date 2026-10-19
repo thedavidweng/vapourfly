@@ -291,6 +291,7 @@ pub(crate) struct PreparedLibrarySnapshot {
     overrides: ManualOverrides,
     progress: Result<std::collections::BTreeMap<u32, vapourfly_core::progress::Summary>, String>,
     preferences: Result<Preferences, String>,
+    taste: Result<Arc<vapourfly_api::profile::AccountProfile>, String>,
 }
 
 pub(crate) struct VapourflyApp {
@@ -2537,6 +2538,18 @@ impl VapourflyApp {
         }
     }
 
+    pub(crate) fn taste_profile(
+        &self,
+    ) -> Result<&Arc<vapourfly_api::profile::AccountProfile>, String> {
+        self.prepared_snapshot
+            .as_ref()
+            .filter(|s| s.fingerprint == self.library_prepare_fingerprint())
+            .ok_or_else(|| "Prepare the selected account's Library first.".to_string())?
+            .taste
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
     fn prepared_preferences(&self) -> Result<&Preferences, String> {
         self.prepared_snapshot
             .as_ref()
@@ -2600,6 +2613,13 @@ impl VapourflyApp {
         // Reload even on partial reset failure; never leave old feedback active in memory.
         let loaded = preferences::load(&self.preferences_dir, &id).map_err(|e| e.to_string());
         self.prepared_snapshot.as_mut().unwrap().preferences = loaded;
+        let snapshot = self.prepared_snapshot.as_mut().unwrap();
+        snapshot.taste = library_taste_profile(
+            &vapourfly_api::cache::DiskCache::new(self.cache_dir.clone()),
+            Some(&id),
+            &snapshot.games,
+            &snapshot.preferences,
+        );
         self.preferences_generation = self.preferences_generation.wrapping_add(1);
         let rerun_recommend = self.recommend_loading || !self.recommend_results.is_empty();
         self.clear_personalized_results();
@@ -3493,6 +3513,7 @@ impl VapourflyApp {
                 &overrides,
             );
             let games: Arc<[Game]> = Arc::from(games);
+            let taste = library_taste_profile(&cache, account.as_deref(), &games, &preferences);
             repaint.request();
             PREPARED_LIBRARY_RESULT.set(
                 job_id,
@@ -3502,6 +3523,7 @@ impl VapourflyApp {
                     overrides,
                     progress,
                     preferences,
+                    taste,
                 }),
             );
         });
@@ -3556,6 +3578,7 @@ impl VapourflyApp {
             } else if let Some(result) = ACTIVITY_RESULT.take_if(expected) {
                 self.activity_loading = false;
                 self.activity_job_id = None;
+                self.cache_refresh_generation = self.cache_refresh_generation.wrapping_add(1);
                 match result {
                     Ok(Ok(snapshot)) => {
                         self.activity_snapshot = snapshot;
@@ -3940,6 +3963,12 @@ impl VapourflyApp {
         );
         self.prepared_snapshot = Some(PreparedLibrarySnapshot {
             fingerprint: fp,
+            taste: library_taste_profile(
+                &cache,
+                self.active_account().map(|a| a.steam_id64.as_str()),
+                &games,
+                &preferences,
+            ),
             games,
             overrides,
             progress,
@@ -4420,6 +4449,26 @@ impl VapourflyApp {
         self.refresh_playlist_store_ids();
         Ok(stored)
     }
+}
+
+fn library_taste_profile(
+    cache: &vapourfly_api::cache::DiskCache,
+    account: Option<&str>,
+    games: &[Game],
+    preferences: &Result<Preferences, String>,
+) -> Result<Arc<vapourfly_api::profile::AccountProfile>, String> {
+    let id = account.ok_or("Scan the selected account's Library first.")?;
+    let preferences = preferences.as_ref().map_err(Clone::clone)?;
+    let activity = vapourfly_api::activity::load(cache, id).map_err(|e| e.to_string())?;
+    vapourfly_api::profile::derive(
+        id,
+        games,
+        preferences,
+        activity.as_ref(),
+        chrono::Utc::now().timestamp(),
+    )
+    .map(Arc::new)
+    .map_err(|e| e.to_string())
 }
 
 fn load_library_preferences(
@@ -4964,6 +5013,7 @@ mod tests {
             overrides: ManualOverrides::default(),
             progress: Ok(Default::default()),
             preferences: Ok(Default::default()),
+            taste: Err("Test snapshot has no profile".into()),
         });
 
         // Bump the generation — fingerprint changes, snapshot is stale.
@@ -5014,6 +5064,7 @@ mod tests {
             overrides: ManualOverrides::default(),
             progress: Ok(Default::default()),
             preferences: Ok(Default::default()),
+            taste: Err("Test snapshot has no profile".into()),
         });
 
         // Simulate a rescan accepted with the SAME game count but changed
@@ -6491,6 +6542,63 @@ mod tests {
         let mut app = VapourflyApp::new(None, true);
         app.activity_loading = true;
         assert!(app.has_background_work());
+    }
+
+    #[test]
+    #[serial]
+    fn taste_profile_recomputes_preferences_and_rejects_account_switch() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(temp.path());
+        app.ui_demo = false;
+        app.preferences_dir = temp.path().join("preferences");
+        for game in &mut app.scan_result.as_mut().unwrap().games {
+            game.playtime_minutes = Some(0);
+            game.playtime_2wks_minutes = Some(0);
+            game.is_hidden = false;
+            game.is_junk = false;
+        }
+        app.inject_prepared_snapshot();
+        assert!(app.taste_profile().unwrap().taste.long_term.is_empty());
+        let id = app
+            .prepared_snapshot
+            .as_ref()
+            .unwrap()
+            .games
+            .iter()
+            .find(|g| g.igdb.is_some() || g.rawg.is_some() || g.steam_store.is_some())
+            .unwrap()
+            .app_id;
+        app.edit_preference(Some(id), Some(Choice::Interested))
+            .unwrap();
+        assert!(!app.taste_profile().unwrap().taste.long_term.is_empty());
+        assert!(app.taste_profile().unwrap().taste.recent.is_empty());
+        app.edit_preference(Some(id), None).unwrap();
+        assert!(app.taste_profile().unwrap().taste.long_term.is_empty());
+        app.config.as_mut().unwrap().account = Some("76561198000000002".into());
+        assert!(app.taste_profile().is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn taste_profile_activity_refresh_invalidates_prepared_snapshot() {
+        ACTIVITY_RESULT.clear();
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(temp.path());
+        let id = app.active_account().unwrap().steam_id64.clone();
+        let ticket = app
+            .job_runner
+            .next_ticket(WorkflowKind::AccountActivity, &id);
+        app.activity_job_id = Some(ticket);
+        app.activity_loading = true;
+        let generation = app.cache_refresh_generation;
+        ACTIVITY_RESULT.set(ticket, Ok(Ok(None)));
+        app.tick();
+        assert_ne!(app.cache_refresh_generation, generation);
+        assert!(
+            app.taste_profile().is_err(),
+            "old profile cannot remain visible after refresh"
+        );
+        ACTIVITY_RESULT.clear();
     }
 
     fn achievement_test_app(cache_dir: &std::path::Path) -> VapourflyApp {

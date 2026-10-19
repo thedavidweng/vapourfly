@@ -281,6 +281,72 @@ fn game_menu(menu: PopupMenu, entity: Entity<GuiRoot>, id: u32) -> PopupMenu {
 }
 
 impl GuiRoot {
+    pub(super) fn top_tags_panel(&self, cx: &App) -> AnyElement {
+        let profile = match self.app.taste_profile() {
+            Ok(profile) => profile.clone(),
+            Err(error) => {
+                return div()
+                    .px(px(PAGE_PX))
+                    .pb_2()
+                    .child(widgets::caption(
+                        format!("Top Tags unavailable: {error}"),
+                        cx,
+                    ))
+                    .into_any_element();
+            }
+        };
+        let summary = |label: &str, tags: &[vapourfly_core::taste::TagStrength]| {
+            format!(
+                "{label}: {}",
+                if tags.is_empty() {
+                    "no supported tags".into()
+                } else {
+                    tags.iter()
+                        .take(3)
+                        .map(|tag| format!("{} {:.0}%", tag.tag, tag.strength * 100.0))
+                        .collect::<Vec<_>>()
+                        .join(" / ")
+                }
+            )
+        };
+        let long = summary("Long-term", &profile.taste.long_term);
+        let recent = summary("Recent", &profile.taste.recent);
+        let c = &profile.taste.coverage;
+        let coverage = format!(
+            "{}/{} titles with descriptors; {} played, {} Interested. Cached/local evidence only.",
+            c.metadata_titles, c.eligible_titles, c.activity_titles, c.interested_titles
+        );
+        v_flex().px(px(PAGE_PX)).pb_2().gap_1()
+            .child(h_flex().gap_3().flex_wrap()
+                .child(v_flex().flex_1().min_w_0().gap_1()
+                    .child(widgets::caption(format!("Top Tags | {long}"), cx))
+                    .child(widgets::caption(recent, cx)))
+                .child(Button::new("top-tags-evidence").ghost().label("Evidence")
+                    .on_click(move |_, window, cx| {
+                        let profile = profile.clone();
+                        window.open_dialog(cx, move |dialog, _, cx| {
+                            let mut rows = vec![
+                                profile.taste.explanation.clone(),
+                                format!("Account {}; as of {}. {}", profile.steam_id64, profile.taste.as_of, profile.activity_status),
+                            ];
+                            for (label, tags) in [("Long-term", &profile.taste.long_term), ("Recent", &profile.taste.recent)] {
+                                for tag in tags {
+                                    rows.push(format!("{label}: {} ({:?}) {:.1}% strength; {:.2}x library-relative lift (not player percentile)", tag.tag, tag.kind, tag.strength * 100.0, tag.library_relative_lift));
+                                    for title in &tag.supporting_titles {
+                                        rows.push(format!("{} [{}]: {}m lifetime / {}m recent; last played {:?}; Interested {}; metadata {:?}; activity {:?}", title.name, title.app_id, title.lifetime_minutes, title.recent_minutes, title.last_played_at, title.interested, title.metadata_sources, title.activity));
+                                    }
+                                }
+                            }
+                            dialog.title("Top Tags evidence").child(
+                                v_flex().id("top-tags-evidence-scroll").max_h(px(480.)).overflow_y_scroll().gap_3()
+                                    .children(rows.into_iter().map(|row| widgets::caption(row, cx)))
+                            )
+                        });
+                    })))
+            .child(widgets::caption(coverage, cx))
+            .into_any_element()
+    }
+
     fn content_width(&self, window: &Window) -> f32 {
         let width: f32 = window.viewport_size().width.into();
         // Page inset (8) + panel border (2) + page padding on both sides.
@@ -811,6 +877,7 @@ impl GuiRoot {
             .size_full()
             .child(widgets::page_header("Library", subtitle, actions, cx))
             .child(self.library_toolbar(cx))
+            .child(self.top_tags_panel(cx))
             .child(
                 div()
                     .px(px(PAGE_PX))

@@ -341,6 +341,7 @@ impl GuiRoot {
                 cx,
             ))
             .child(seed_panel)
+            .child(self.top_tags_panel(cx))
             .child(body)
     }
 

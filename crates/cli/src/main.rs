@@ -266,6 +266,11 @@ enum Commands {
 enum AccountsAction {
     /// List detected accounts.
     List,
+    /// Derive Top Tags from this account's local/cached evidence (never fetches).
+    Profile {
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Inspect or change local tastes (no network or Steam writes).
     Preferences {
         #[command(subcommand)]
@@ -704,6 +709,7 @@ fn main() {
         Commands::Doctor => cmd_doctor(&cli),
         Commands::Accounts { action } => match action {
             AccountsAction::List => cmd_accounts_list(&cli),
+            AccountsAction::Profile { format } => cmd_profile(&cli, *format),
             AccountsAction::Preferences { action } => cmd_preferences(&cli, action),
             AccountsAction::Progress {
                 app_id,
@@ -1055,6 +1061,74 @@ fn selected_preference_account(
     let resolved = cli.resolved_config()?;
     let accounts = steam::detect_accounts(&resolved.steam_dir)?;
     Ok(steam::select_account(&accounts, resolved.account.as_deref())?.clone())
+}
+
+fn cmd_profile(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error::Error>> {
+    let resolved = cli.resolved_config()?;
+    let account = selected_preference_account(cli)?;
+    let scan = vapourfly_api::workflow::prepare(&vapourfly_api::workflow::WorkflowOptions {
+        steam_dir: resolved.steam_dir,
+        account: Some(account.steam_id64.clone()),
+        fixtures: cli.fixtures.clone(),
+        junk_mode: JunkMode::Default,
+        offline: true,
+        cache_root: None,
+    })?;
+    if scan.account != account.account_name {
+        return Err("Scan does not match the selected account".into());
+    }
+    let prefs =
+        vapourfly_core::preferences::load(&config::default_preferences_dir(), &account.steam_id64)?;
+    let cache = vapourfly_api::cache::DiskCache::new(config::default_cache_dir());
+    let activity = vapourfly_api::activity::load(&cache, &account.steam_id64)?;
+    let profile = vapourfly_api::profile::derive(
+        &account.steam_id64,
+        &scan.games,
+        &prefs,
+        activity.as_ref(),
+        chrono::Utc::now().timestamp(),
+    )?;
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&profile)?),
+        OutputFormat::Table => {
+            println!("Top Tags ({})", profile.steam_id64);
+            println!("{}", profile.activity_status);
+            println!("{}", profile.taste.explanation);
+            println!(
+                "Coverage: {:?}; as of {}",
+                profile.taste.coverage, profile.taste.as_of
+            );
+            for (label, tags) in [
+                ("Long-term", &profile.taste.long_term),
+                ("Recent", &profile.taste.recent),
+            ] {
+                println!("{label}:");
+                for tag in tags {
+                    println!(
+                        "  {} ({:?}): {:.1}% strength; {:.2}x library-relative lift",
+                        tag.tag,
+                        tag.kind,
+                        tag.strength * 100.0,
+                        tag.library_relative_lift
+                    );
+                    for title in &tag.supporting_titles {
+                        println!(
+                            "    {} [{}]: lifetime={}m recent={}m last={:?} interested={}; metadata={:?}; activity={:?}",
+                            title.name,
+                            title.app_id,
+                            title.lifetime_minutes,
+                            title.recent_minutes,
+                            title.last_played_at,
+                            title.interested,
+                            title.metadata_sources,
+                            title.activity
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn cmd_preferences(cli: &Cli, action: &PreferenceAction) -> Result<(), Box<dyn std::error::Error>> {
@@ -2669,6 +2743,65 @@ fn print_match_counts(report: &vapourfly_core::models::PlaylistMatchReport) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_profile_cli_fixture_json_and_table() {
+        const CHILD: &str = "VAPOURFLY_TEST_PROFILE_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let fixtures =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
+            for format in ["json", "table"] {
+                // Deliberately omit --offline: this command is always cache-only.
+                let cli = Cli::try_parse_from([
+                    "vapourfly",
+                    "--fixtures",
+                    fixtures.to_str().unwrap(),
+                    "--account",
+                    "76561198000000000",
+                    "accounts",
+                    "profile",
+                    "--format",
+                    format,
+                ])
+                .unwrap();
+                let Commands::Accounts {
+                    action: AccountsAction::Profile { format },
+                } = &cli.command
+                else {
+                    panic!("profile command");
+                };
+                cmd_profile(&cli, *format).unwrap();
+            }
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::account_profile_cli_fixture_json_and_table",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HOME", root.path())
+            .env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env("XDG_DATA_HOME", root.path().join("data"))
+            .env("XDG_CACHE_HOME", root.path().join("cache"))
+            .env_remove("VAPOURFLY_ACCOUNT")
+            .env_remove("VAPOURFLY_STEAM_DIR")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("\"long_term\""));
+        assert!(stdout.contains("\"steam_id64\": \"76561198000000000\""));
+        assert!(stdout.contains("Top Tags (76561198000000000)"));
+        assert!(stdout.contains("No eligible titles"));
+    }
 
     #[test]
     fn local_preferences_collection_target_respects_config_account() {
