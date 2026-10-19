@@ -178,9 +178,13 @@ enum Commands {
 
     /// Get game recommendations.
     Recommend {
-        /// Available play time in minutes.
+        /// Available sitting time in minutes (not full campaign length).
         #[arg(long)]
         minutes: u32,
+
+        /// Require a known full completion estimate within the window instead of planning a session.
+        #[arg(long)]
+        finish_short_game: bool,
 
         /// Number of recommendations to return.
         #[arg(long, default_value = "5")]
@@ -696,6 +700,7 @@ enum OutputFormat {
 #[derive(Clone, Debug)]
 struct RecommendArgs {
     minutes: u32,
+    finish_short_game: bool,
     count: usize,
     deck: bool,
     installed_only: bool,
@@ -780,6 +785,7 @@ fn main() {
         },
         Commands::Recommend {
             minutes,
+            finish_short_game,
             count,
             deck,
             installed_only,
@@ -793,6 +799,7 @@ fn main() {
             &cli,
             RecommendArgs {
                 minutes: *minutes,
+                finish_short_game: *finish_short_game,
                 count: *count,
                 deck: *deck,
                 installed_only: *installed_only,
@@ -2116,6 +2123,7 @@ fn recommend_with_paths(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let RecommendArgs {
         minutes,
+        finish_short_game,
         count,
         deck,
         installed_only,
@@ -2135,6 +2143,11 @@ fn recommend_with_paths(
 
     let request = RecommendRequest {
         available_minutes: minutes,
+        intent: if finish_short_game {
+            vapourfly_core::models::RecommendIntent::FinishShortGame
+        } else {
+            vapourfly_core::models::RecommendIntent::Session
+        },
         count,
         deck_mode: deck,
         include_installed_only: installed_only,
@@ -2186,6 +2199,7 @@ fn recommend_with_paths(
 
     match format {
         OutputFormat::Table => {
+            println!("{}", recommend::intent_guidance(&request));
             println!("{:<10} {:<40} {:>8}  Reasons", "AppID", "Name", "Score");
             println!("{}", "-".repeat(86));
             for rec in &recommendations {
@@ -2209,6 +2223,8 @@ fn recommend_with_paths(
                 "schema": VAPOURFLY_RECOMMENDATIONS_SCHEMA,
                 "request": {
                     "available_minutes": minutes,
+                    "intent": request.intent,
+                    "guidance": recommend::intent_guidance(&request),
                     "count": count,
                     "deck_mode": deck,
                     "installed_only": installed_only,
@@ -3224,6 +3240,7 @@ mod tests {
                     &cli,
                     RecommendArgs {
                         minutes: 120,
+                        finish_short_game: false,
                         count: 5,
                         deck: false,
                         installed_only: false,
@@ -3388,24 +3405,27 @@ mod tests {
                 "120",
             ])
             .unwrap();
-            for format in [OutputFormat::Json, OutputFormat::Table] {
-                recommend_with_paths(
-                    &cli,
-                    RecommendArgs {
-                        minutes: 120,
-                        count: 5,
-                        deck: false,
-                        installed_only: false,
-                        seed: Some(42),
-                        exclude_collections: vec![],
-                        to_collection: false,
-                        dry_run: false,
-                        confirm: false,
-                        format,
-                    },
-                    &paths,
-                )
-                .unwrap();
+            for finish_short_game in [false, true] {
+                for format in [OutputFormat::Json, OutputFormat::Table] {
+                    recommend_with_paths(
+                        &cli,
+                        RecommendArgs {
+                            minutes: 120,
+                            finish_short_game,
+                            count: 5,
+                            deck: false,
+                            installed_only: false,
+                            seed: Some(42),
+                            exclude_collections: vec![],
+                            to_collection: false,
+                            dry_run: false,
+                            confirm: false,
+                            format,
+                        },
+                        &paths,
+                    )
+                    .unwrap();
+                }
             }
             assert!(!paths.cache.exists());
             // Personal edits are not disposable provider caches: corruption must be visible.
@@ -3414,6 +3434,7 @@ mod tests {
                 &cli,
                 RecommendArgs {
                     minutes: 120,
+                    finish_short_game: false,
                     count: 5,
                     deck: false,
                     installed_only: false,
@@ -3457,6 +3478,10 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         let text = String::from_utf8_lossy(&output.stdout);
+        assert!(text.contains("\"intent\": \"session\""));
+        assert!(text.contains("\"intent\": \"finish_short_game\""));
+        assert!(text.contains("Session length is not measured"));
+        assert!(text.contains("Unknown/long estimates are excluded"));
         assert!(text.contains("story_completed"));
         assert!(text.contains("-1.25 Story completed"));
         assert!(text.contains("not probability or player percentile"));

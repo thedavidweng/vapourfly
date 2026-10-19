@@ -381,6 +381,7 @@ pub(crate) struct VapourflyApp {
 
     // Recommendations view
     pub(crate) recommend_minutes: String,
+    pub(crate) recommend_finish_short_game: bool,
     pub(crate) recommend_count: String,
     pub(crate) recommend_seed: String,
     pub(crate) recommend_deck: bool,
@@ -1229,6 +1230,7 @@ impl VapourflyApp {
             junk_show_all_evaluated: false,
 
             recommend_minutes: "120".into(),
+            recommend_finish_short_game: false,
             recommend_count: "5".into(),
             recommend_seed: String::new(),
             recommend_deck: false,
@@ -4086,6 +4088,11 @@ impl VapourflyApp {
     pub(crate) fn recommend_request_from_inputs(&self) -> Result<RecommendRequest, String> {
         Ok(RecommendRequest {
             available_minutes: parse_required("Available minutes", &self.recommend_minutes)?,
+            intent: if self.recommend_finish_short_game {
+                vapourfly_core::models::RecommendIntent::FinishShortGame
+            } else {
+                vapourfly_core::models::RecommendIntent::Session
+            },
             count: parse_required("Count", &self.recommend_count)?,
             deck_mode: self.recommend_deck,
             include_installed_only: self.recommend_installed_only,
@@ -7038,6 +7045,70 @@ mod tests {
         app.tick();
         assert!(app.discover_job_id.is_none());
         assert_eq!(std::fs::read(path).unwrap(), before);
+        assert!(!temp.path().join("cache").exists());
+    }
+
+    #[test]
+    #[serial]
+    fn session_intent_gui_matches_core_without_remaining_time_inference() {
+        use vapourfly_core::models::{HltbData, HltbSource, RecommendIntent};
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(&temp.path().join("cache"));
+        app.story_dir = temp.path().join("story");
+        app.preferences_dir = temp.path().join("preferences");
+        app.ui_demo = false;
+        app.offline_mode = true;
+        app.recommend_minutes = "60".into();
+        app.recommend_count = "20".into();
+        let games = &mut app.scan_result.as_mut().unwrap().games;
+        let long_id = games[0].app_id;
+        for (game, seconds) in games.iter_mut().zip([40 * 3600, 1800, 0]) {
+            game.playtime_minutes = Some(180);
+            game.hltb = Some(HltbData {
+                main_story_seconds: Some(seconds),
+                main_extra_seconds: None,
+                completionist_seconds: None,
+                source: HltbSource::ManualOverride,
+            });
+        }
+        app.inject_prepared_snapshot();
+        let session = app.recommend_request_from_inputs().unwrap();
+        assert_eq!(session.intent, RecommendIntent::Session);
+        for finish in [false, true] {
+            app.recommend_finish_short_game = finish;
+            let request = app.recommend_request_from_inputs().unwrap();
+            let snapshot = app.prepared_snapshot.as_ref().unwrap();
+            let expected = recommend_personalized(
+                &snapshot.games,
+                &request,
+                snapshot.preferences.as_ref().unwrap(),
+                &snapshot.taste.as_ref().unwrap().taste,
+                snapshot.progress.as_ref().unwrap(),
+                chrono::Utc::now().timestamp(),
+            );
+            assert_eq!(expected.iter().any(|r| r.app_id == long_id), !finish);
+            app.start_recommend_preview();
+            for _ in 0..1000 {
+                if !app.recommend_loading {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                app.tick();
+            }
+            assert!(!app.recommend_loading);
+            assert_eq!(
+                serde_json::to_value(&app.recommend_results).unwrap(),
+                serde_json::to_value(&expected).unwrap()
+            );
+            assert_eq!(
+                app.recommend_request_at_start.as_ref().unwrap().intent,
+                request.intent
+            );
+        }
+        assert_ne!(
+            app.recommend_fp(&session),
+            app.recommend_fp(&app.recommend_request_from_inputs().unwrap())
+        );
         assert!(!temp.path().join("cache").exists());
     }
 
