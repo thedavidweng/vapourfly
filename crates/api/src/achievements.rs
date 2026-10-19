@@ -133,6 +133,13 @@ fn batch_ids(app_ids: &[u32], limit: usize) -> Result<Vec<u32>> {
         .collect())
 }
 
+fn provider_stop(status: Status) -> bool {
+    matches!(
+        status,
+        Status::Unauthorized | Status::RateLimited | Status::TransportFailure | Status::HttpError
+    )
+}
+
 fn batch_lock(cache: &DiskCache, id: &str) -> Result<std::fs::File> {
     let path = cache.path_for(SOURCE, id).with_extension("lock");
     std::fs::create_dir_all(path.parent().expect("cache source directory"))
@@ -503,19 +510,21 @@ pub fn refresh_batch(
             && let Some(cached) = load(cache, id, app_id)?
             && !cached.automatic_refresh_due()
         {
+            let stop = provider_stop(cached.status);
+            if stop {
+                stop_reason = Some(cached.status);
+                pending = selected.len() - index - 1;
+            }
             progress.push(cached);
+            if stop {
+                break;
+            }
             continue;
         }
         if let Some(current) = refresh(cache, http, api_key, id, app_id, options.offline, control)?
         {
             attempted += 1;
-            let stop = matches!(
-                current.status,
-                Status::Unauthorized
-                    | Status::RateLimited
-                    | Status::TransportFailure
-                    | Status::HttpError
-            );
+            let stop = provider_stop(current.status);
             if stop {
                 stop_reason = Some(current.status);
             }
@@ -1081,8 +1090,8 @@ mod tests {
                 Some("secret"),
                 ID,
                 BatchOptions {
-                    app_ids: &[10],
-                    limit: 1,
+                    app_ids: &[10, 11, 12],
+                    limit: 3,
                     force: false,
                     offline: false,
                 },
@@ -1090,6 +1099,11 @@ mod tests {
             )
             .unwrap();
             assert_eq!(summary.attempted, 0, "automatic failure cooldown");
+            assert_eq!(
+                summary.pending, 2,
+                "provider cooldown also holds queued games"
+            );
+            assert_eq!(summary.stop_reason, Some(expected));
             assert_eq!(calls.load(Ordering::SeqCst), calls_before);
         }
         let temp = tempfile::tempdir().unwrap();

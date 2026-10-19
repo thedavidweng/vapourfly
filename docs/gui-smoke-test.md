@@ -248,3 +248,28 @@ not claimed here.
   and no requests occur. Unknown data remains unknown.
 - Exercise opening/closing the sheet with keyboard and controller on the
   target device. Mock tests do not establish device or provider acceptance.
+
+## Bounded achievement coverage acceptance
+
+- Scan an account with 1,000+ owned games. The Library must render without
+  waiting for the bounded achievement worker. Select a game while it runs;
+  the existing worker must not be replaced by a competing inspection job.
+- Open Data Sources. Steam achievement coverage labels the active subset,
+  available/stale/unavailable/missing counts, pending games and stop reason.
+  **Refresh active games** prioritizes the selected owned game, then recent
+  owned games (at most 12 games and 24 paced requests, no retries).
+- Cancel during refresh. Cached evidence remains; controls stay busy until
+  worker exit. Change account during refresh: old coverage disappears and
+  old results never populate the new account. Toggle offline during live work
+  to cancel subsequent requests.
+- With no key or offline mode, scan/inspect cached evidence without network
+  requests or cache writes; live-refresh controls are disabled offline/demo.
+- Compare cache counts with `accounts achievement-coverage --format json`.
+  A restricted or failing provider must not become successful zero progress.
+
+Automated evidence: the 1,500-game prepared-Library/pending-worker test,
+offline/no-key worker test, cancellation/offline owner test and account-switch
+result test exercise state handling. API controlled transports cover request
+limits and provider failures. These are not native renderer, real Steam key,
+privacy or hardware/controller acceptance; run the steps above on target
+devices with an authorized test account before claiming those gates.

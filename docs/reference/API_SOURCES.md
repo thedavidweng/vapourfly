@@ -287,9 +287,19 @@ Offline and no-key operations issue no requests and acquire no batch lock.
 Output contains coverage counts and stop status, not account identifiers,
 API keys or individual unlock history.
 
-This CLI/API slice does not yet add GUI Data Sources batch controls. Mock
-transport coverage proves request bounds and failure handling; authorized
-live-provider/privacy checks and native-device acceptance remain separate.
+The GUI starts the same bounded batch after a local Library scan, without
+waiting for achievement responses before first paint. Data Sources shows
+selected/available/stale/unavailable/missing counts, pending games and a stop
+reason, with explicit **Refresh active games** and **Cancel** controls.
+Inspecting a game reads its account-scoped cache immediately; it does not
+supersede an existing batch. Cancellation retains the worker owner until exit.
+Account switches cancel the old worker and discard its visible coverage;
+switching offline cancels live work. Automatic refresh respects provider-wide
+failure cooldown before starting other games; explicit refresh can retry.
+
+Controlled transport and GUI state tests prove bounded requests, nonblocking
+prepared-Library access and cancellation. Authorized live-provider/privacy
+checks and native-device acceptance remain separate and unverified.
 
 ## Caching
 

@@ -516,6 +516,49 @@ impl GuiRoot {
                                 cx,
                             )),
                     )
+                    .child(
+                        setting_row(
+                            "Steam achievement coverage",
+                            self.app.achievement_coverage_summary(),
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    Button::new("refresh-achievement-coverage")
+                                        .outline()
+                                        .icon(IconName::RefreshCw)
+                                        .label("Refresh active games")
+                                        .loading(self.app.achievement_refreshing())
+                                        .disabled(
+                                            offline || self.app.ui_demo
+                                                || self.app.achievement_refreshing()
+                                                || self.app.scan_result.is_none(),
+                                        )
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.app.start_achievement_coverage(true);
+                                            this.arm_poll(cx);
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new("cancel-achievement-coverage")
+                                        .ghost()
+                                        .label("Cancel")
+                                        .disabled(!self.app.achievement_refreshing())
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.app.cancel_achievement_refresh();
+                                            cx.notify();
+                                        })),
+                                ),
+                            cx,
+                        ),
+                    )
+                    .child(widgets::caption(
+                        "Steam user-key API · Selected owned game first, then recent games · Up to 12 games, 24 paced requests, no retries.",
+                        cx,
+                    ))
+                    .when_some(self.app.achievement_msg.clone(), |this, message| {
+                        this.child(widgets::caption(message, cx))
+                    })
                     .when_some(self.app.cache_refresh_msg.clone(), |this, msg| {
                         this.child(
                             h_flex()
