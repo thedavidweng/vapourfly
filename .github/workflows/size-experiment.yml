@@ -82,13 +82,12 @@ jobs:
                   entry.compress_type = zipfile.ZIP_DEFLATED
                   archive.writestr(entry, path.read_bytes(), compresslevel=9)
           PY
-            comparison=()
+            report_command=(python3 scripts/size-report.py --stage "$stage" --asset "$stage.zip"
+              --target "$target" --revision "$GITHUB_SHA" --profile "$profile" --toolchain 1.99)
             if [[ "$profile" == release-size ]]; then
-              comparison=(--baseline size-experiment/report-release.json)
+              report_command+=(--baseline size-experiment/report-release.json)
             fi
-            python3 scripts/size-report.py --stage "$stage" --asset "$stage.zip" \
-              --target "$target" --revision "$GITHUB_SHA" --profile "$profile" \
-              --toolchain 1.99 "${comparison[@]}" --out "size-experiment/report-$profile"
+            "${report_command[@]}" --out "size-experiment/report-$profile"
             cmp Cargo.lock size-experiment/Cargo.lock
           done
           cat size-experiment/report-release-size.md >> "$GITHUB_STEP_SUMMARY"
