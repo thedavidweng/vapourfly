@@ -4,6 +4,26 @@ Manual testing steps for the Vapourfly GUI. Automated unit tests cover app
 creation, fixture scanning, navigation contract, and playtime formatting; this
 document covers the interactive flows that require a running GUI.
 
+## Story Completion And Progress Filters
+
+Automated store/rule/CLI/GUI-state tests are not native interaction evidence.
+Run these steps on the target device before recording #31 native acceptance:
+
+1. Offline, select an account and scan. Open an owned game's Library details.
+   Activate **Mark story completed** with keyboard Enter/Space, then controller A.
+   Verify **Story completed (local)** appears independently of the achievement
+   count and Perfected state. Rescan/restart and confirm persistence.
+2. Activate **Undo story completion**; confirm it disappears and survives rescan.
+   Verify **Filters > Progress > Unfinished**, then **Near-perfect**, and removable
+   filter chips. Unknown activity excludes Unfinished, but known playtime alone
+   can qualify. Near-perfect requires fresh authoritative 90%..<100% counts,
+   not merely high playtime; missing/stale counts never qualify.
+3. Switch accounts: old marks/counts must not appear before or after the next scan.
+   Switch back and confirm the original account's marks remain. Verify the progress
+   coverage caption and explicit corrupt-record error state. Demo edits are disabled.
+4. Compare with `accounts progress` table/JSON and `--story completed|undo` offline.
+   Confirm no Steam configuration, achievements or Steam Collections changed.
+
 ## Prerequisites
 
 - Build the GUI: `cargo build -p vapourfly-gui` (GPUI + gpui-component desktop shell)

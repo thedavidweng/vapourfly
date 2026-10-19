@@ -288,6 +288,7 @@ pub(crate) struct PreparedLibrarySnapshot {
     games: Arc<[Game]>,
     /// Manual overrides snapshot (for non-Default reclassification in background jobs).
     overrides: ManualOverrides,
+    progress: Result<std::collections::BTreeMap<u32, vapourfly_core::progress::Summary>, String>,
 }
 
 pub(crate) struct VapourflyApp {
@@ -316,6 +317,8 @@ pub(crate) struct VapourflyApp {
     pub(crate) playlist_store_dir: Option<PathBuf>,
     /// Cache directory (temp dir in --ui-demo mode, default otherwise).
     pub(crate) cache_dir: PathBuf,
+    pub(crate) story_dir: PathBuf,
+    pub(crate) progress_filter: vapourfly_core::progress::Filter,
     /// Optional override for the manual overrides JSON path. In --ui-demo mode
     /// this points inside the demo temp root so the real platform default path
     /// is never read.
@@ -1178,6 +1181,12 @@ impl VapourflyApp {
 
             config,
             playlist_store_dir,
+            story_dir: demo_root
+                .as_ref()
+                .map_or_else(vapourfly_core::config::default_story_dir, |root| {
+                    root.join("personal/story")
+                }),
+            progress_filter: Default::default(),
             cache_dir: cache_root,
             manual_overrides_path,
             demo_root,
@@ -2468,6 +2477,91 @@ impl VapourflyApp {
         }
     }
 
+    pub(crate) fn game_progress(&self, app_id: u32) -> Option<&vapourfly_core::progress::Summary> {
+        let snapshot = self.prepared_snapshot.as_ref()?;
+        if snapshot.fingerprint != self.library_prepare_fingerprint() {
+            return None;
+        }
+        snapshot.progress.as_ref().ok()?.get(&app_id)
+    }
+
+    pub(crate) fn game_progress_summary(&self, app_id: u32) -> String {
+        let Some(snapshot) = self
+            .prepared_snapshot
+            .as_ref()
+            .filter(|s| s.fingerprint == self.library_prepare_fingerprint())
+        else {
+            return "Progress evidence loading".into();
+        };
+        match &snapshot.progress {
+            Ok(progress) => progress.get(&app_id).map_or_else(
+                || "Progress unavailable: game is not in the prepared Library".into(),
+                vapourfly_core::progress::Summary::label,
+            ),
+            Err(error) => format!("Progress unavailable: {error}"),
+        }
+    }
+
+    pub(crate) fn progress_coverage(&self) -> String {
+        let Some(snapshot) = self
+            .prepared_snapshot
+            .as_ref()
+            .filter(|s| s.fingerprint == self.library_prepare_fingerprint())
+        else {
+            return "Progress evidence loading".into();
+        };
+        match &snapshot.progress {
+            Ok(progress) => format!(
+                "Progress: {}/{} with achievement counts; {} unknown activity. Story marks are local; near-perfect requires fresh 90%..<100%.",
+                progress
+                    .values()
+                    .filter(|p| p.achievements.is_some())
+                    .count(),
+                progress.len(),
+                progress
+                    .values()
+                    .filter(|p| p.activity == vapourfly_core::progress::Activity::Unknown)
+                    .count(),
+            ),
+            Err(error) => format!("Progress unavailable: {error}"),
+        }
+    }
+
+    pub(crate) fn set_story_completed(
+        &mut self,
+        app_id: u32,
+        completed: bool,
+    ) -> Result<(), String> {
+        if self.ui_demo {
+            return Err("Story edits are disabled in demo mode.".into());
+        }
+        let account = self.active_account().ok_or("Select a Steam account.")?;
+        if self
+            .scan_result
+            .as_ref()
+            .is_none_or(|s| s.account != account.account_name)
+            || self.game_progress(app_id).is_none()
+        {
+            return Err("Prepare the selected account's owned Library first.".into());
+        }
+        vapourfly_core::progress::set_story_completed(
+            &self.story_dir,
+            &account.steam_id64,
+            app_id,
+            completed,
+        )
+        .map_err(|e| e.to_string())?;
+        if let Some(summary) = self
+            .prepared_snapshot
+            .as_mut()
+            .and_then(|s| s.progress.as_mut().ok())
+            .and_then(|p| p.get_mut(&app_id))
+        {
+            summary.story_completed = completed;
+        }
+        Ok(())
+    }
+
     /// Start the automatic background populate after a scan (ADR-0009):
     /// fetch missing/stale entries only, once per launch. Silent no-op in
     /// demo/offline mode or when a job is already running — the library is
@@ -2955,6 +3049,14 @@ impl VapourflyApp {
             sort_desc: self.library_sort_desc,
         };
         project_library_games(games, &filters)
+            .into_iter()
+            .filter(|game| {
+                self.progress_filter == vapourfly_core::progress::Filter::All
+                    || self
+                        .game_progress(game.app_id)
+                        .is_some_and(|p| p.matches(self.progress_filter))
+            })
+            .collect()
     }
 
     /// Reload source cache statuses from disk.
@@ -3179,13 +3281,15 @@ impl VapourflyApp {
         let scan_gen = self.scan_generation;
         let refresh_gen = self.cache_refresh_generation;
         let cache_dir = self.cache_dir.to_string_lossy();
+        let account = self.active_account().map(|a| a.steam_id64.as_str());
+        let story_dir = self.story_dir.to_string_lossy();
         let overrides = self
             .manual_overrides_path
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
         fingerprint_u64(&format!(
-            "prepare:scan_gen={scan_gen}:gen={refresh_gen}:cache={cache_dir}:ovr={overrides}"
+            "prepare:scan_gen={scan_gen}:gen={refresh_gen}:cache={cache_dir}:ovr={overrides}:account={account:?}:story={story_dir}"
         ))
     }
 
@@ -3219,10 +3323,26 @@ impl VapourflyApp {
             .unwrap_or_default();
         let cache_dir = self.cache_dir.clone();
         let overrides_path = self.manual_overrides_path.clone();
+        let story_dir = self.story_dir.clone();
+        let account = self
+            .active_account()
+            .filter(|a| {
+                self.scan_result
+                    .as_ref()
+                    .is_some_and(|s| s.account == a.account_name)
+            })
+            .map(|a| a.steam_id64.clone());
         let repaint = self.repaint.clone();
         std::thread::spawn(move || {
             let mut games = games;
             let cache = vapourfly_api::cache::DiskCache::new(cache_dir);
+            let progress = account
+                .as_deref()
+                .ok_or_else(|| "Scan the selected account's Library first.".to_string())
+                .and_then(|id| {
+                    vapourfly_api::achievements::library_progress(&cache, &story_dir, id, &games)
+                        .map_err(|e| e.to_string())
+                });
             vapourfly_api::enrichment::hydrate_from_cache(&mut games, &cache);
             // Load overrides off-frame so prepared_games never touches the
             // overrides file on the UI frame.
@@ -3246,6 +3366,7 @@ impl VapourflyApp {
                     fingerprint: fp,
                     games,
                     overrides,
+                    progress,
                 }),
             );
         });
@@ -3324,6 +3445,7 @@ impl VapourflyApp {
             self.achievement_pending = 0;
             match result {
                 Ok((coverage, progress)) => {
+                    self.cache_refresh_generation = self.cache_refresh_generation.wrapping_add(1);
                     self.achievement_pending = coverage.pending;
                     self.achievement_coverage = Some(coverage);
                     for progress in progress {
@@ -3644,6 +3766,23 @@ impl VapourflyApp {
             .unwrap_or_default();
         let cache = vapourfly_api::cache::DiskCache::new(self.cache_dir.clone());
         vapourfly_api::enrichment::hydrate_from_cache(&mut games, &cache);
+        let progress = self
+            .active_account()
+            .filter(|a| {
+                self.scan_result
+                    .as_ref()
+                    .is_some_and(|s| s.account == a.account_name)
+            })
+            .ok_or_else(|| "Scan the selected account's Library first.".to_string())
+            .and_then(|a| {
+                vapourfly_api::achievements::library_progress(
+                    &cache,
+                    &self.story_dir,
+                    &a.steam_id64,
+                    &games,
+                )
+                .map_err(|e| e.to_string())
+            });
         let overrides = self.manual_overrides();
         apply_junk_flags(
             &mut games,
@@ -3656,6 +3795,7 @@ impl VapourflyApp {
             fingerprint: fp,
             games,
             overrides,
+            progress,
         });
     }
 
@@ -4656,6 +4796,7 @@ mod tests {
             fingerprint: fp,
             games: Arc::from(vec![]),
             overrides: ManualOverrides::default(),
+            progress: Ok(Default::default()),
         });
 
         // Bump the generation — fingerprint changes, snapshot is stale.
@@ -4704,6 +4845,7 @@ mod tests {
             fingerprint: fp,
             games: Arc::from(vec![sentinel.clone()]),
             overrides: ManualOverrides::default(),
+            progress: Ok(Default::default()),
         });
 
         // Simulate a rescan accepted with the SAME game count but changed
@@ -6195,6 +6337,94 @@ mod tests {
         app.scan_result.as_mut().unwrap().account = "alpha".into();
         app.inject_prepared_snapshot();
         app
+    }
+
+    #[test]
+    #[serial]
+    fn story_progress_gui_edit_undo_filters_and_account_switch_are_offline_safe() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(&temp.path().join("cache"));
+        app.story_dir = temp.path().join("personal/story");
+        app.ui_demo = false;
+        app.offline_mode = true;
+        let game = &mut app.scan_result.as_mut().unwrap().games[0];
+        game.playtime_minutes = Some(10);
+        let id = game.app_id;
+        app.inject_prepared_snapshot();
+        app.progress_filter = vapourfly_core::progress::Filter::Unfinished;
+        assert!(app.filtered_games().iter().any(|g| g.app_id == id));
+        app.set_story_completed(id, true).unwrap();
+        assert!(app.game_progress(id).unwrap().story_completed);
+        assert!(!app.game_progress(id).unwrap().perfected());
+        assert!(!app.filtered_games().iter().any(|g| g.app_id == id));
+        app.inject_prepared_snapshot();
+        assert!(
+            app.game_progress(id).unwrap().story_completed,
+            "persists across prepare"
+        );
+        app.set_story_completed(id, false).unwrap();
+        assert!(app.filtered_games().iter().any(|g| g.app_id == id));
+        app.progress_filter = vapourfly_core::progress::Filter::NearPerfect;
+        assert!(
+            app.filtered_games().is_empty(),
+            "missing achievements are not near-perfect"
+        );
+        app.set_story_completed(id, true).unwrap();
+        app.detected_accounts.push(SteamAccount {
+            steam_id64: "76561198000000002".into(),
+            account_name: "bravo".into(),
+            persona_name: "Bravo".into(),
+            most_recent: false,
+        });
+        app.config.as_mut().unwrap().account = Some("bravo".into());
+        assert!(
+            app.game_progress(id).is_none(),
+            "reject old account before next tick"
+        );
+        assert!(
+            app.set_story_completed(id, false).is_err(),
+            "old scan cannot edit new account"
+        );
+        app.scan_result.as_mut().unwrap().account = "bravo".into();
+        app.inject_prepared_snapshot();
+        assert!(!app.game_progress(id).unwrap().story_completed);
+        app.config.as_mut().unwrap().account = Some("alpha".into());
+        app.scan_result.as_mut().unwrap().account = "alpha".into();
+        app.inject_prepared_snapshot();
+        assert!(app.game_progress(id).unwrap().story_completed);
+        app.ui_demo = true;
+        assert!(app.set_story_completed(id, false).is_err());
+        assert!(
+            !temp.path().join("cache").exists(),
+            "offline edits do not create provider cache or requests"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn story_progress_gui_details_distinguish_failure_from_loading() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(&temp.path().join("cache"));
+        app.story_dir = temp.path().join("personal/story");
+        app.ui_demo = false;
+        let id = app.scan_result.as_ref().unwrap().games[0].app_id;
+        app.inject_prepared_snapshot();
+        app.set_story_completed(id, true).unwrap();
+        let record = app
+            .story_dir
+            .join("76561198000000001")
+            .join(format!("{id}.json"));
+        std::fs::write(record, "not json").unwrap();
+        app.inject_prepared_snapshot();
+        assert!(
+            app.game_progress_summary(id)
+                .starts_with("Progress unavailable:")
+        );
+        assert!(!app.game_progress_summary(id).contains("loading"));
+        assert!(app.game_progress(id).is_none());
+        assert!(app.set_story_completed(id, false).is_err());
+        app.prepared_snapshot = None;
+        assert_eq!(app.game_progress_summary(id), "Progress evidence loading");
     }
 
     #[test]

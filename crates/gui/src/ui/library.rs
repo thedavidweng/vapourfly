@@ -361,6 +361,9 @@ impl GuiRoot {
             .and_then(|s| s.developers.first().cloned());
 
         let similar = entity.clone();
+        let story_action = entity.clone();
+        let progress = self.app.game_progress(id);
+        let story_completed = progress.is_some_and(|p| p.story_completed);
         let demo = self.app.ui_demo;
         let installed = game.installed;
         let name = game.name.clone();
@@ -443,6 +446,27 @@ impl GuiRoot {
                             }),
                     ),
             )
+            .child(
+                Button::new("detail-story")
+                    .outline()
+                    .label(if story_completed {
+                        "Undo story completion"
+                    } else {
+                        "Mark story completed"
+                    })
+                    .disabled(self.app.ui_demo || progress.is_none())
+                    .on_click(move |_, window, cx| {
+                        story_action.update(cx, |this, cx| {
+                            match this.app.set_story_completed(id, !story_completed) {
+                                Ok(()) => {
+                                    window.push_notification("Local story completion updated", cx);
+                                }
+                                Err(error) => window.push_notification(error, cx),
+                            }
+                            cx.notify();
+                        });
+                    }),
+            )
             .when_some(description, |this, text| {
                 this.child(
                     div()
@@ -468,6 +492,7 @@ impl GuiRoot {
                     )
                     .item("Last played", last_played, 1)
                     .item("Achievements", self.app.achievement_summary(id), 2)
+                    .item("Progress", self.app.game_progress_summary(id), 2)
                     .item(
                         "Time to beat",
                         hltb_minutes(game).map_or_else(|| "—".to_string(), format_playtime),
@@ -506,6 +531,9 @@ impl GuiRoot {
     fn active_filter_labels(&self) -> Vec<(&'static str, String)> {
         let app = &self.app;
         let mut out = Vec::new();
+        if app.progress_filter != vapourfly_core::progress::Filter::All {
+            out.push(("progress", app.progress_filter.label().into()));
+        }
         if app.library_quick_view != QuickView::All {
             out.push(("preset", app.library_quick_view.label().to_string()));
         }
@@ -543,6 +571,7 @@ impl GuiRoot {
     fn clear_filter(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         let app = &mut self.app;
         match key {
+            "progress" => app.progress_filter = Default::default(),
             "preset" => {
                 app.apply_quick_view(QuickView::All);
                 self.reapply_scope();
@@ -569,6 +598,7 @@ impl GuiRoot {
     }
 
     fn reset_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.app.progress_filter = Default::default();
         self.app.apply_quick_view(QuickView::All);
         self.app.filter_not_junk = false;
         self.app.filter_not_hidden = false;
@@ -713,6 +743,12 @@ impl GuiRoot {
             .size_full()
             .child(widgets::page_header("Library", subtitle, actions, cx))
             .child(self.library_toolbar(cx))
+            .child(
+                div()
+                    .px(px(PAGE_PX))
+                    .pb_2()
+                    .child(widgets::caption(self.app.progress_coverage(), cx)),
+            )
             .child(self.active_filter_chips(cx))
             .child(body)
     }
@@ -845,6 +881,7 @@ impl GuiRoot {
             .content(move |_, _, cx| {
                 let app = &entity.read(cx).app;
                 let preset = app.library_quick_view;
+                let progress_filter = app.progress_filter;
                 let deck = app.filter_deck_compatible;
                 let controller = app.filter_controller_full;
                 let not_junk = app.filter_not_junk;
@@ -879,6 +916,34 @@ impl GuiRoot {
                     .w(px(340.))
                     .gap_4()
                     .p_1()
+                    .child(
+                        v_flex()
+                            .gap_2()
+                            .child(widgets::section_label("Progress", cx))
+                            .child(
+                                h_flex().gap_1p5().flex_wrap().children(
+                                    vapourfly_core::progress::Filter::ALL.into_iter().map(
+                                        |filter| {
+                                            let entity = entity.clone();
+                                            Button::new(SharedString::from(format!(
+                                                "progress-{}",
+                                                filter.label()
+                                            )))
+                                            .small()
+                                            .outline()
+                                            .label(filter.label())
+                                            .selected(progress_filter == filter)
+                                            .on_click(move |_, _, cx| {
+                                                entity.update(cx, |this, cx| {
+                                                    this.app.progress_filter = filter;
+                                                    cx.notify();
+                                                });
+                                            })
+                                        },
+                                    ),
+                                ),
+                            ),
+                    )
                     .child(
                         v_flex()
                             .gap_2()
