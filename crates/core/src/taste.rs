@@ -324,10 +324,9 @@ mod tests {
         samples.get_mut(&2).unwrap()[0].observed_at = Some(NOW - RECENT_SECONDS - 1);
         let mut games = games;
         games[1].playtime_2wks_minutes = None;
-        assert!(
-            derive(&games, &Preferences::new(), &samples, NOW)
-                .recent
-                .is_empty()
+        assert_eq!(
+            derive(&games, &Preferences::new(), &samples, NOW).recent,
+            [] as [TagStrength; 0]
         );
     }
 
@@ -352,8 +351,8 @@ mod tests {
         let mut g = game(1, "RPG", 600, 120);
         g.last_played_unix = Some(NOW + 1);
         let p = derive(&[g], &Preferences::new(), &BTreeMap::new(), NOW);
-        assert!(p.recent.is_empty());
-        assert!(!p.long_term.is_empty());
+        assert_eq!(p.recent, [] as [TagStrength; 0]);
+        assert_ne!(p.long_term, [] as [TagStrength; 0]);
         let mut g = game(1, "RPG", 0, 0);
         g.playtime_2wks_minutes = None;
         let samples = BTreeMap::from([(
@@ -366,10 +365,9 @@ mod tests {
                 last_played_at: Some(NOW),
             }],
         )]);
-        assert!(
-            derive(&[g], &Preferences::new(), &samples, NOW)
-                .recent
-                .is_empty()
+        assert_eq!(
+            derive(&[g], &Preferences::new(), &samples, NOW).recent,
+            [] as [TagStrength; 0]
         );
     }
 
@@ -379,10 +377,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let id = "76561198000000000";
         let empty = Preferences::new();
-        assert!(
-            derive(&games[..1], &empty, &BTreeMap::new(), NOW)
-                .long_term
-                .is_empty()
+        assert_eq!(
+            derive(&games[..1], &empty, &BTreeMap::new(), NOW).long_term,
+            [] as [TagStrength; 0]
         );
         preferences::set(
             root.path(),
@@ -396,7 +393,7 @@ mod tests {
         let p = derive(&games, &prefs, &BTreeMap::new(), NOW);
         assert_eq!(p.long_term[0].tag, "strategy");
         assert!((p.long_term[1].strength - 1.0 / 3.0).abs() < 1e-10);
-        assert!(p.recent.is_empty());
+        assert_eq!(p.recent, [] as [TagStrength; 0]);
         preferences::set(root.path(), id, 1, None, NOW).unwrap();
         assert_eq!(
             derive(
@@ -428,10 +425,9 @@ mod tests {
         assert_eq!(first.coverage.eligible_titles, 3);
         games[1].is_hidden = true;
         games[2].is_junk = true;
-        assert!(
-            derive(&games, &Preferences::new(), &BTreeMap::new(), NOW)
-                .long_term
-                .is_empty()
+        assert_eq!(
+            derive(&games, &Preferences::new(), &BTreeMap::new(), NOW).long_term,
+            [] as [TagStrength; 0]
         );
     }
 }

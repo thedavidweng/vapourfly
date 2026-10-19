@@ -6558,7 +6558,10 @@ mod tests {
             game.is_junk = false;
         }
         app.inject_prepared_snapshot();
-        assert!(app.taste_profile().unwrap().taste.long_term.is_empty());
+        assert_eq!(
+            app.taste_profile().unwrap().taste.long_term,
+            [] as [vapourfly_core::taste::TagStrength; 0]
+        );
         let id = app
             .prepared_snapshot
             .as_ref()
@@ -6570,10 +6573,19 @@ mod tests {
             .app_id;
         app.edit_preference(Some(id), Some(Choice::Interested))
             .unwrap();
-        assert!(!app.taste_profile().unwrap().taste.long_term.is_empty());
-        assert!(app.taste_profile().unwrap().taste.recent.is_empty());
+        assert_ne!(
+            app.taste_profile().unwrap().taste.long_term,
+            [] as [vapourfly_core::taste::TagStrength; 0]
+        );
+        assert_eq!(
+            app.taste_profile().unwrap().taste.recent,
+            [] as [vapourfly_core::taste::TagStrength; 0]
+        );
         app.edit_preference(Some(id), None).unwrap();
-        assert!(app.taste_profile().unwrap().taste.long_term.is_empty());
+        assert_eq!(
+            app.taste_profile().unwrap().taste.long_term,
+            [] as [vapourfly_core::taste::TagStrength; 0]
+        );
         app.config.as_mut().unwrap().account = Some("76561198000000002".into());
         assert!(app.taste_profile().is_err());
     }

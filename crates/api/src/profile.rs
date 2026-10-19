@@ -132,16 +132,19 @@ mod tests {
         let activity = activity::load(&cache, ID).unwrap().unwrap();
         let profile = derive(ID, &[game()], &Preferences::new(), Some(&activity), NOW).unwrap();
         assert_eq!(profile.taste.long_term.len(), 1);
-        assert!(profile.taste.recent.is_empty());
+        assert_eq!(
+            profile.taste.recent,
+            [] as [vapourfly_core::taste::TagStrength; 0]
+        );
         assert!(profile.activity_status.contains("TransportFailure"));
         assert!(derive(OTHER, &[game()], &Preferences::new(), Some(&activity), NOW).is_err());
         assert!(activity::load(&cache, OTHER).unwrap().is_none());
-        assert!(
+        assert_eq!(
             derive(OTHER, &[game()], &Preferences::new(), None, NOW)
                 .unwrap()
                 .taste
-                .long_term
-                .is_empty()
+                .long_term,
+            [] as [vapourfly_core::taste::TagStrength; 0]
         );
         assert_eq!(
             profile,
@@ -181,7 +184,10 @@ mod tests {
         .unwrap();
         assert_eq!(scan.games.len(), 3);
         let p = derive(ID, &scan.games, &Preferences::new(), None, NOW).unwrap();
-        assert!(p.taste.long_term.is_empty());
+        assert_eq!(
+            p.taste.long_term,
+            [] as [vapourfly_core::taste::TagStrength; 0]
+        );
         assert!(p.taste.explanation.contains("No eligible titles"));
         assert!(
             !temp.path().join("profile").exists(),
