@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use vapourfly_core::error::{Result, VapourflyError};
 
-use crate::activity::{RefreshControl, encode_query, validate_account};
+use crate::activity::{RefreshControl, encode_query, validate_steam_id64};
 use crate::cache::DiskCache;
 use crate::http::{CacheRecord, HttpClient};
 
@@ -84,7 +84,7 @@ impl Progress {
 }
 
 fn key(id: &str, app_id: u32) -> Result<String> {
-    validate_account(id)?;
+    validate_steam_id64(id)?;
     if app_id == 0 {
         return Err(VapourflyError::InvalidInput(
             "AppID must be positive".into(),

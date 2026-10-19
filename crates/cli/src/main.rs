@@ -948,10 +948,10 @@ fn cmd_achievements(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let resolved = cli.resolved_config()?;
     let accounts = steam::detect_accounts(&resolved.steam_dir)?;
-    let account = steam::select_account(&accounts, resolved.account.as_deref())?;
+    let selected = steam::select_account(&accounts, resolved.account.as_deref())?;
     let scan = steam::scan_library(&steam::ScanOptions {
         steam_dir: resolved.steam_dir.clone(),
-        account: Some(account.steam_id64.clone()),
+        account: Some(selected.steam_id64.clone()),
         fixtures: cli.fixtures.clone(),
     })?;
     if !scan.games.iter().any(|g| g.app_id == app_id) {
@@ -963,13 +963,13 @@ fn cmd_achievements(
             &cache,
             &vapourfly_api::http::HttpClient::new(),
             resolved.steam_api_key.as_deref(),
-            &account.steam_id64,
+            &selected.steam_id64,
             app_id,
             cli.offline,
             &vapourfly_api::activity::RefreshControl::default(),
         )?
     } else {
-        vapourfly_api::achievements::load(&cache, &account.steam_id64, app_id)?
+        vapourfly_api::achievements::load(&cache, &selected.steam_id64, app_id)?
     };
     match format {
         OutputFormat::Table => {
