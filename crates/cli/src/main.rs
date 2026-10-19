@@ -2262,11 +2262,16 @@ fn scan_personal_library(
     paths: &PersonalPaths,
 ) -> Result<ScanResult, Box<dyn std::error::Error>> {
     let resolved = cli.resolved_config()?;
-    let selected = selected_preference_account(cli)?;
+    // Validate with fixed diagnostics, without passing private account metadata
+    // through the scan result. The workflow resolves the same configured choice.
+    let accounts = steam::detect_accounts(&resolved.steam_dir)
+        .map_err(|_| PersonalSelectionError::Discovery)?;
+    steam::select_account(&accounts, resolved.account.as_deref())
+        .map_err(|_| PersonalSelectionError::Selection)?;
     Ok(vapourfly_api::workflow::prepare(
         &vapourfly_api::workflow::WorkflowOptions {
             steam_dir: resolved.steam_dir,
-            account: Some(selected.steam_id64),
+            account: resolved.account,
             fixtures: cli.fixtures.clone(),
             junk_mode: JunkMode::Default,
             offline: cli.offline,
