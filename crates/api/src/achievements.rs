@@ -182,6 +182,20 @@ pub fn batch_status(cache: &DiskCache, id: &str, app_ids: &[u32]) -> Result<Batc
 }
 
 impl Progress {
+    /// Only complete authoritative counts establish completion evidence.
+    pub fn completion_evidence(&self) -> Option<vapourfly_core::progress::AchievementEvidence> {
+        match (self.status, self.unlocked, self.total) {
+            (Status::Available, Some(unlocked), Some(total)) if total > 0 && unlocked <= total => {
+                Some(vapourfly_core::progress::AchievementEvidence {
+                    unlocked,
+                    total,
+                    stale: self.stale(),
+                })
+            }
+            _ => None,
+        }
+    }
+
     pub fn automatic_refresh_due(&self) -> bool {
         self.stale()
             && (matches!(self.status, Status::Available | Status::NoAchievements)
@@ -228,6 +242,27 @@ impl Progress {
             },
         )
     }
+}
+
+/// Cache-only Library progress shared by CLI and the GUI background prepare.
+pub fn library_progress(
+    cache: &DiskCache,
+    story_root: &std::path::Path,
+    id: &str,
+    games: &[vapourfly_core::models::Game],
+) -> Result<BTreeMap<u32, vapourfly_core::progress::Summary>> {
+    validate_steam_id64(id)?;
+    games
+        .iter()
+        .map(|game| {
+            let story = vapourfly_core::progress::story_completed(story_root, id, game.app_id)?;
+            let evidence = load(cache, id, game.app_id)?.and_then(|p| p.completion_evidence());
+            Ok((
+                game.app_id,
+                vapourfly_core::progress::Summary::new(game.playtime_minutes, story, evidence),
+            ))
+        })
+        .collect()
 }
 
 fn validate_request(id: &str, app_id: u32) -> Result<()> {
@@ -594,6 +629,61 @@ mod tests {
             checked_at: Utc::now(),
             fetched_at: Some(Utc::now()),
         }
+    }
+
+    #[test]
+    fn story_progress_uses_cache_only_and_never_infers_from_unsupported_or_failed_counts() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = DiskCache::new(temp.path().join("cache"));
+        let story_root = temp.path().join("personal/story");
+        let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../data/fixtures/steam_minimal");
+        let scan = vapourfly_core::steam::scan_library(&vapourfly_core::steam::ScanOptions {
+            steam_dir: fixtures,
+            account: Some("76561198000000000".into()),
+            fixtures: None,
+        })
+        .unwrap();
+        let game = scan.games.first().unwrap();
+        let mut p = progress();
+        p.app_id = game.app_id;
+        for status in [
+            Status::NoAchievements,
+            Status::RestrictedOrUnavailable,
+            Status::MissingSchema,
+            Status::Incomplete,
+            Status::RateLimited,
+        ] {
+            p.status = status;
+            assert!(p.completion_evidence().is_none(), "{status:?}");
+        }
+        p.status = Status::Available;
+        cache
+            .put(&CacheRecord {
+                source: SOURCE.into(),
+                key: format!("{ID}-{}", game.app_id),
+                data: p,
+                fetched_at: Utc::now(),
+                ttl: TTL,
+                stale: false,
+                etag: None,
+            })
+            .unwrap();
+        vapourfly_core::progress::set_story_completed(&story_root, ID, game.app_id, true).unwrap();
+        let summary = library_progress(&cache, &story_root, ID, &scan.games).unwrap();
+        let row = &summary[&game.app_id];
+        assert!(row.story_completed);
+        assert_eq!(row.achievements.unwrap().unlocked, 1);
+        assert!(!row.perfected());
+        let json = serde_json::to_string(&summary).unwrap();
+        assert!(!json.contains(ID) && !json.contains("private-unlock-history"));
+        let other = library_progress(&cache, &story_root, OTHER, &scan.games).unwrap();
+        assert!(!other[&game.app_id].story_completed);
+        assert!(other[&game.app_id].achievements.is_none());
+        assert!(
+            !story_root.join(OTHER).exists(),
+            "reads do not create another account's state"
+        );
     }
 
     #[test]

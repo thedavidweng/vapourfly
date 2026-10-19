@@ -263,6 +263,18 @@ enum Commands {
 enum AccountsAction {
     /// List detected accounts.
     List,
+    /// Inspect local story/achievement evidence, optionally mark or undo story completion.
+    Progress {
+        /// Owned AppID; omit to inspect/filter the whole local Library.
+        app_id: Option<u32>,
+        /// Set or undo the local narrative mark (never a Steam write).
+        #[arg(long, value_enum, requires = "app_id")]
+        story: Option<StoryAction>,
+        #[arg(long, value_enum, default_value = "all")]
+        filter: ProgressFilter,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Inspect cached official achievement progress for an owned AppID.
     Achievements {
         app_id: u32,
@@ -291,6 +303,29 @@ enum AccountsAction {
         #[command(subcommand)]
         action: ActivityAction,
     },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum StoryAction {
+    Completed,
+    Undo,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ProgressFilter {
+    All,
+    Unfinished,
+    NearPerfect,
+}
+
+impl From<ProgressFilter> for vapourfly_core::progress::Filter {
+    fn from(value: ProgressFilter) -> Self {
+        match value {
+            ProgressFilter::All => Self::All,
+            ProgressFilter::Unfinished => Self::Unfinished,
+            ProgressFilter::NearPerfect => Self::NearPerfect,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -622,6 +657,12 @@ fn main() {
         Commands::Doctor => cmd_doctor(&cli),
         Commands::Accounts { action } => match action {
             AccountsAction::List => cmd_accounts_list(&cli),
+            AccountsAction::Progress {
+                app_id,
+                story,
+                filter,
+                format,
+            } => cmd_progress(&cli, *app_id, *story, *filter, *format),
             AccountsAction::Achievements {
                 app_id,
                 refresh,
@@ -958,6 +999,74 @@ fn section_status(section: &vapourfly_api::activity::ActivitySection) -> String 
         "fresh"
     };
     format!("{availability}; {freshness}")
+}
+
+fn cmd_progress(
+    cli: &Cli,
+    app_id: Option<u32>,
+    story: Option<StoryAction>,
+    filter: ProgressFilter,
+    format: OutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resolved = cli.resolved_config()?;
+    let accounts = steam::detect_accounts(&resolved.steam_dir)?;
+    let selected = steam::select_account(&accounts, resolved.account.as_deref())?;
+    let scan = steam::scan_library(&steam::ScanOptions {
+        steam_dir: resolved.steam_dir,
+        account: Some(selected.steam_id64.clone()),
+        fixtures: cli.fixtures.clone(),
+    })?;
+    if app_id.is_some_and(|id| !scan.games.iter().any(|g| g.app_id == id)) {
+        return Err("AppID is not in the selected account's local Library".into());
+    }
+    let story_root = config::default_story_dir();
+    if let (Some(id), Some(action)) = (app_id, story) {
+        vapourfly_core::progress::set_story_completed(
+            &story_root,
+            &selected.steam_id64,
+            id,
+            matches!(action, StoryAction::Completed),
+        )?;
+    }
+    let cache = vapourfly_api::cache::DiskCache::new(config::default_cache_dir());
+    let progress = vapourfly_api::achievements::library_progress(
+        &cache,
+        &story_root,
+        &selected.steam_id64,
+        &scan.games,
+    )?;
+    let rows: Vec<_> = scan
+        .games
+        .iter()
+        .filter_map(|game| {
+            let summary = progress.get(&game.app_id)?;
+            (app_id.is_none_or(|id| id == game.app_id) && summary.matches(filter.into()))
+                .then_some((game.app_id, summary))
+        })
+        .collect();
+    match format {
+        OutputFormat::Table => {
+            println!(
+                "Progress evidence: {}/{} games; near-perfect uses fresh authoritative 90%..<100%; story marks are local",
+                progress
+                    .values()
+                    .filter(|p| p.achievements.is_some())
+                    .count(),
+                progress.len()
+            );
+            for (id, summary) in rows {
+                println!("{id}: {}", summary.label());
+            }
+        }
+        OutputFormat::Json => {
+            let rows: Vec<_> = rows
+                .into_iter()
+                .map(|(id, summary)| serde_json::json!({"app_id":id,"progress":summary}))
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&rows)?);
+        }
+    }
+    Ok(())
 }
 
 fn cmd_achievements(
@@ -2416,6 +2525,44 @@ fn print_match_counts(report: &vapourfly_core::models::PlaylistMatchReport) {
 mod tests {
     use super::*;
     use vapourfly_core::models::Playlist;
+
+    #[test]
+    fn story_progress_cli_exposes_reversible_edits_and_evidence_filters() {
+        for action in ["completed", "undo"] {
+            let cli = Cli::try_parse_from([
+                "vapourfly",
+                "--offline",
+                "accounts",
+                "progress",
+                "730",
+                "--story",
+                action,
+                "--format",
+                "json",
+            ])
+            .unwrap();
+            assert!(matches!(
+                cli.command,
+                Commands::Accounts {
+                    action: AccountsAction::Progress {
+                        app_id: Some(730),
+                        story: Some(_),
+                        ..
+                    }
+                }
+            ));
+        }
+        assert!(
+            Cli::try_parse_from(["vapourfly", "accounts", "progress", "--story", "completed"])
+                .is_err()
+        );
+        for filter in ["unfinished", "near-perfect"] {
+            assert!(
+                Cli::try_parse_from(["vapourfly", "accounts", "progress", "--filter", filter])
+                    .is_ok()
+            );
+        }
+    }
 
     #[test]
     fn achievement_coverage_parses_bounded_explicit_refresh() {

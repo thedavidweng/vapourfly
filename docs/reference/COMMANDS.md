@@ -44,6 +44,25 @@ These flags are available on all commands:
 
 ## Commands
 
+### Account Progress (Local And Cache-Only)
+
+```bash
+vapourfly accounts progress 730 --story completed
+vapourfly accounts progress 730 --story undo
+vapourfly --offline accounts progress --filter unfinished
+vapourfly accounts progress --filter near-perfect --format json
+```
+
+With no AppID, list/filter the selected account's owned Library. `--story`
+requires an owned AppID and changes only Vapourfly's local narrative mark,
+never Steam files or achievements. Unfinished excludes marked stories and
+achievement Perfected games, and requires known activity evidence. Near-perfect
+requires fresh authoritative achievement counts in [90%, 100%). Missing data
+does not match either filter. Table output includes evidence coverage; JSON
+contains AppID and progress only, without account identifiers or unlock history.
+No network requests or API credentials are required. Local marks survive cache
+clears; corrupt records report an error instead of silently losing the mark.
+
 ### `vapourfly doctor`
 
 Diagnose the Steam installation, accounts, credentials, and cache.

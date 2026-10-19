@@ -52,6 +52,33 @@ shipped desktop GUI is a GPUI application using gpui-component.
 | Dynamic collection templates | Yes | Yes | CLI `collections dynamic <template>`; GUI Playlists **+ → From a template** generates `deck-session` / `finish-it`. Deck Session requires installed, not hidden, not junk, ProtonDB Gold-or-better, PCGW full controller support, and effective completion time within the requested session length. On success the GUI writes under stable slot ids `dynamic-deck-session` / `dynamic-finish-it` and overwrites on regenerate (ADR-0007). |
 | Editorial Moods | Yes | Yes | CLI `collections mood [name]`; GUI Playlists **+ → From a mood** lists the seven canonical Editorial Moods with opaque criteria (ADR-0004): Today's Biggest Hits, Indie Rising, Friday Party, Deck Guardians, Unopened Treasures, Weekend Marathon, Quick Round. On success the GUI writes under stable slot ids `mood-<id>` (one slot per mood) and overwrites on regenerate (ADR-0007). |
 
+## Local Story Completion And Library Progress
+
+Library game details offer **Mark story completed** / **Undo story completion**.
+This reversible narrative mark lives in Vapourfly's durable data directory,
+`personal/story/<SteamID64>/<AppID>.json`, not in the disposable provider cache
+or any Steam file. It requires a matching selected-account Library scan and is
+disabled in demo mode; offline operation requires no Web API key.
+
+The independent progress dimensions are Not played / In progress / Unknown,
+the manual Story completed mark, and authoritative achievement Perfected.
+Missing playtime is not zero. Neither playtime nor a narrative mark invents an
+achievement denominator; unsupported/unavailable/incomplete achievement data
+does not establish Perfected. Cached stale authoritative counts remain labeled.
+
+The Library **Filters > Progress** controls include **Unfinished** (known
+activity, neither locally story completed nor achievement Perfected) and
+**Near-perfect** (fresh authoritative counts at least 90% but below 100%).
+Unknown progress does not match either filter. Coverage and errors remain visible
+above the Library. Reads share the existing background prepare, with no network
+or per-frame disk reads. Rescan reloads externally edited local marks.
+
+CLI parity: `accounts progress [AppID] [--story completed|undo]`
+`[--filter all|unfinished|near-perfect] [--format table|json]`. It is cache-only
+even without `--offline`. JSON excludes account identity and unlock history.
+The automated fixture/state tests do not establish native keyboard/controller
+or authorized live Steam provider acceptance; those remain separately tracked.
+
 ## Current Data Flow
 
 1. `scan` reads local Steam files and builds the library model.
