@@ -207,6 +207,13 @@ The remaining name-keyed source (RAWG) skips placeholder-named games.
 
 ### Account activity snapshots
 
+`accounts inventory` and Data Sources > Personal records inspect only local
+selected-account storage. They show activity evidence separately from on-disk
+counts and local write timestamps; achievement counts do not infer per-game
+freshness or visibility. Missing data remains unknown. No provider requests,
+new files, credential values or per-game payload exports are produced. Inventory
+is not a clear operation; shared schema and game metadata remain separate.
+
 `accounts activity refresh` is an explicit, bounded operation. It uses the
 documented `IPlayerService/GetOwnedGames` and
 `IPlayerService/GetRecentlyPlayedGames` user-key interfaces, never extracts a

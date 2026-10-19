@@ -11,6 +11,7 @@ pub mod enrichment;
 pub mod http;
 pub mod igdb;
 pub mod pcgw;
+pub mod personal_data;
 pub mod profile;
 pub mod protondb;
 pub mod rawg;
