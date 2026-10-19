@@ -12,10 +12,44 @@
 //! - [`is_high_rating`]: true when RAWG rates ≥ 4.0 or IGDB rates ≥ 80,
 //!   evaluated as an independent OR over the two sources.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::models::Game;
 use crate::signal;
+
+/// L1-normalized profile mass covered by this game's canonical concepts.
+pub fn profile_affinity(tags: &BTreeSet<String>, strengths: &[crate::taste::TagStrength]) -> f32 {
+    let total: f64 = strengths.iter().map(|t| t.strength).sum();
+    if total == 0.0 {
+        return 0.0;
+    }
+    (strengths
+        .iter()
+        .filter(|t| tags.contains(&t.tag))
+        .map(|t| t.strength)
+        .sum::<f64>()
+        / total) as f32
+}
+
+/// Above-midpoint cached quality contributes at most one point; low/missing is neutral.
+pub fn quality(game: &Game) -> Option<f32> {
+    [
+        game.rawg
+            .as_ref()
+            .and_then(|r| r.rating_0_5)
+            .map(|r| r / 5.0),
+        game.igdb
+            .as_ref()
+            .and_then(|i| i.rating_0_100.or(i.total_rating_0_100))
+            .map(|r| r / 100.0),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|r| r.is_finite())
+    .map(|r| r.clamp(0.0, 1.0))
+    .max_by(f32::total_cmp)
+    .map(|q| ((q - 0.5) * 2.0).max(0.0))
+}
 
 /// Build a taste vector from the user's library.
 ///

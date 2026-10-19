@@ -44,7 +44,7 @@ fn relative(score: f32, best: f32) -> f32 {
 }
 
 fn match_label(score: f32) -> String {
-    format!("{:.0}% match", (score * 100.).clamp(0., 100.))
+    format!("{:.0}% relative fit", (score * 100.).clamp(0., 100.))
 }
 
 impl GuiRoot {
@@ -470,18 +470,14 @@ impl GuiRoot {
                 .child(widgets::empty_state(
                     IconName::Sparkles,
                     "What should you play tonight?",
-                    "Choose how much time you have, then generate a ranked shortlist from your backlog.",
+                    "Generate cache-only owned-library picks. Relative fit compares this result set, not probability or player percentiles.",
                     None,
                 ))
                 .into_any_element()
         } else {
             let featured = results.iter().take(3).enumerate().map(|(rank, rec)| {
                 let s = summary(rec.app_id);
-                let reason = rec
-                    .reasons
-                    .first()
-                    .map(|r| r.description.clone())
-                    .unwrap_or_default();
+                let reason = vapourfly_core::recommend::explanation(rec);
                 let id = rec.app_id;
                 let group = SharedString::from(format!("rec-top-{id}"));
                 let frame = div()
@@ -541,7 +537,6 @@ impl GuiRoot {
                                 div()
                                     .text_size(px(15.))
                                     .text_color(cx.theme().muted_foreground)
-                                    .line_clamp(2)
                                     .child(reason),
                             )
                             .child(
@@ -555,10 +550,19 @@ impl GuiRoot {
                                         s.hltb_minutes.map_or_else(|| "—".into(), format_playtime)
                                     ))
                                     .child("·")
-                                    .child(match s.playtime_minutes {
-                                        0 => "Unplayed".to_string(),
-                                        m => format!("{} played", format_playtime(m)),
-                                    })
+                                    .child(
+                                        match prepared
+                                            .as_ref()
+                                            .and_then(|games| games.iter().find(|g| g.app_id == id))
+                                            .and_then(|g| g.playtime_minutes)
+                                        {
+                                            None => "Local playtime unavailable".to_string(),
+                                            Some(0) => "No local playtime recorded".to_string(),
+                                            Some(m) => {
+                                                format!("{} local playtime", format_playtime(m))
+                                            }
+                                        },
+                                    )
                                     .when_some(s.rating_0_5, |this, r| {
                                         this.child("·").child(format!("{r:.1}★"))
                                     }),
@@ -569,11 +573,7 @@ impl GuiRoot {
             let rest = results.iter().enumerate().skip(3).map(|(ix, rec)| {
                 let s = summary(rec.app_id);
                 let id = rec.app_id;
-                let reason = rec
-                    .reasons
-                    .first()
-                    .map(|r| r.description.clone())
-                    .unwrap_or_default();
+                let reason = vapourfly_core::recommend::explanation(rec);
                 let content = h_flex()
                     .w_full()
                     .gap_4()
@@ -609,7 +609,6 @@ impl GuiRoot {
                                 div()
                                     .text_size(px(13.))
                                     .text_color(cx.theme().muted_foreground)
-                                    .truncate()
                                     .child(reason),
                             ),
                     )
@@ -639,7 +638,8 @@ impl GuiRoot {
                             .child(match_label(relative(rec.score, best))),
                     );
                 widgets::focus_row(("rec-row", id as usize), false, cx)
-                    .h(px(76.))
+                    .min_h(px(76.))
+                    .py_3()
                     .px_2()
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_game_sheet(id, window, cx);

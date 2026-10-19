@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Owned-library Recommendations now use canonical continuous account taste,
+  bounded quality/recency/explicit progress/feedback and deterministic variety.
+  Seed affects ties only, never relevance. CLI and GUI show all signed reasons
+  and coverage limitations; no completion inference from playtime/duration.
+  Story edits invalidate in-flight and displayed personalized picks.
+
 - Unreleased Rust profile API: `profile::derive` now requires the selected account's
   progress map after the activity snapshot argument. `AccountProfile` adds `traits`
   and `TasteProfile` adds `titles`; downstream struct literals must supply these

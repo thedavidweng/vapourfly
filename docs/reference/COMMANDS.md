@@ -245,7 +245,14 @@ vapourfly recommend --minutes 120 --count 5 --to-collection --dry-run
 vapourfly recommend --minutes 120 --count 5 --to-collection --confirm
 ```
 
-**Output columns (table):** App ID, Name, Score, Reasons.
+**Output columns (table):** App ID, Name, Score, signed Reasons and limitations.
+
+Ranking shares the selected account's cached canonical Taste Profile, activity,
+achievements and local Story completed/preferences with the GUI. Continuous
+affinity and bounded variety replace binary keywords/random relevance noise;
+`--seed` changes ties only. Unknown evidence is labeled, not treated as zero
+activity or completed story. Relative fit is not probability or a player
+percentile. This does not establish session-duration provider rights (#27/#36).
 
 Current CLI recommendations scan the library, hydrate from the local cache
 (ADR-0009), annotate junk flags, and then score games. Fetch failures degrade

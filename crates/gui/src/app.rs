@@ -20,7 +20,7 @@ use vapourfly_core::mood::{self, EditorialMood};
 use vapourfly_core::playlist;
 use vapourfly_core::playlist_store;
 use vapourfly_core::preferences::{self, Choice, Preferences};
-use vapourfly_core::recommend::recommend_with_preferences;
+use vapourfly_core::recommend::recommend_personalized;
 use vapourfly_core::signal;
 use vapourfly_core::steam::BackupInfo;
 use vapourfly_core::steam::backup::list_backups;
@@ -2681,6 +2681,13 @@ impl VapourflyApp {
             let profile = Arc::make_mut(profile);
             profile.traits = vapourfly_core::traits::derive(&profile.taste, progress);
         }
+        // A story edit changes ranking evidence; late pre-edit jobs cannot be accepted.
+        self.preferences_generation = self.preferences_generation.wrapping_add(1);
+        let rerun_recommend = self.recommend_loading || !self.recommend_results.is_empty();
+        self.clear_personalized_results();
+        if rerun_recommend {
+            self.start_recommend_preview();
+        }
         Ok(())
     }
 
@@ -2898,6 +2905,22 @@ impl VapourflyApp {
                 return;
             }
         };
+        let profile = match self.taste_profile() {
+            Ok(profile) => Arc::clone(profile),
+            Err(error) => {
+                self.recommend_loading = false;
+                self.error = Some(error);
+                return;
+            }
+        };
+        let progress = match &self.prepared_snapshot.as_ref().unwrap().progress {
+            Ok(progress) => progress.clone(),
+            Err(error) => {
+                self.recommend_loading = false;
+                self.error = Some(error.clone());
+                return;
+            }
+        };
         // The request is captured at start time (recommend_request_at_start)
         // so Match % is computed against the request the user actually
         // submitted, not the current inputs (e.g. if Deck mode changes mid-job).
@@ -2911,10 +2934,12 @@ impl VapourflyApp {
 
         let repaint = self.repaint.clone();
         std::thread::spawn(move || {
-            let results = recommend_with_preferences(
+            let results = recommend_personalized(
                 &games,
                 &request,
                 &preferences,
+                &profile.taste,
+                &progress,
                 chrono::Utc::now().timestamp(),
             );
             repaint.request();
@@ -4576,7 +4601,6 @@ pub(crate) fn execute_backup_restore(
 /// cards without keeping a borrow on the scan result.
 #[derive(Clone, Default)]
 pub(crate) struct GameSummary {
-    pub(crate) playtime_minutes: u32,
     pub(crate) hltb_minutes: Option<u32>,
     pub(crate) rating_0_5: Option<f32>,
     pub(crate) proton_tier: Option<ProtonTier>,
@@ -4585,7 +4609,6 @@ pub(crate) struct GameSummary {
 impl From<&Game> for GameSummary {
     fn from(g: &Game) -> Self {
         Self {
-            playtime_minutes: g.playtime_minutes.unwrap_or(0),
             hltb_minutes: signal::main_story_seconds(g).map(|s| s / 60),
             rating_0_5: g.rawg.as_ref().and_then(|r| r.rating_0_5),
             proton_tier: g.protondb.as_ref().map(|p| p.tier),
@@ -6764,6 +6787,82 @@ mod tests {
         ));
         app.ui_demo = true;
         assert!(app.edit_preference(Some(id), None).is_err());
+        assert!(!temp.path().join("cache").exists());
+    }
+
+    #[test]
+    #[serial]
+    fn personalized_recommendations_share_core_evidence_and_reject_late_story_jobs() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(&temp.path().join("cache"));
+        app.story_dir = temp.path().join("story");
+        app.preferences_dir = temp.path().join("preferences");
+        app.ui_demo = false;
+        app.offline_mode = true;
+        app.inject_prepared_snapshot();
+        let request = app.recommend_request_from_inputs().unwrap();
+        let snapshot = app.prepared_snapshot.as_ref().unwrap();
+        let expected = recommend_personalized(
+            &snapshot.games,
+            &request,
+            snapshot.preferences.as_ref().unwrap(),
+            &snapshot.taste.as_ref().unwrap().taste,
+            snapshot.progress.as_ref().unwrap(),
+            chrono::Utc::now().timestamp(),
+        );
+        assert_ne!(
+            expected.iter().map(|r| r.app_id).collect::<Vec<_>>(),
+            Vec::<u32>::new()
+        );
+        app.start_recommend_preview();
+        for _ in 0..1000 {
+            if !app.recommend_loading {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            app.tick();
+        }
+        assert!(!app.recommend_loading);
+        assert_eq!(
+            app.recommend_results
+                .iter()
+                .map(|r| r.app_id)
+                .collect::<Vec<_>>(),
+            expected.iter().map(|r| r.app_id).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            app.recommend_results[0]
+                .reasons
+                .iter()
+                .map(|r| r.code.as_str())
+                .collect::<Vec<_>>(),
+            expected[0]
+                .reasons
+                .iter()
+                .map(|r| r.code.as_str())
+                .collect::<Vec<_>>()
+        );
+        let old_fp = app.recommend_fp(&request);
+        let ticket = app
+            .job_runner
+            .next_ticket(WorkflowKind::RecommendPreview, &old_fp);
+        // Avoid starting a fresh worker; isolate rejection of a completed old job.
+        app.recommend_results.clear();
+        let id = expected[0].app_id;
+        app.set_story_completed(id, true).unwrap();
+        assert_ne!(old_fp, app.recommend_fp(&request));
+        app.recommend_loading = true;
+        app.recommend_job_id = Some(ticket);
+        RECOMMEND_RESULT.set(ticket, Ok(expected));
+        app.tick();
+        assert_eq!(
+            app.recommend_results
+                .iter()
+                .map(|r| r.app_id)
+                .collect::<Vec<_>>(),
+            Vec::<u32>::new()
+        );
+        assert!(app.recommend_job_id.is_none());
         assert!(!temp.path().join("cache").exists());
     }
 

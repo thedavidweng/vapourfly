@@ -162,21 +162,31 @@ permanent property of the game itself.
 ### Recommendation
 
 A scored suggestion of a Game to play next, produced by the recommendation
-engine from the current library. Seven weighted signals combine additively:
+engine from the current selected-account library and cache-only canonical Taste
+Profile. Signed, bounded contributions are shared by CLI and GUI:
 
-- `low_playtime` (+2.0): playtime under 120 min.
-- `deck_compatible` (Native +2.0 / Platinum +1.5 / Gold +1.0, deck mode only).
-- `time_match` (+1.5): a known effective completion time fits the requested
-  session length. New live values use IGDB time-to-beat; cached HLTB values
-  remain readable as legacy data.
-- `high_rating` (+1.0): RAWG ≥ 4.0 or IGDB ≥ 80.
-- `taste_similarity` (+1.0): keyword overlap with the user's taste vector > 5%.
-- `recently_played_penalty` (−1.0): played within 14 days.
-- `likely_finished_penalty` (−0.5): playtime exceeds 1.5× the effective
-  completion time.
+- `low_playtime` (+2): known lifetime playtime under 120 minutes; unknown is not zero.
+- `deck_compatible` (Native +2 / Platinum +1.5 / Gold +1, Deck mode only).
+- `time_match` (+1.5): legacy cached whole-story estimate fits the window; this
+  is not remaining time, session shape, or proof of provider rights (#27/#36).
+- `high_rating` (0..1): continuous above-midpoint maximum of normalized cached RAWG/IGDB quality; low and missing ratings are neutral.
+- `taste_similarity` (0..3) and `recent_taste` (0..0.5): fraction of canonical
+  profile mass covered by a candidate's cached concepts, not a binary bonus.
+- `recently_played_penalty` (-1..0): linearly decays over the last 14 days;
+  future timestamps are not recent play.
+- `story_completed` (-1.25) or fresh authoritative `perfected` (-1), otherwise
+  `achievement_progress` (0..0.5) for fresh partial counts. Neither achievements
+  nor HLTB/playtime infer narrative completion.
+- `local_interested` (+0.5) and explicit Steam `favorite` (+0.25).
+- `diversity` (-0.35..0): maximum canonical-concept Jaccard overlap with any
+  earlier pick, greedily reranked after eligibility and relevance scoring.
 
-Junk and hidden games are filtered out before scoring, not penalised. Optional
-seed makes selection deterministic via SplitMix64 perturbation.
+Unknown activity/progress and cache coverage limitations carry zero weight.
+Hidden/junk/non-game, installed-only, excluded collections and active Not
+interested/Not now are filtered first. Existing Deck scoring is retained;
+Recommendations do not add a new hard controller filter. The optional seed
+changes ties only, keyed by AppID, so input ordering cannot affect selection.
+Relative fit compares this result set, not probability or population percentiles.
 
 **Weights are fixed** — internal constants, not user-tunable. Users control
 only external parameters (available minutes, count, deck mode, seed, excluded

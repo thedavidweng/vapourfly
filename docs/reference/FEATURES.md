@@ -154,7 +154,8 @@ Hidden/junk and known non-games do not contribute. Ownership alone has no weight
 Lifetime weights are `minutes/(minutes+600)`, recent weights
 `minutes/(minutes+120)`: continuous and bounded, so one huge playtime cannot grow
 without limit. Interested adds 0.25 to long-term only and resetting removes it.
-Existing Recommendations/Discover ranking remains unchanged by this view.
+Recommendations consume this profile (see Personal Owned-Library Ranking);
+Discover ranking is unchanged by this view.
 
 Local/cached minutes are combined by maximum, never added across sources. Cached
 recent samples older than 14 days and observations whose known last-played time
@@ -262,3 +263,17 @@ Available rule operators: `ProtonAtLeast`, `HltbMaxMinutes`,
 
 The interactive GUI checklist lives in [gui-smoke-test.md](../gui-smoke-test.md).
 Run it with `--ui-demo` and at 1024px / 1280px / 1440px before a release.
+
+## Personal Owned-Library Ranking
+
+Recommendations use the same cache-only canonical account Taste Profile as
+Library Evidence. Continuous long-term/recent affinity, known low activity,
+bounded quality/recency, explicit story/authoritative achievement evidence and
+Interested/Favorites have signed explanations. Not interested/active Not now
+and existing eligibility/exclusion constraints apply before scoring. Missing or
+stale completion evidence is not a completion guess. A seeded AppID tie-break
+and bounded canonical overlap reranking provide reproducible variety without
+random relevance noise. The GUI's relative fit is within the current result set,
+not a probability or global percentile. CLI/GUI show full contributions and
+coverage limitations; local story edits invalidate stale/in-flight picks.
+Existing Steam write preview/confirmation/backup/running guards remain unchanged.
