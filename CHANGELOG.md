@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Account-scoped playstyle traits explain original Completion-focused, Deep diver,
+  and Explorer rules, with thresholds and supporting, contrary, and unknown games
+  in the existing Library/Discover Evidence dialog and `accounts profile` output.
+
+### Changed
+
+- Unreleased Rust profile API: `profile::derive` now requires the selected account's
+  progress map after the activity snapshot argument. `AccountProfile` adds `traits`
+  and `TasteProfile` adds `titles`; downstream struct literals must supply these
+  fields. The CLI profile JSON gains the corresponding fields. Profiles are
+  derived, serialize-only output, not persisted records or a deserialization
+  contract; no stored-data migration or defaulted evidence is introduced.
+
 ## [0.3.1] - 2026-10-17
 
 ### Fixed
