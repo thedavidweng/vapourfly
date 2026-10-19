@@ -3005,6 +3005,8 @@ impl VapourflyApp {
         if self.discover_loading {
             return;
         }
+        self.discover_results.clear();
+        self.discover_last_playlist = None;
         let Some(options) = self.ok_or_err(self.discover_options_from_inputs()) else {
             return;
         };
@@ -6781,6 +6783,47 @@ mod tests {
         assert!(app.prepared_snapshot.is_none());
         app.inject_prepared_snapshot();
         assert!(!app.game_progress(game).unwrap().story_completed);
+    }
+
+    #[test]
+    #[serial]
+    fn discover_restart_drops_previous_results_even_when_preparation_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(&temp.path().join("cache"));
+        app.preferences_dir = temp.path().join("preferences");
+        app.ui_demo = false;
+        app.offline_mode = true;
+        app.inject_prepared_snapshot();
+        app.discover_results = vec![DiscoverPick {
+            app_id: 730,
+            name: "previous generation".into(),
+            score: 1.,
+            reasons: vec![],
+        }];
+        app.discover_last_playlist = Some(sample_generator_playlist("discover", vec![730]));
+        app.prepared_snapshot.as_mut().unwrap().preferences =
+            Err("Invalid local preferences".into());
+
+        app.start_discover_generate();
+
+        assert!(!app.discover_loading);
+        assert_eq!(app.discover_results, Vec::<DiscoverPick>::new());
+        assert!(app.discover_last_playlist.is_none());
+        assert_eq!(app.error.as_deref(), Some("Invalid local preferences"));
+
+        app.discover_results = vec![DiscoverPick {
+            app_id: 730,
+            name: "previous generation".into(),
+            score: 1.,
+            reasons: vec![],
+        }];
+        app.discover_last_playlist = Some(sample_generator_playlist("discover", vec![730]));
+        app.discover_count = "invalid".into();
+        app.start_discover_generate();
+        assert!(!app.discover_loading);
+        assert_eq!(app.discover_results, Vec::<DiscoverPick>::new());
+        assert!(app.discover_last_playlist.is_none());
+        assert!(app.error.as_deref().unwrap().contains("Discover count"));
     }
 
     #[test]
