@@ -79,8 +79,10 @@ done
 
 All nine commands exited successfully. The captured output line counts are an
 audit cross-check, **not** unique dependency counts, compiled bytes or benchmark
-results. Cargo's feature graph includes feature names whose platform-specific
-dependencies are absent from the selected normal/build graph.
+results. Cargo's `-e features` view includes normal, build and dev dependencies
+by default, unlike the separate `-e normal,build` view; it is not a release-only
+graph. It also includes feature names whose platform-specific dependencies are
+absent from the selected normal/build graph.
 
 | Target | Feature lines | Duplicate lines | Normal/build lines |
 | --- | ---: | ---: | ---: |
