@@ -15,6 +15,7 @@ pub const SOURCE: &str = "steam-achievements";
 const SCHEMA_SOURCE: &str = "steam-achievement-schema";
 const TTL: Duration = Duration::from_secs(24 * 3600);
 const BASE: &str = "https://api.steampowered.com/ISteamUserStats";
+pub const DEFAULT_BATCH_LIMIT: usize = 12;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,6 +42,136 @@ pub struct Progress {
     pub unlocks: BTreeMap<String, Option<i64>>,
     pub checked_at: DateTime<Utc>,
     pub fetched_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchSummary {
+    pub selected: usize,
+    pub available: usize,
+    pub stale: usize,
+    pub unavailable: usize,
+    pub missing: usize,
+    pub attempted: usize,
+    pub pending: usize,
+    pub stop_reason: Option<Status>,
+}
+
+pub struct BatchOptions<'a> {
+    pub app_ids: &'a [u32],
+    pub limit: usize,
+    pub force: bool,
+    pub offline: bool,
+}
+
+fn validate_batch_limit(limit: usize) -> Result<()> {
+    if !(1..=DEFAULT_BATCH_LIMIT).contains(&limit) {
+        return Err(VapourflyError::InvalidInput(format!(
+            "Achievement batch limit must be 1..={DEFAULT_BATCH_LIMIT}"
+        )));
+    }
+    Ok(())
+}
+
+/// Cache-only priority hints: selected owned game, then most recently played
+/// owned games. Activity hints may be stale; they never establish progress.
+pub fn active_app_ids(
+    owned: &[vapourfly_core::models::Game],
+    recent: &[crate::activity::ActivityGame],
+    selected: Option<u32>,
+    limit: usize,
+) -> Result<Vec<u32>> {
+    validate_batch_limit(limit)?;
+    let owned_ids: BTreeSet<_> = owned.iter().map(|game| game.app_id).collect();
+    if selected.is_some_and(|id| id == 0 || !owned_ids.contains(&id)) {
+        return Err(VapourflyError::InvalidInput(
+            "Selected AppID is not in the local Library".into(),
+        ));
+    }
+    let recent: BTreeMap<_, _> = recent.iter().map(|game| (game.app_id, game)).collect();
+    let mut ranked: Vec<_> = owned
+        .iter()
+        .filter(|game| {
+            game.app_id != 0
+                && (game.last_played_unix.is_some_and(|time| time > 0)
+                    || recent.contains_key(&game.app_id))
+        })
+        .map(|game| {
+            let hint = recent.get(&game.app_id);
+            (
+                game.app_id,
+                game.last_played_unix
+                    .max(hint.and_then(|hint| hint.last_played_at)),
+                hint.and_then(|hint| hint.recent_minutes),
+            )
+        })
+        .collect();
+    ranked.sort_by_key(|&(id, time, minutes)| {
+        (std::cmp::Reverse(time), std::cmp::Reverse(minutes), id)
+    });
+    let mut seen = BTreeSet::new();
+    Ok(selected
+        .into_iter()
+        .chain(ranked.into_iter().map(|(id, _, _)| id))
+        .filter(|id| seen.insert(*id))
+        .take(limit)
+        .collect())
+}
+
+fn batch_ids(app_ids: &[u32], limit: usize) -> Result<Vec<u32>> {
+    validate_batch_limit(limit)?;
+    if app_ids.contains(&0) {
+        return Err(VapourflyError::InvalidInput(
+            "AppID must be positive".into(),
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    Ok(app_ids
+        .iter()
+        .copied()
+        .filter(|id| seen.insert(*id))
+        .take(limit)
+        .collect())
+}
+
+fn batch_lock(cache: &DiskCache, id: &str) -> Result<std::fs::File> {
+    let path = cache.path_for(SOURCE, id).with_extension("lock");
+    std::fs::create_dir_all(path.parent().expect("cache source directory"))
+        .map_err(|_| VapourflyError::Internal("Cannot create achievement lock directory".into()))?;
+    let file = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|_| VapourflyError::Internal("Cannot open achievement refresh lock".into()))?;
+    file.try_lock().map_err(|error| match error {
+        std::fs::TryLockError::WouldBlock => VapourflyError::InvalidInput(
+            "An achievement batch is already refreshing this account".into(),
+        ),
+        std::fs::TryLockError::Error(_) => {
+            VapourflyError::Internal("Cannot lock achievement refresh".into())
+        }
+    })?;
+    Ok(file)
+}
+
+/// Inspect a bounded active set without any network requests.
+pub fn batch_status(cache: &DiskCache, id: &str, app_ids: &[u32]) -> Result<BatchSummary> {
+    validate_steam_id64(id)?;
+    let selected = batch_ids(app_ids, DEFAULT_BATCH_LIMIT)?;
+    let mut summary = BatchSummary {
+        selected: selected.len(),
+        ..Default::default()
+    };
+    for app_id in selected {
+        match load(cache, id, app_id)? {
+            None => summary.missing += 1,
+            Some(progress) if !progress.stale() => summary.available += 1,
+            Some(progress) if progress.fetched_at.is_some() => summary.stale += 1,
+            Some(_) => summary.unavailable += 1,
+        }
+    }
+    Ok(summary)
 }
 
 impl Progress {
@@ -327,6 +458,80 @@ pub fn refresh(
         etag: None,
     })?;
     Ok(Some(progress))
+}
+
+/// Refresh a bounded, ordered set of games for one account.
+///
+/// Work is deliberately sequential: one caller owns the control token, and
+/// each game makes at most one schema and one player request. Background
+/// callers skip fresh cache entries; explicit callers can force them.
+pub fn refresh_batch(
+    cache: &DiskCache,
+    http: &HttpClient,
+    api_key: Option<&str>,
+    id: &str,
+    options: BatchOptions<'_>,
+    control: &RefreshControl,
+) -> Result<(BatchSummary, Vec<Progress>)> {
+    validate_steam_id64(id)?;
+    let selected = batch_ids(options.app_ids, options.limit)?;
+    control.check()?;
+    let live = !options.offline && api_key.is_some_and(|key| !key.is_empty());
+    if !live {
+        let mut progress = Vec::new();
+        for &app_id in &selected {
+            control.check()?;
+            if let Some(cached) = load(cache, id, app_id)? {
+                progress.push(cached);
+            }
+        }
+        return Ok((batch_status(cache, id, &selected)?, progress));
+    }
+    // OS lock ownership ends on drop, including cancellation or process exit.
+    let _owner = if selected.is_empty() {
+        None
+    } else {
+        Some(batch_lock(cache, id)?)
+    };
+    let mut attempted = 0;
+    let mut pending = 0;
+    let mut stop_reason = None;
+    let mut progress = Vec::new();
+    for (index, &app_id) in selected.iter().enumerate() {
+        control.check()?;
+        if !options.force
+            && let Some(cached) = load(cache, id, app_id)?
+            && !cached.automatic_refresh_due()
+        {
+            progress.push(cached);
+            continue;
+        }
+        if let Some(current) = refresh(cache, http, api_key, id, app_id, options.offline, control)?
+        {
+            attempted += 1;
+            let stop = matches!(
+                current.status,
+                Status::Unauthorized
+                    | Status::RateLimited
+                    | Status::TransportFailure
+                    | Status::HttpError
+            );
+            if stop {
+                stop_reason = Some(current.status);
+            }
+            progress.push(current);
+            if stop {
+                pending = selected.len() - index - 1;
+                break;
+            }
+        }
+    }
+    control.check()?;
+    let mut summary = batch_status(cache, id, &selected)?;
+    summary.attempted = attempted;
+    summary.pending = pending;
+    summary.stop_reason = stop_reason;
+    Ok((summary, progress))
 }
 
 #[cfg(test)]
@@ -658,5 +863,398 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(error, VapourflyError::Internal(_)));
+    }
+
+    #[test]
+    fn batch_is_ordered_bounded_and_skips_fresh_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = DiskCache::new(temp.path());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let http = HttpClient::with_backend(Box::new(Backend {
+            calls: calls.clone(),
+            status: 200,
+            body: format!(
+                r#"{{"playerstats":{{"success":true,"steamID":"{ID}","achievements":[{{"apiname":"A","achieved":1}},{{"apiname":"B","achieved":0}}]}}}}"#
+            ),
+        }));
+        refresh(
+            &cache,
+            &http,
+            Some("secret"),
+            ID,
+            10,
+            false,
+            &RefreshControl::default(),
+        )
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        let (summary, progress) = refresh_batch(
+            &cache,
+            &http,
+            Some("secret"),
+            ID,
+            BatchOptions {
+                app_ids: &[10, 11, 11, 12],
+                limit: 2,
+                force: false,
+                offline: false,
+            },
+            &RefreshControl::default(),
+        )
+        .unwrap();
+        assert_eq!(summary.selected, 2);
+        assert_eq!(summary.available, 2);
+        assert_eq!(summary.attempted, 1);
+        assert_eq!(summary.missing, 0);
+        assert_eq!(
+            progress.iter().map(|p| p.app_id).collect::<Vec<_>>(),
+            [10, 11]
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            4,
+            "one cached and one refreshed"
+        );
+    }
+
+    fn owned_game(app_id: u32, last_played: Option<i64>) -> vapourfly_core::models::Game {
+        serde_json::from_value(serde_json::json!({
+            "app_id": app_id, "name": format!("Game {app_id}"), "app_type": "Game",
+            "installed": false, "last_played_unix": last_played,
+            "steam_collections": [], "is_hidden": false, "is_junk": false,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn batch_large_library_selection_and_status_are_cache_only() {
+        let owned: Vec<_> = (1..=1500)
+            .map(|id| owned_game(id, Some(i64::from(id))))
+            .collect();
+        let recent = vec![
+            crate::activity::ActivityGame {
+                app_id: 2,
+                name: None,
+                lifetime_minutes: None,
+                recent_minutes: Some(10),
+                last_played_at: Some(2000),
+            },
+            crate::activity::ActivityGame {
+                app_id: 9000,
+                name: None,
+                lifetime_minutes: None,
+                recent_minutes: Some(20),
+                last_played_at: Some(3000),
+            },
+        ];
+        let ids = active_app_ids(&owned, &recent, Some(10), 12).unwrap();
+        assert_eq!(&ids[..3], &[10, 2, 1500]);
+        assert_eq!(ids.len(), 12);
+        assert!(!ids.contains(&9000));
+        assert!(active_app_ids(&owned, &recent, Some(9000), 12).is_err());
+        assert!(active_app_ids(&owned, &recent, None, 13).is_err());
+        assert!(active_app_ids(&owned, &recent, None, 0).is_err());
+        assert_eq!(
+            active_app_ids(&[owned_game(1, None)], &[], None, 12).unwrap(),
+            [] as [u32; 0]
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("never-created");
+        let cache = DiskCache::new(&root);
+        let coverage = batch_status(&cache, ID, &ids).unwrap();
+        assert_eq!(coverage.selected, 12);
+        assert_eq!(coverage.missing, 12);
+        assert!(
+            !root.exists(),
+            "cache inspection does not write or start a batch"
+        );
+    }
+
+    #[test]
+    fn batch_offline_no_key_and_other_account_never_request_or_create_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("never-created");
+        let cache = DiskCache::new(&root);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let http = HttpClient::with_backend(Box::new(Backend {
+            calls: calls.clone(),
+            body: String::new(),
+            status: 200,
+        }));
+        for (api_key, offline) in [(None, false), (Some("secret"), true)] {
+            let (summary, result) = refresh_batch(
+                &cache,
+                &http,
+                api_key,
+                ID,
+                BatchOptions {
+                    app_ids: &[10, 10, 11],
+                    limit: 12,
+                    force: true,
+                    offline,
+                },
+                &RefreshControl::default(),
+            )
+            .unwrap();
+            assert_eq!(summary.selected, 2);
+            assert_eq!(summary.missing, 2);
+            assert_eq!(summary.attempted, 0);
+            assert!(result.is_empty());
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(!root.exists());
+        assert_eq!(batch_status(&cache, OTHER, &[10]).unwrap().missing, 1);
+        assert!(
+            refresh_batch(
+                &cache,
+                &http,
+                Some("secret"),
+                ID,
+                BatchOptions {
+                    app_ids: &[0],
+                    limit: 1,
+                    force: true,
+                    offline: false
+                },
+                &RefreshControl::default()
+            )
+            .is_err()
+        );
+        assert!(!root.exists(), "validate before locking or making requests");
+    }
+
+    #[test]
+    fn batch_provider_failures_stop_without_retry_and_preserve_counts() {
+        for (status, expected) in [
+            (401, Status::Unauthorized),
+            (429, Status::RateLimited),
+            (503, Status::HttpError),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let cache = DiskCache::new(temp.path());
+            let before = progress();
+            cache
+                .put(&CacheRecord {
+                    source: SOURCE.into(),
+                    key: format!("{ID}-10"),
+                    data: before.clone(),
+                    fetched_at: Utc::now(),
+                    ttl: TTL,
+                    stale: false,
+                    etag: None,
+                })
+                .unwrap();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let http = HttpClient::with_backend(Box::new(Backend {
+                calls: calls.clone(),
+                body: String::new(),
+                status,
+            }));
+            let (summary, result) = refresh_batch(
+                &cache,
+                &http,
+                Some("secret"),
+                ID,
+                BatchOptions {
+                    app_ids: &[10, 11, 12],
+                    limit: 3,
+                    force: true,
+                    offline: false,
+                },
+                &RefreshControl::default(),
+            )
+            .unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(summary.stop_reason, Some(expected));
+            assert_eq!(summary.pending, 2);
+            assert_eq!(summary.stale, 1);
+            assert_eq!(summary.missing, 2);
+            assert_eq!(result[0].unlocked, before.unlocked);
+            assert_eq!(result[0].fetched_at, before.fetched_at);
+            assert!(result[0].stale());
+            assert_eq!(batch_status(&cache, OTHER, &[10]).unwrap().missing, 1);
+            let calls_before = calls.load(Ordering::SeqCst);
+            let (summary, _) = refresh_batch(
+                &cache,
+                &http,
+                Some("secret"),
+                ID,
+                BatchOptions {
+                    app_ids: &[10],
+                    limit: 1,
+                    force: false,
+                    offline: false,
+                },
+                &RefreshControl::default(),
+            )
+            .unwrap();
+            assert_eq!(summary.attempted, 0, "automatic failure cooldown");
+            assert_eq!(calls.load(Ordering::SeqCst), calls_before);
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let cache = DiskCache::new(temp.path());
+        let http = HttpClient::with_backend(Box::new(FailingBackend));
+        let (summary, _) = refresh_batch(
+            &cache,
+            &http,
+            Some("secret"),
+            ID,
+            BatchOptions {
+                app_ids: &[10, 11],
+                limit: 2,
+                force: true,
+                offline: false,
+            },
+            &RefreshControl::default(),
+        )
+        .unwrap();
+        assert_eq!(summary.stop_reason, Some(Status::TransportFailure));
+        assert_eq!(summary.unavailable, 1);
+        assert_eq!(summary.pending, 1);
+        let (cached, _) = refresh_batch(
+            &cache,
+            &http,
+            None,
+            ID,
+            BatchOptions {
+                app_ids: &[10, 11],
+                limit: 2,
+                force: true,
+                offline: false,
+            },
+            &RefreshControl::default(),
+        )
+        .unwrap();
+        assert_eq!(cached.unavailable, 1);
+        assert_eq!(cached.attempted, 0);
+        assert_eq!(cached.pending, 0, "cache inspection does not queue work");
+        assert_eq!(
+            cached.stop_reason, None,
+            "a cached failure is not a new provider stop"
+        );
+    }
+
+    struct CancelBackend {
+        control: RefreshControl,
+        calls: Arc<AtomicUsize>,
+    }
+    impl HttpBackend for CancelBackend {
+        fn execute(&self, _: &HttpRequest) -> Result<HttpResponse> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.control.cancel();
+            Ok(HttpResponse {
+                status: 200,
+                headers: Default::default(),
+                body: br#"{"game":{"availableGameStats":{"achievements":[{"name":"A"}]}}}"#
+                    .to_vec(),
+            })
+        }
+    }
+
+    #[test]
+    fn batch_cancellation_prevents_player_request_and_releases_account_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = DiskCache::new(temp.path());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let control = RefreshControl::default();
+        let http = HttpClient::with_backend(Box::new(CancelBackend {
+            control: control.clone(),
+            calls: calls.clone(),
+        }));
+        assert!(
+            refresh_batch(
+                &cache,
+                &http,
+                Some("secret"),
+                ID,
+                BatchOptions {
+                    app_ids: &[10, 11],
+                    limit: 2,
+                    force: true,
+                    offline: false
+                },
+                &control
+            )
+            .is_err()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(load(&cache, ID, 10).unwrap().is_none());
+        let owner = batch_lock(&cache, ID).unwrap();
+        assert!(batch_lock(&cache, ID).is_err());
+        assert!(batch_lock(&cache, OTHER).is_ok());
+        drop(owner);
+        assert!(batch_lock(&cache, ID).is_ok());
+        assert!(
+            refresh_batch(
+                &cache,
+                &http,
+                Some("secret"),
+                ID,
+                BatchOptions {
+                    app_ids: &[10],
+                    limit: 1,
+                    force: true,
+                    offline: false
+                },
+                &control
+            )
+            .is_err()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn batch_hard_cap_means_at_most_twenty_four_attempts() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = DiskCache::new(temp.path());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let http = HttpClient::with_backend(Box::new(Backend {
+            calls: calls.clone(),
+            status: 200,
+            body: format!(
+                r#"{{"playerstats":{{"success":true,"steamID":"{ID}","achievements":[{{"apiname":"A","achieved":1}},{{"apiname":"B","achieved":0}}]}}}}"#
+            ),
+        }));
+        let ids: Vec<_> = (1..=1500).collect();
+        let (summary, result) = refresh_batch(
+            &cache,
+            &http,
+            Some("secret"),
+            ID,
+            BatchOptions {
+                app_ids: &ids,
+                limit: 12,
+                force: true,
+                offline: false,
+            },
+            &RefreshControl::default(),
+        )
+        .unwrap();
+        assert_eq!(summary.selected, 12);
+        assert_eq!(summary.available, 12);
+        assert_eq!(summary.attempted, 12);
+        assert_eq!(calls.load(Ordering::SeqCst), 24);
+        assert_eq!(
+            result.iter().map(|p| p.app_id).collect::<Vec<_>>(),
+            (1..=12).collect::<Vec<_>>()
+        );
+        assert!(
+            refresh_batch(
+                &cache,
+                &http,
+                Some("secret"),
+                ID,
+                BatchOptions {
+                    app_ids: &ids,
+                    limit: 13,
+                    force: true,
+                    offline: false
+                },
+                &RefreshControl::default()
+            )
+            .is_err()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 24);
     }
 }

@@ -264,6 +264,33 @@ Failures preserve prior counts and data timestamps but invalidate current
 percentage/Perfected claims. Account switching discards visible progress and
 cancels further requests for the previous account. No Steam file is modified.
 
+### Bounded active-game achievement coverage
+
+`accounts achievement-coverage` selects at most 12 owned games from an
+explicit `--app-id` followed by recent local or cached account activity.
+Selection and default status are cache-only, even for a 1,000+ game library.
+The reported coverage describes this selected subset, not the entire library.
+
+`--refresh` uses the same documented achievement interfaces and local key
+as the single-game command. Games run sequentially, each with at most one
+schema and one player request, no retry and existing Steam pacing (60/min).
+The total budget is 24 requests; `--limit` can reduce it to 1..12 games.
+An OS file lock scoped by SteamID64 owns each live batch and is released on
+completion, failure, cancellation or process exit. Cached schemas remain
+shared; player results remain account-specific.
+
+Unauthorized, rate-limited, HTTP and transport failures stop further batch
+requests. Restricted, missing-schema and incomplete game responses remain
+distinct and do not erase prior counts. Automatic callers retain the existing
+one-hour failure cooldown; explicit refresh can retry on player request.
+Offline and no-key operations issue no requests and acquire no batch lock.
+Output contains coverage counts and stop status, not account identifiers,
+API keys or individual unlock history.
+
+This CLI/API slice does not yet add GUI Data Sources batch controls. Mock
+transport coverage proves request bounds and failure handling; authorized
+live-provider/privacy checks and native-device acceptance remain separate.
+
 ## Caching
 
 All API responses are cached locally under the Vapourfly cache directory (reported by `vapourfly doctor`). The cache:
