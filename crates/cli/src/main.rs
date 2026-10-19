@@ -1243,16 +1243,37 @@ struct PersonalLibraryEvidence {
     now: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersonalSelectionError {
+    Discovery,
+    Selection,
+}
+
+impl std::fmt::Display for PersonalSelectionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Discovery => "Could not read Steam accounts; check the selected Steam directory",
+            Self::Selection => "Could not select a Steam account; use accounts list and --account",
+        })
+    }
+}
+
+impl std::error::Error for PersonalSelectionError {}
+
 fn personal_evidence_for_scan(
     cli: &Cli,
     scan: &ScanResult,
     paths: &PersonalPaths,
 ) -> Result<PersonalLibraryEvidence, Box<dyn std::error::Error>> {
     let resolved = cli.resolved_config()?;
-    let accounts = steam::detect_accounts(&resolved.steam_dir)?;
+    // Account parser/selection errors can contain private names, paths or VDF
+    // input. Derived output preserves failure, never those diagnostic payloads.
+    let accounts = steam::detect_accounts(&resolved.steam_dir)
+        .map_err(|_| PersonalSelectionError::Discovery)?;
     // Borrow one selection for validation and cache keys; do not return or clone
     // the complete account metadata through the derived-evidence boundary.
-    let selected = steam::select_account(&accounts, resolved.account.as_deref())?;
+    let selected = steam::select_account(&accounts, resolved.account.as_deref())
+        .map_err(|_| PersonalSelectionError::Selection)?;
     if scan.account != selected.account_name {
         return Err("Scan does not match the selected account".into());
     }
@@ -2881,6 +2902,59 @@ mod tests {
             preferences: root.join("preferences"),
             playlists: root.join("playlists"),
         }
+    }
+
+    #[test]
+    fn personal_evidence_selection_errors_do_not_export_private_diagnostics() {
+        let root = tempfile::tempdir().unwrap();
+        let steam = root.path().join("private-persona-marker");
+        std::fs::create_dir_all(steam.join("config")).unwrap();
+        let paths = personal_test_paths(root.path());
+        let cli = Cli::try_parse_from([
+            "vapourfly",
+            "--fixtures",
+            steam.to_str().unwrap(),
+            "--account",
+            "private-persona-marker",
+            "accounts",
+            "profile",
+        ])
+        .unwrap();
+        let scan = ScanResult {
+            games: vec![],
+            warnings: vec![],
+            steam_dir: String::new(),
+            account: String::new(),
+        };
+        for (input, expected) in [
+            (None, PersonalSelectionError::Discovery),
+            (
+                Some("private-persona-marker {"),
+                PersonalSelectionError::Discovery,
+            ),
+            (
+                Some(r#""users" { "76561198000000000" { "AccountName" "other" } }"#),
+                PersonalSelectionError::Selection,
+            ),
+        ] {
+            if let Some(text) = input {
+                std::fs::write(steam.join("config/loginusers.vdf"), text).unwrap();
+            }
+            let Err(error) = personal_evidence_for_scan(&cli, &scan, &paths) else {
+                panic!("invalid selection must fail, not produce empty evidence");
+            };
+            assert_eq!(
+                error.downcast_ref::<PersonalSelectionError>(),
+                Some(&expected)
+            );
+            assert_eq!(error.to_string(), expected.to_string());
+            assert!(!format!("{error:?}").contains("private-persona-marker"));
+            assert!(!error.to_string().contains("private-persona-marker"));
+            assert!(error.source().is_none());
+        }
+        assert!(!paths.cache.exists());
+        assert!(!paths.story.exists());
+        assert!(!paths.preferences.exists());
     }
 
     #[test]
