@@ -54,6 +54,25 @@ fn discover_empty_copy(loading: bool, generated: bool) -> (&'static str, &'stati
     }
 }
 
+fn recommend_empty_copy(loading: bool, generated: bool) -> (&'static str, &'static str) {
+    if loading {
+        (
+            "Finding session picks",
+            "Ranking your eligible owned library using cached/local evidence.",
+        )
+    } else if generated {
+        (
+            "No eligible recommendations",
+            "No owned titles meet the generated request. Finish a short game requires a positive known full estimate within its limit; unknown is not short. Check the request and filters above.",
+        )
+    } else {
+        (
+            "What should you play tonight?",
+            "Generate cache-only owned-library picks. Relative fit compares this result set, not probability or player percentiles.",
+        )
+    }
+}
+
 /// Ranker scores are additive weights, so show them relative to the best
 /// result in the same set.
 fn relative(score: f32, best: f32) -> f32 {
@@ -400,10 +419,11 @@ impl GuiRoot {
 
         let controls = widgets::panel(cx).mx(px(PAGE_PX)).px_4().py_3().child(
             h_flex()
+                .flex_wrap()
                 .gap_8()
                 .items_end()
                 .child(field(
-                    "Time you have",
+                    "Sitting time / full-estimate limit",
                     widgets::segmented(
                         "rec-time",
                         TIME_OPTIONS
@@ -438,6 +458,15 @@ impl GuiRoot {
                     .into_any_element(),
                     cx,
                 ))
+                .child(
+                    Switch::new("rec-finish-short")
+                        .checked(self.app.recommend_finish_short_game)
+                        .label("Finish a short game")
+                        .on_click(cx.listener(|this, value: &bool, _, cx| {
+                            this.app.recommend_finish_short_game = *value;
+                            cx.notify();
+                        })),
+                )
                 .child(div().flex_1())
                 .child(
                     h_flex()
@@ -476,6 +505,10 @@ impl GuiRoot {
         let best = results.iter().map(|r| r.score).fold(0., f32::max);
 
         let body = if results.is_empty() {
+            let (title, detail) = recommend_empty_copy(
+                self.app.recommend_loading,
+                self.app.recommend_request_at_start.is_some(),
+            );
             div()
                 .flex_1()
                 .flex()
@@ -483,8 +516,8 @@ impl GuiRoot {
                 .justify_center()
                 .child(widgets::empty_state(
                     IconName::Sparkles,
-                    "What should you play tonight?",
-                    "Generate cache-only owned-library picks. Relative fit compares this result set, not probability or player percentiles.",
+                    title,
+                    detail,
                     None,
                 ))
                 .into_any_element()
@@ -560,8 +593,10 @@ impl GuiRoot {
                                     .text_size(px(13.))
                                     .text_color(cx.theme().muted_foreground)
                                     .child(format!(
-                                        "{} to beat",
-                                        s.hltb_minutes.map_or_else(|| "—".into(), format_playtime)
+                                        "{} full estimate",
+                                        s.hltb_minutes
+                                            .filter(|m| *m > 0)
+                                            .map_or_else(|| "—".into(), format_playtime)
                                     ))
                                     .child("·")
                                     .child(
@@ -638,9 +673,9 @@ impl GuiRoot {
                             .w(px(100.))
                             .text_size(px(15.))
                             .text_color(cx.theme().muted_foreground)
-                            .child(s.hltb_minutes.map_or_else(
+                            .child(s.hltb_minutes.filter(|m| *m > 0).map_or_else(
                                 || "—".into(),
-                                |m| format!("{} to beat", format_playtime(m)),
+                                |m| format!("{} full estimate", format_playtime(m)),
                             )),
                     )
                     .child(
@@ -691,18 +726,49 @@ impl GuiRoot {
             .size_full()
             .child(widgets::page_header(
                 "Recommendations",
-                "A ranked shortlist from your backlog, sized to the time you have.",
+                "Plan a sitting or deliberately finish a short game; full completion time is not session length.",
                 actions,
                 cx,
             ))
             .child(controls)
+            .when_some(
+                self.app.recommend_request_at_start.as_ref(),
+                |this, request| {
+                    this.child(
+                        div()
+                            .mx(px(PAGE_PX))
+                            .py_2()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "Generated request: {}",
+                                vapourfly_core::recommend::intent_guidance(request)
+                            )),
+                    )
+                },
+            )
             .child(body)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::discover_empty_copy;
+    use super::{discover_empty_copy, recommend_empty_copy};
+
+    #[test]
+    fn recommend_empty_distinguishes_generated_request_from_initial_prompt() {
+        assert_eq!(
+            recommend_empty_copy(false, false).0,
+            "What should you play tonight?"
+        );
+        assert_eq!(recommend_empty_copy(true, false).0, "Finding session picks");
+        assert_eq!(recommend_empty_copy(true, true).0, "Finding session picks");
+        let (title, detail) = recommend_empty_copy(false, true);
+        assert_eq!(title, "No eligible recommendations");
+        assert!(detail.contains("generated request"));
+        assert!(detail.contains("positive known full estimate"));
+        assert!(detail.contains("unknown is not short"));
+    }
 
     #[test]
     fn discover_empty_distinguishes_initial_loading_and_completed_generation() {
