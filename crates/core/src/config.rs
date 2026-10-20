@@ -270,6 +270,19 @@ pub fn default_playlists_dir() -> PathBuf {
         .join("playlists")
 }
 
+/// Durable local narrative marks, separate from disposable provider caches.
+pub fn default_story_dir() -> PathBuf {
+    default_playlists_dir()
+        .with_file_name("personal")
+        .join("story")
+}
+
+pub fn default_preferences_dir() -> PathBuf {
+    default_playlists_dir()
+        .with_file_name("personal")
+        .join("preferences")
+}
+
 /// Default path for optional junk ManualOverrides JSON
 /// (`{data}/vapourfly/manual_overrides.json`).
 ///

@@ -25,7 +25,7 @@ jobs:
         include:
           - os: macos-latest
             artifact: vapourfly-macos-aarch64
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             artifact: vapourfly-linux-x86_64
           - os: windows-latest
             artifact: vapourfly-windows-x86_64
@@ -86,15 +86,26 @@ jobs:
             libgl1-mesa-dev libasound2-dev \
             libssl-dev \
             libfontconfig1-dev \
-            libudev-dev
+            libudev-dev xvfb xdotool imagemagick squashfs-tools patchelf desktop-file-utils librsvg2-bin
 
       - name: Install Rust ${{ env.VAPOURFLY_CI_TOOLCHAIN }}
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: ${{ env.VAPOURFLY_CI_TOOLCHAIN }}
 
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        continue-on-error: true
+        with:
+          python-version: '3.12'
+
       - name: Build release binaries
         run: cargo +${{ env.VAPOURFLY_CI_TOOLCHAIN }} build --release -p vapourfly-cli -p vapourfly-gui
+
+      - name: Package and verify updateable AppImage
+        if: runner.os == 'Linux'
+        run: |
+          bash scripts/package-appimage.sh "${GITHUB_REF_NAME#v}"
+          xvfb-run -a bash scripts/smoke-appimage.sh dist/*.AppImage
 
       - name: Package Unix archive
         if: runner.os != 'Windows'
@@ -131,6 +142,29 @@ jobs:
           Copy-Item README.md,LICENSE $stage/
           Compress-Archive -Path $stage -DestinationPath "$stage.zip"
 
+      - name: Report actual distribution size (non-gating)
+        continue-on-error: true
+        shell: bash
+        run: |
+          stage="${{ matrix.artifact }}"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            archive="${stage}.zip"
+          else
+            archive="${stage}.tar.gz"
+          fi
+          python3 scripts/size-report.py --stage "$stage" --asset "$archive" \
+            --target "${{ matrix.artifact }}" --revision "$GITHUB_SHA" \
+            --toolchain "$VAPOURFLY_CI_TOOLCHAIN" --out "size-reports/${stage}" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload distribution size report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: size-${{ matrix.artifact }}
+          path: |
+            size-reports/*
+            dist/size-appimage.*
+
       - name: Upload artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -138,6 +172,9 @@ jobs:
           path: |
             ${{ matrix.artifact }}.tar.gz
             ${{ matrix.artifact }}.zip
+            dist/*.AppImage
+            dist/*.AppImage.zsync
+            dist/*.AppImage.sha256
 
       - name: Remove signing material
         if: always() && runner.os == 'macOS'
@@ -169,7 +206,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           shopt -s nullglob
-          files=(dist/*.tar.gz dist/*.zip)
+          files=(dist/*.tar.gz dist/*.zip dist/*.AppImage dist/*.AppImage.zsync dist/*.AppImage.sha256)
           notes=$(awk '
             /^## \[0\./ { if (found) exit; found=1; next }
             found && /^## \[/ { exit }

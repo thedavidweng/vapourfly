@@ -91,12 +91,25 @@ impl Cli {
             .ok_or_else(|| "no Steam directory detected".into())
     }
 
+    /// Resolve account and Steam directory settings with the same precedence
+    /// as the settings and GUI paths. Hidden fixtures remain an explicit CLI
+    /// override for tests.
+    fn resolved_config(&self) -> Result<VapourflyConfig, Box<dyn std::error::Error>> {
+        Ok(VapourflyConfig::from_cli_and_env(config::CliOverrides {
+            steam_dir: self.fixtures.clone().or_else(|| self.steam_dir.clone()),
+            account: self.account.clone(),
+        })?)
+    }
+
     /// Resolve the cloud storage path for the selected account.
     fn cloud_storage_path(&self) -> Result<PathBuf, Box<dyn std::error::Error>> {
-        let steam_dir = self.resolve_steam_dir()?;
-        let accounts = steam::detect_accounts(&steam_dir)?;
-        let selected = steam::select_account(&accounts, self.account.as_deref())?;
-        Ok(steam::cloud_storage_path(&steam_dir, &selected.steam_id64))
+        let resolved = self.resolved_config()?;
+        let accounts = steam::detect_accounts(&resolved.steam_dir)?;
+        let selected = steam::select_account(&accounts, resolved.account.as_deref())?;
+        Ok(steam::cloud_storage_path(
+            &resolved.steam_dir,
+            &selected.steam_id64,
+        ))
     }
 }
 
@@ -110,6 +123,9 @@ fn credential_status() -> (bool, bool) {
 
 /// Credential column label for a source in `sources status` output.
 fn credential_label(source: &str, igdb_configured: bool, rawg_configured: bool) -> &'static str {
+    if vapourfly_api::http::live_access_restriction(source).is_some() {
+        return "cache only";
+    }
     let configured = match source {
         "igdb" => igdb_configured,
         "rawg" => rawg_configured,
@@ -162,9 +178,13 @@ enum Commands {
 
     /// Get game recommendations.
     Recommend {
-        /// Available play time in minutes.
+        /// Available sitting time in minutes (not full campaign length).
         #[arg(long)]
         minutes: u32,
+
+        /// Require a known full completion estimate within the window instead of planning a session.
+        #[arg(long)]
+        finish_short_game: bool,
 
         /// Number of recommendations to return.
         #[arg(long, default_value = "5")]
@@ -250,6 +270,145 @@ enum Commands {
 enum AccountsAction {
     /// List detected accounts.
     List,
+    /// Inspect selected-account personal storage (read-only, no network).
+    Inventory {
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Preview personal cleanup; deletion requires --confirm (never writes Steam).
+    Clear {
+        #[arg(long, value_enum)]
+        scope: PersonalClearScope,
+        /// Permanently remove records after printing the selected scope preview.
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Derive Top Tags from this account's local/cached evidence (never fetches).
+    Profile {
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Inspect or change local tastes (no network or Steam writes).
+    Preferences {
+        #[command(subcommand)]
+        action: PreferenceAction,
+    },
+    /// Inspect local story/achievement evidence, optionally mark or undo story completion.
+    Progress {
+        /// Owned AppID; omit to inspect/filter the whole local Library.
+        app_id: Option<u32>,
+        /// Set or undo the local narrative mark (never a Steam write).
+        #[arg(long, value_enum, requires = "app_id")]
+        story: Option<StoryAction>,
+        #[arg(long, value_enum, default_value = "all")]
+        filter: ProgressFilter,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Inspect cached official achievement progress for an owned AppID.
+    Achievements {
+        app_id: u32,
+        /// Explicitly refresh; at most one schema and one player request.
+        #[arg(long)]
+        refresh: bool,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Inspect or refresh bounded achievement coverage for active owned games.
+    AchievementCoverage {
+        /// Prioritize this owned AppID before recently played games.
+        #[arg(long)]
+        app_id: Option<u32>,
+        /// Maximum games in this batch (1..=12; at most two requests per game).
+        #[arg(long, default_value_t = 12, value_parser = clap::value_parser!(u32).range(1..=12))]
+        limit: u32,
+        /// Explicit refresh; otherwise read cache only.
+        #[arg(long)]
+        refresh: bool,
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Refresh or inspect the selected account's cached activity snapshot.
+    Activity {
+        #[command(subcommand)]
+        action: ActivityAction,
+    },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum StoryAction {
+    Completed,
+    Undo,
+}
+
+#[derive(Subcommand)]
+enum PreferenceAction {
+    /// List explicit choices, including expired Not now choices.
+    List {
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Set an owned game's local choice; last choice wins.
+    Set {
+        app_id: u32,
+        #[arg(value_enum)]
+        choice: PreferenceChoice,
+    },
+    /// Remove one local choice, including a game no longer in the Library.
+    Reset { app_id: u32 },
+    /// Remove only this account's explicit choices (irreversible).
+    ResetAll {
+        #[arg(long, required = true)]
+        confirm: bool,
+    },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum PreferenceChoice {
+    Interested,
+    NotInterested,
+    NotNow,
+}
+
+impl From<PreferenceChoice> for vapourfly_core::preferences::Choice {
+    fn from(value: PreferenceChoice) -> Self {
+        match value {
+            PreferenceChoice::Interested => Self::Interested,
+            PreferenceChoice::NotInterested => Self::NotInterested,
+            PreferenceChoice::NotNow => Self::NotNow,
+        }
+    }
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ProgressFilter {
+    All,
+    Unfinished,
+    NearPerfect,
+}
+
+impl From<ProgressFilter> for vapourfly_core::progress::Filter {
+    fn from(value: ProgressFilter) -> Self {
+        match value {
+            ProgressFilter::All => Self::All,
+            ProgressFilter::Unfinished => Self::Unfinished,
+            ProgressFilter::NearPerfect => Self::NearPerfect,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum ActivityAction {
+    /// Fetch at most one owned-games and one recently-played response.
+    Refresh {
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
+    /// Read the selected account's cached activity without network access.
+    Status {
+        #[arg(long, value_enum, default_value = "table")]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Subcommand)]
@@ -455,7 +614,7 @@ enum SyncAction {
 enum CacheAction {
     /// Refresh cached data from external sources.
     Refresh {
-        /// Source to refresh: igdb, rawg, protondb, pcgw, hltb, steam-store, or all.
+        /// Source to refresh: igdb, rawg, protondb, pcgw, steam-store, or all.
         #[arg(long)]
         source: String,
     },
@@ -541,6 +700,7 @@ enum OutputFormat {
 #[derive(Clone, Debug)]
 struct RecommendArgs {
     minutes: u32,
+    finish_short_game: bool,
     count: usize,
     deck: bool,
     installed_only: bool,
@@ -567,6 +727,35 @@ fn main() {
         Commands::Doctor => cmd_doctor(&cli),
         Commands::Accounts { action } => match action {
             AccountsAction::List => cmd_accounts_list(&cli),
+            AccountsAction::Inventory { format } => {
+                inventory_with_paths(&cli, *format, &PersonalPaths::default())
+            }
+            AccountsAction::Clear { scope, confirm } => {
+                clear_personal_with_paths(&cli, *scope, *confirm, &PersonalPaths::default())
+            }
+            AccountsAction::Profile { format } => cmd_profile(&cli, *format),
+            AccountsAction::Preferences { action } => cmd_preferences(&cli, action),
+            AccountsAction::Progress {
+                app_id,
+                story,
+                filter,
+                format,
+            } => cmd_progress(&cli, *app_id, *story, *filter, *format),
+            AccountsAction::Achievements {
+                app_id,
+                refresh,
+                format,
+            } => cmd_achievements(&cli, *app_id, *refresh, *format),
+            AccountsAction::AchievementCoverage {
+                app_id,
+                limit,
+                refresh,
+                format,
+            } => cmd_achievement_coverage(&cli, *app_id, *limit as usize, *refresh, *format),
+            AccountsAction::Activity { action } => match action {
+                ActivityAction::Refresh { format } => cmd_account_activity(&cli, true, *format),
+                ActivityAction::Status { format } => cmd_account_activity(&cli, false, *format),
+            },
         },
         Commands::Scan { format, enrich } => cmd_scan(&cli, *format, *enrich),
         Commands::Collections { action } => match action {
@@ -596,6 +785,7 @@ fn main() {
         },
         Commands::Recommend {
             minutes,
+            finish_short_game,
             count,
             deck,
             installed_only,
@@ -609,6 +799,7 @@ fn main() {
             &cli,
             RecommendArgs {
                 minutes: *minutes,
+                finish_short_game: *finish_short_game,
                 count: *count,
                 deck: *deck,
                 installed_only: *installed_only,
@@ -695,7 +886,8 @@ fn main() {
 }
 
 fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let steam_dir = cli.resolve_steam_dir().ok();
+    let resolved = cli.resolved_config().ok();
+    let steam_dir = resolved.as_ref().map(|config| config.steam_dir.clone());
 
     println!("Vapourfly Doctor");
     println!("================");
@@ -716,21 +908,16 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let accounts = steam::detect_accounts(dir).unwrap_or_default();
-            let selected = steam::select_account(&accounts, cli.account.as_deref()).ok();
+            let selected = steam::select_account(
+                &accounts,
+                resolved
+                    .as_ref()
+                    .and_then(|config| config.account.as_deref()),
+            )
+            .ok();
             println!("Accounts:      {} detected", accounts.len());
-            if let Some(acc) = selected {
-                if cli.verbose {
-                    println!(
-                        "Selected:      {} ({}) [{}]",
-                        acc.persona_name, acc.account_name, acc.steam_id64
-                    );
-                } else {
-                    println!(
-                        "Selected:      {} (***) [{}]",
-                        acc.persona_name,
-                        format::mask_id(&acc.steam_id64)
-                    );
-                }
+            if selected.is_some() {
+                println!("Selected:      account detected");
             }
 
             let folders = steam::detect_library_folders(dir).unwrap_or_default();
@@ -747,6 +934,18 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                     println!("Cloud storage: available");
                 } else {
                     println!("Cloud storage: not found");
+                }
+
+                let cache = vapourfly_api::cache::DiskCache::new(
+                    vapourfly_core::config::default_cache_dir(),
+                );
+                match vapourfly_api::activity::load(&cache, &acc.steam_id64) {
+                    Ok(Some(snapshot)) => {
+                        println!("Activity:      cached snapshot");
+                        println!("Activity:      {}", activity_status(&snapshot));
+                    }
+                    Ok(None) => println!("Activity:      no cached snapshot"),
+                    Err(_) => println!("Activity:      cache unavailable"),
                 }
             } else {
                 println!("Cloud storage: (no account selected)");
@@ -791,7 +990,7 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         if steam_key_ok {
             "configured (instant name resolution)"
         } else {
-            "not configured (names backfill from Steam Store instead; create a \
+            "not configured (local/cached names only; create a \
              free key at https://steamcommunity.com/dev/apikey and run \
              `vapourfly settings set steam_api_key <key>`)"
         }
@@ -809,10 +1008,10 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn cmd_accounts_list(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let steam_dir = cli.resolve_steam_dir()?;
+    let resolved = cli.resolved_config()?;
 
-    let accounts = steam::detect_accounts(&steam_dir)?;
-    let selected = steam::select_account(&accounts, cli.account.as_deref()).ok();
+    let accounts = steam::detect_accounts(&resolved.steam_dir)?;
+    let selected = steam::select_account(&accounts, resolved.account.as_deref()).ok();
 
     for acc in &accounts {
         let marker = if Some(&acc.steam_id64) == selected.map(|s| &s.steam_id64) {
@@ -833,6 +1032,621 @@ fn cmd_accounts_list(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                 marker
             );
         }
+    }
+    Ok(())
+}
+
+fn activity_json(
+    snapshot: &vapourfly_api::activity::ActivitySnapshot,
+) -> Result<String, serde_json::Error> {
+    let mut value = serde_json::to_value(snapshot)?;
+    let serde_json::Value::Object(ref mut object) = value else {
+        unreachable!("ActivitySnapshot always serializes as an object");
+    };
+    object.insert(
+        "freshness".into(),
+        serde_json::json!({
+            "owned": if snapshot.owned.stale() { "stale/limited" } else { "fresh" },
+            "recent": if snapshot.recent.stale() { "stale/limited" } else { "fresh" },
+        }),
+    );
+    serde_json::to_string_pretty(&value)
+}
+
+fn activity_status(snapshot: &vapourfly_api::activity::ActivitySnapshot) -> String {
+    format!(
+        "Owned: {}; Recent: {}",
+        section_status(&snapshot.owned),
+        section_status(&snapshot.recent)
+    )
+}
+
+fn section_status(section: &vapourfly_api::activity::ActivitySection) -> String {
+    let availability = match section.availability {
+        vapourfly_api::activity::Availability::Available => "available",
+        vapourfly_api::activity::Availability::Empty => "empty",
+        vapourfly_api::activity::Availability::Incomplete => "incomplete",
+        vapourfly_api::activity::Availability::RestrictedOrUnavailable => "restricted",
+        vapourfly_api::activity::Availability::Unauthorized => "unauthorized",
+        vapourfly_api::activity::Availability::RateLimited => "rate-limited",
+        vapourfly_api::activity::Availability::TransportFailure => "transport-failure",
+        vapourfly_api::activity::Availability::Malformed => "malformed",
+        vapourfly_api::activity::Availability::HttpError => "http-error",
+    };
+    let freshness = if section.stale() {
+        "stale/limited"
+    } else {
+        "fresh"
+    };
+    format!("{availability}; {freshness}")
+}
+
+fn selected_preference_account(
+    cli: &Cli,
+) -> Result<steam::SteamAccount, Box<dyn std::error::Error>> {
+    let resolved = cli.resolved_config()?;
+    let accounts = steam::detect_accounts(&resolved.steam_dir)
+        .map_err(|_| PersonalSelectionError::Discovery)?;
+    Ok(
+        steam::select_account(&accounts, resolved.account.as_deref())
+            .map_err(|_| PersonalSelectionError::Selection)?
+            .clone(),
+    )
+}
+
+fn cmd_profile(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std::error::Error>> {
+    profile_with_paths(cli, format, &PersonalPaths::default())
+}
+
+fn profile_with_paths(
+    cli: &Cli,
+    format: OutputFormat,
+    paths: &PersonalPaths,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resolved = cli.resolved_config()?;
+    let account = selected_preference_account(cli)?;
+    let scan = vapourfly_api::workflow::prepare(&vapourfly_api::workflow::WorkflowOptions {
+        steam_dir: resolved.steam_dir,
+        account: Some(account.steam_id64.clone()),
+        fixtures: cli.fixtures.clone(),
+        junk_mode: JunkMode::Default,
+        offline: true,
+        cache_root: Some(paths.cache.clone()),
+    })?;
+    if scan.account != account.account_name {
+        return Err("Scan does not match the selected account".into());
+    }
+    let profile = personal_evidence_for_scan(cli, &scan, paths)?.profile;
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&profile)?),
+        OutputFormat::Table => {
+            println!("Top Tags ({})", profile.steam_id64);
+            println!("{}", profile.activity_status);
+            println!("{}", profile.taste.explanation);
+            for item in &profile.traits {
+                println!(
+                    "Playstyle: {} — {}",
+                    item.label,
+                    if item.supported {
+                        "supported"
+                    } else {
+                        "insufficient evidence"
+                    }
+                );
+                println!("  Rule: {}", item.rule);
+                for (label, examples) in [
+                    ("Supporting", &item.supporting),
+                    ("Contrary", &item.contrary),
+                    ("Unknown", &item.unknown),
+                ] {
+                    println!("  {label}: {} titles", examples.len());
+                    for example in examples {
+                        println!(
+                            "    {} [{}]: {}",
+                            example.name, example.app_id, example.evidence
+                        );
+                    }
+                }
+            }
+            println!(
+                "Coverage: {:?}; as of {}",
+                profile.taste.coverage, profile.taste.as_of
+            );
+            for (label, tags) in [
+                ("Long-term", &profile.taste.long_term),
+                ("Recent", &profile.taste.recent),
+            ] {
+                println!("{label}:");
+                for tag in tags {
+                    println!(
+                        "  {} ({:?}): {:.1}% strength; {:.2}x library-relative lift",
+                        tag.tag,
+                        tag.kind,
+                        tag.strength * 100.0,
+                        tag.library_relative_lift
+                    );
+                    for title in &tag.supporting_titles {
+                        println!(
+                            "    {} [{}]: lifetime={}m recent={}m last={:?} interested={}; metadata={:?}; activity={:?}",
+                            title.name,
+                            title.app_id,
+                            title.lifetime_minutes,
+                            title.recent_minutes,
+                            title.last_played_at,
+                            title.interested,
+                            title.metadata_sources,
+                            title.activity
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cmd_preferences(cli: &Cli, action: &PreferenceAction) -> Result<(), Box<dyn std::error::Error>> {
+    run_preference_action(
+        cli,
+        action,
+        &config::default_preferences_dir(),
+        chrono::Utc::now().timestamp(),
+    )
+}
+
+fn run_preference_action(
+    cli: &Cli,
+    action: &PreferenceAction,
+    root: &Path,
+    now: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use vapourfly_core::preferences;
+    let account = selected_preference_account(cli)?;
+    match action {
+        PreferenceAction::List { format } => {
+            let prefs = preferences::load(root, &account.steam_id64)?;
+            match format {
+                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&prefs)?),
+                OutputFormat::Table => {
+                    println!("Local preferences (Not now expires after 30 days; no Steam writes):");
+                    for (id, p) in prefs {
+                        println!("{id}: {}", p.label(now));
+                    }
+                }
+            }
+        }
+        PreferenceAction::Set { app_id, choice } => {
+            let resolved = cli.resolved_config()?;
+            let scan = steam::scan_library(&steam::ScanOptions {
+                steam_dir: resolved.steam_dir,
+                account: Some(account.steam_id64.clone()),
+                fixtures: cli.fixtures.clone(),
+            })?;
+            if !scan.games.iter().any(|g| g.app_id == *app_id) {
+                return Err("AppID is not in the selected account's Library".into());
+            }
+            preferences::set(
+                root,
+                &account.steam_id64,
+                *app_id,
+                Some((*choice).into()),
+                now,
+            )?;
+            println!("Local preference updated.");
+        }
+        PreferenceAction::Reset { app_id } => {
+            preferences::set(root, &account.steam_id64, *app_id, None, now)?;
+            println!("Local preference reset.");
+        }
+        PreferenceAction::ResetAll { confirm } => {
+            if !confirm {
+                return Err("Reset all requires --confirm".into());
+            }
+            preferences::reset_all(root, &account.steam_id64)?;
+            println!("Selected account's local preferences reset.");
+        }
+    }
+    Ok(())
+}
+
+struct PersonalPaths {
+    cache: PathBuf,
+    story: PathBuf,
+    preferences: PathBuf,
+    playlists: PathBuf,
+}
+
+impl Default for PersonalPaths {
+    fn default() -> Self {
+        Self {
+            cache: config::default_cache_dir(),
+            story: config::default_story_dir(),
+            preferences: config::default_preferences_dir(),
+            playlists: config::default_playlists_dir(),
+        }
+    }
+}
+
+struct PersonalLibraryEvidence {
+    preferences: vapourfly_core::preferences::Preferences,
+    progress: std::collections::BTreeMap<u32, vapourfly_core::progress::Summary>,
+    profile: vapourfly_api::profile::AccountProfile,
+    now: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersonalSelectionError {
+    Discovery,
+    Selection,
+}
+
+impl std::fmt::Display for PersonalSelectionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Discovery => "Could not read Steam accounts; check the selected Steam directory",
+            Self::Selection => "Could not select a Steam account; use accounts list and --account",
+        })
+    }
+}
+
+impl std::error::Error for PersonalSelectionError {}
+
+fn inventory_with_paths(
+    cli: &Cli,
+    format: OutputFormat,
+    paths: &PersonalPaths,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resolved = cli.resolved_config()?;
+    let accounts = steam::detect_accounts(&resolved.steam_dir)
+        .map_err(|_| PersonalSelectionError::Discovery)?;
+    let selected = steam::select_account(&accounts, resolved.account.as_deref())
+        .map_err(|_| PersonalSelectionError::Selection)?;
+    let inventory = vapourfly_api::personal_data::inspect(
+        &vapourfly_api::cache::DiskCache::new(&paths.cache),
+        &paths.story,
+        &paths.preferences,
+        &selected.steam_id64,
+    )?;
+    let configured = resolved.steam_api_key.is_some();
+    let refresh = if cli.offline {
+        "disabled offline"
+    } else if configured {
+        "explicit activity/achievement refresh available; provider permission/visibility still required"
+    } else {
+        "requires an authorized Steam Web API key"
+    };
+    match format {
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "inventory": inventory,
+                "steam_key_configured": configured,
+                "refresh": refresh,
+                "local_selection_grants_remote_permission": false,
+                "read_only": true,
+            }))?
+        ),
+        OutputFormat::Table => {
+            println!("Selected-account personal storage (read-only; no network)");
+            for line in inventory.summary() {
+                println!("{line}");
+            }
+            println!("Steam key configured: {configured}; refresh: {refresh}");
+            println!(
+                "Local account selection does not grant remote permission. Shared metadata, Playlists, settings and Steam contents are separate."
+            );
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum PersonalClearScope {
+    Cached,
+    Authored,
+}
+
+impl From<PersonalClearScope> for vapourfly_api::personal_data::ClearScope {
+    fn from(scope: PersonalClearScope) -> Self {
+        match scope {
+            PersonalClearScope::Cached => Self::Cached,
+            PersonalClearScope::Authored => Self::Authored,
+        }
+    }
+}
+
+fn clear_personal_with_paths(
+    cli: &Cli,
+    scope: PersonalClearScope,
+    confirm: bool,
+    paths: &PersonalPaths,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resolved = cli.resolved_config()?;
+    let accounts = steam::detect_accounts(&resolved.steam_dir)
+        .map_err(|_| PersonalSelectionError::Discovery)?;
+    let selected = steam::select_account(&accounts, resolved.account.as_deref())
+        .map_err(|_| PersonalSelectionError::Selection)?;
+    let plan = vapourfly_api::personal_data::prepare_clear(
+        &vapourfly_api::cache::DiskCache::new(&paths.cache),
+        &paths.story,
+        &paths.preferences,
+        &selected.steam_id64,
+        scope.into(),
+    )?;
+    println!("{}", plan.scope.warning());
+    for line in plan.inventory.summary() {
+        println!("{line}");
+    }
+    println!("Shared metadata, saved Playlists, settings and Steam files are unchanged.");
+    if confirm {
+        plan.clear()?;
+        println!(
+            "Personal cleanup complete. Subsequent profile/ranking commands reload local evidence."
+        );
+    } else {
+        println!("Preview only; no records removed. Re-run with --confirm to clear this scope.");
+    }
+    Ok(())
+}
+
+fn personal_evidence_for_scan(
+    cli: &Cli,
+    scan: &ScanResult,
+    paths: &PersonalPaths,
+) -> Result<PersonalLibraryEvidence, Box<dyn std::error::Error>> {
+    let resolved = cli.resolved_config()?;
+    // Account parser/selection errors can contain private names, paths or VDF
+    // input. Derived output preserves failure, never those diagnostic payloads.
+    let accounts = steam::detect_accounts(&resolved.steam_dir)
+        .map_err(|_| PersonalSelectionError::Discovery)?;
+    // Borrow one selection for validation and cache keys; do not return or clone
+    // the complete account metadata through the derived-evidence boundary.
+    let selected = steam::select_account(&accounts, resolved.account.as_deref())
+        .map_err(|_| PersonalSelectionError::Selection)?;
+    if scan.account != selected.account_name {
+        return Err("Scan does not match the selected account".into());
+    }
+    let preferences = vapourfly_core::preferences::load(&paths.preferences, &selected.steam_id64)?;
+    let cache = vapourfly_api::cache::DiskCache::new(&paths.cache);
+    let activity = vapourfly_api::activity::load(&cache, &selected.steam_id64)?;
+    let progress = vapourfly_api::achievements::library_progress(
+        &cache,
+        &paths.story,
+        &selected.steam_id64,
+        &scan.games,
+    )?;
+    let now = chrono::Utc::now().timestamp();
+    let profile = vapourfly_api::profile::derive(
+        &selected.steam_id64,
+        &scan.games,
+        &preferences,
+        activity.as_ref(),
+        &progress,
+        now,
+    )?;
+    Ok(PersonalLibraryEvidence {
+        preferences,
+        progress,
+        profile,
+        now,
+    })
+}
+
+fn cmd_progress(
+    cli: &Cli,
+    app_id: Option<u32>,
+    story: Option<StoryAction>,
+    filter: ProgressFilter,
+    format: OutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resolved = cli.resolved_config()?;
+    let accounts = steam::detect_accounts(&resolved.steam_dir)?;
+    let selected = steam::select_account(&accounts, resolved.account.as_deref())?;
+    let scan = steam::scan_library(&steam::ScanOptions {
+        steam_dir: resolved.steam_dir,
+        account: Some(selected.steam_id64.clone()),
+        fixtures: cli.fixtures.clone(),
+    })?;
+    if app_id.is_some_and(|id| !scan.games.iter().any(|g| g.app_id == id)) {
+        return Err("AppID is not in the selected account's local Library".into());
+    }
+    let story_root = config::default_story_dir();
+    if let (Some(id), Some(action)) = (app_id, story) {
+        vapourfly_core::progress::set_story_completed(
+            &story_root,
+            &selected.steam_id64,
+            id,
+            matches!(action, StoryAction::Completed),
+        )?;
+    }
+    let cache = vapourfly_api::cache::DiskCache::new(config::default_cache_dir());
+    let progress = vapourfly_api::achievements::library_progress(
+        &cache,
+        &story_root,
+        &selected.steam_id64,
+        &scan.games,
+    )?;
+    let rows: Vec<_> = scan
+        .games
+        .iter()
+        .filter_map(|game| {
+            let summary = progress.get(&game.app_id)?;
+            (app_id.is_none_or(|id| id == game.app_id) && summary.matches(filter.into()))
+                .then_some((game.app_id, summary))
+        })
+        .collect();
+    match format {
+        OutputFormat::Table => {
+            println!(
+                "Progress evidence: {}/{} games; near-perfect uses fresh authoritative 90%..<100%; story marks are local",
+                progress
+                    .values()
+                    .filter(|p| p.achievements.is_some())
+                    .count(),
+                progress.len()
+            );
+            for (id, summary) in rows {
+                println!("{id}: {}", summary.label());
+            }
+        }
+        OutputFormat::Json => {
+            let rows: Vec<_> = rows
+                .into_iter()
+                .map(|(id, summary)| serde_json::json!({"app_id":id,"progress":summary}))
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&rows)?);
+        }
+    }
+    Ok(())
+}
+
+fn cmd_achievements(
+    cli: &Cli,
+    app_id: u32,
+    refresh: bool,
+    format: OutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resolved = cli.resolved_config()?;
+    let accounts = steam::detect_accounts(&resolved.steam_dir)?;
+    let selected = steam::select_account(&accounts, resolved.account.as_deref())?;
+    let scan = steam::scan_library(&steam::ScanOptions {
+        steam_dir: resolved.steam_dir.clone(),
+        account: Some(selected.steam_id64.clone()),
+        fixtures: cli.fixtures.clone(),
+    })?;
+    if !scan.games.iter().any(|g| g.app_id == app_id) {
+        return Err("AppID is not in the selected account's local Library".into());
+    }
+    let cache = vapourfly_api::cache::DiskCache::new(vapourfly_core::config::default_cache_dir());
+    let progress = if refresh {
+        vapourfly_api::achievements::refresh(
+            &cache,
+            &vapourfly_api::http::HttpClient::new(),
+            resolved.steam_api_key.as_deref(),
+            &selected.steam_id64,
+            app_id,
+            cli.offline,
+            &vapourfly_api::activity::RefreshControl::default(),
+        )?
+    } else {
+        vapourfly_api::achievements::load(&cache, &selected.steam_id64, app_id)?
+    };
+    match format {
+        OutputFormat::Table => {
+            let summary = progress.as_ref().map_or_else(
+                || "Steam achievements: unknown / not fetched".into(),
+                vapourfly_api::achievements::Progress::summary,
+            );
+            println!("{summary}");
+        }
+        OutputFormat::Json => {
+            let output = progress.as_ref().map(|p| serde_json::json!({
+                "app_id": p.app_id, "status": p.status, "total": p.total, "unlocked": p.unlocked,
+                "percentage": p.percentage(), "perfected": p.perfected(), "stale": p.stale(),
+                "checked_at": p.checked_at, "fetched_at": p.fetched_at, "source": "Steam user-key API",
+            }));
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+    }
+    Ok(())
+}
+
+fn cmd_achievement_coverage(
+    cli: &Cli,
+    app_id: Option<u32>,
+    limit: usize,
+    refresh: bool,
+    format: OutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use vapourfly_api::achievements;
+    let resolved = cli.resolved_config()?;
+    let detected = steam::detect_accounts(&resolved.steam_dir)?;
+    let selected = steam::select_account(&detected, resolved.account.as_deref())?;
+    let scan = steam::scan_library(&steam::ScanOptions {
+        steam_dir: resolved.steam_dir.clone(),
+        account: Some(selected.steam_id64.clone()),
+        fixtures: cli.fixtures.clone(),
+    })?;
+    let cache = vapourfly_api::cache::DiskCache::new(config::default_cache_dir());
+    let activity = vapourfly_api::activity::load(&cache, &selected.steam_id64)?;
+    let recent = activity
+        .as_ref()
+        .map_or(&[][..], |snapshot| snapshot.recent.games.as_slice());
+    let ids = achievements::active_app_ids(&scan.games, recent, app_id, limit)?;
+    let coverage = if refresh {
+        achievements::refresh_batch(
+            &cache,
+            &vapourfly_api::http::HttpClient::new(),
+            resolved.steam_api_key.as_deref(),
+            &selected.steam_id64,
+            achievements::BatchOptions {
+                app_ids: &ids,
+                limit,
+                force: true,
+                offline: cli.offline,
+            },
+            &vapourfly_api::activity::RefreshControl::default(),
+        )?
+        .0
+    } else {
+        achievements::batch_status(&cache, &selected.steam_id64, &ids)?
+    };
+    let output = achievement_coverage_output(&coverage, format)?;
+    println!("{output}");
+    Ok(())
+}
+
+fn achievement_coverage_output(
+    coverage: &vapourfly_api::achievements::BatchSummary,
+    format: OutputFormat,
+) -> Result<String, serde_json::Error> {
+    match format {
+        OutputFormat::Json => serde_json::to_string_pretty(coverage),
+        OutputFormat::Table => Ok(format!(
+            "Steam achievements (user-key API): {} selected; {} available; {} stale; {} unavailable; {} missing; {} attempted; {} pending; stop {:?}",
+            coverage.selected,
+            coverage.available,
+            coverage.stale,
+            coverage.unavailable,
+            coverage.missing,
+            coverage.attempted,
+            coverage.pending,
+            coverage.stop_reason,
+        )),
+    }
+}
+
+fn cmd_account_activity(
+    cli: &Cli,
+    refresh: bool,
+    format: OutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resolved = cli.resolved_config()?;
+    let accounts = steam::detect_accounts(&resolved.steam_dir)?;
+    let selected = steam::select_account(&accounts, resolved.account.as_deref())?;
+    let cache = vapourfly_api::cache::DiskCache::new(vapourfly_core::config::default_cache_dir());
+    let snapshot = if refresh {
+        let control = vapourfly_api::activity::RefreshControl::default();
+        vapourfly_api::activity::refresh(
+            &cache,
+            &vapourfly_api::http::HttpClient::new(),
+            vapourfly_core::config::resolve_steam_api_key().as_deref(),
+            &selected.steam_id64,
+            cli.offline,
+            &control,
+        )?
+    } else {
+        vapourfly_api::activity::load(&cache, &selected.steam_id64)?
+    };
+    let Some(snapshot) = snapshot else {
+        return Err("No account activity snapshot is cached; configure a Steam Web API key and run without --offline.".into());
+    };
+    match format {
+        OutputFormat::Table => {
+            println!("Account activity snapshot:");
+            println!("{}", activity_status(&snapshot));
+        }
+        OutputFormat::Json => println!("{}", activity_json(&snapshot)?),
     }
     Ok(())
 }
@@ -1089,10 +1903,10 @@ fn scan_library_hydrated(
     cli: &Cli,
     junk_mode: JunkMode,
 ) -> Result<ScanResult, Box<dyn std::error::Error>> {
-    let steam_dir = cli.resolve_steam_dir()?;
+    let resolved = cli.resolved_config()?;
     let result = vapourfly_api::workflow::prepare(&vapourfly_api::workflow::WorkflowOptions {
-        steam_dir,
-        account: cli.account.clone(),
+        steam_dir: resolved.steam_dir,
+        account: resolved.account,
         fixtures: cli.fixtures.clone(),
         junk_mode,
         offline: cli.offline,
@@ -1299,8 +2113,17 @@ fn cmd_junk_hide(
 }
 
 fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::error::Error>> {
+    recommend_with_paths(cli, args, &PersonalPaths::default())
+}
+
+fn recommend_with_paths(
+    cli: &Cli,
+    args: RecommendArgs,
+    paths: &PersonalPaths,
+) -> Result<(), Box<dyn std::error::Error>> {
     let RecommendArgs {
         minutes,
+        finish_short_game,
         count,
         deck,
         installed_only,
@@ -1316,10 +2139,15 @@ fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::erro
         validate_write_flags(dry_run, confirm)?;
     }
 
-    let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
+    let scan_result = scan_personal_library(cli, paths)?;
 
     let request = RecommendRequest {
         available_minutes: minutes,
+        intent: if finish_short_game {
+            vapourfly_core::models::RecommendIntent::FinishShortGame
+        } else {
+            vapourfly_core::models::RecommendIntent::Session
+        },
         count,
         deck_mode: deck,
         include_installed_only: installed_only,
@@ -1327,7 +2155,20 @@ fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::erro
         exclude_collections,
     };
 
-    let recommendations = recommend::recommend(&scan_result.games, &request);
+    let PersonalLibraryEvidence {
+        preferences,
+        profile,
+        progress,
+        now,
+    } = personal_evidence_for_scan(cli, &scan_result, paths)?;
+    let recommendations = recommend::recommend_personalized(
+        &scan_result.games,
+        &request,
+        &preferences,
+        &profile.taste,
+        &progress,
+        now,
+    );
 
     if to_collection {
         let app_ids: Vec<u32> = recommendations.iter().map(|r| r.app_id).collect();
@@ -1358,16 +2199,16 @@ fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::erro
 
     match format {
         OutputFormat::Table => {
+            println!("{}", recommend::intent_guidance(&request));
             println!("{:<10} {:<40} {:>8}  Reasons", "AppID", "Name", "Score");
             println!("{}", "-".repeat(86));
             for rec in &recommendations {
-                let reasons: Vec<String> = rec.reasons.iter().map(|r| r.code.clone()).collect();
                 println!(
                     "{:<10} {:<40} {:>8.2}  {}",
                     rec.app_id,
                     format::truncate(&rec.name, 38),
                     rec.score,
-                    reasons.join(", ")
+                    recommend::explanation(rec)
                 );
             }
             println!();
@@ -1382,6 +2223,8 @@ fn cmd_recommend(cli: &Cli, args: RecommendArgs) -> Result<(), Box<dyn std::erro
                 "schema": VAPOURFLY_RECOMMENDATIONS_SCHEMA,
                 "request": {
                     "available_minutes": minutes,
+                    "intent": request.intent,
+                    "guidance": recommend::intent_guidance(&request),
                     "count": count,
                     "deck_mode": deck,
                     "installed_only": installed_only,
@@ -1544,16 +2387,70 @@ fn cmd_playlist_discover(
     count: usize,
     out: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let scan_result = scan_library_hydrated(cli, JunkMode::Default)?;
-    let pf = discover::generate_discover_playlist(
-        &scan_result.games,
-        &DiscoverOptions {
-            seed_app_id: seed,
-            count,
-        },
-    );
+    discover_with_paths(cli, seed, count, out, &PersonalPaths::default())
+}
 
-    store_playlist(&pf)?;
+fn scan_personal_library(
+    cli: &Cli,
+    paths: &PersonalPaths,
+) -> Result<ScanResult, Box<dyn std::error::Error>> {
+    let resolved = cli.resolved_config()?;
+    // Validate with fixed diagnostics, without passing private account metadata
+    // through the scan result. The workflow resolves the same configured choice.
+    let accounts = steam::detect_accounts(&resolved.steam_dir)
+        .map_err(|_| PersonalSelectionError::Discovery)?;
+    steam::select_account(&accounts, resolved.account.as_deref())
+        .map_err(|_| PersonalSelectionError::Selection)?;
+    Ok(vapourfly_api::workflow::prepare(
+        &vapourfly_api::workflow::WorkflowOptions {
+            steam_dir: resolved.steam_dir,
+            account: resolved.account,
+            fixtures: cli.fixtures.clone(),
+            junk_mode: JunkMode::Default,
+            offline: cli.offline,
+            cache_root: Some(paths.cache.clone()),
+        },
+    )?)
+}
+
+fn discover_with_paths(
+    cli: &Cli,
+    seed: Option<u32>,
+    count: usize,
+    out: Option<PathBuf>,
+    paths: &PersonalPaths,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let scan_result = scan_personal_library(cli, paths)?;
+    let PersonalLibraryEvidence {
+        preferences,
+        profile,
+        progress,
+        now,
+    } = personal_evidence_for_scan(cli, &scan_result, paths)?;
+    let options = DiscoverOptions {
+        seed_app_id: seed,
+        count,
+    };
+    let picks = discover::rank_discover_personalized(
+        &scan_result.games,
+        &options,
+        &preferences,
+        &profile.taste,
+        &progress,
+        now,
+    );
+    let pf = discover::playlist_from_discover_picks(&scan_result.games, &options, &picks);
+
+    playlist_store::put(&paths.playlists, &pf)?;
+    println!("{}", profile.activity_status);
+    for pick in &picks {
+        println!(
+            "{} [{}]: {}",
+            pick.name,
+            pick.app_id,
+            discover::explanation(pick)
+        );
+    }
     println!("Generated Discover playlist: {}", pf.playlist.name);
     println!("  ID: {}", pf.playlist.id);
     match &pf.playlist.content {
@@ -1759,6 +2656,7 @@ fn cmd_sources_status(_cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn st
                     serde_json::json!({
                         "name": s.name,
                         "credentials": cred,
+                        "live_access_restriction": vapourfly_api::http::live_access_restriction(&s.name),
                         "last_success": s.last_success,
                         "cache_entries": s.cache_entries,
                         "stale_entries": s.stale_entries,
@@ -2140,7 +3038,820 @@ fn print_match_counts(report: &vapourfly_core::models::PlaylistMatchReport) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn personal_test_paths(root: &Path) -> PersonalPaths {
+        PersonalPaths {
+            cache: root.join("cache"),
+            story: root.join("story"),
+            preferences: root.join("preferences"),
+            playlists: root.join("playlists"),
+        }
+    }
+
+    #[test]
+    fn personal_clear_cli_requires_explicit_scope_and_confirmation() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = personal_test_paths(root.path());
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
+        let id = "76561198000000000";
+        let other = "76561198000000001";
+        for scope in ["cached", "authored"] {
+            for confirmed in [false, true] {
+                let mut args = vec![
+                    "vapourfly",
+                    "--offline",
+                    "--fixtures",
+                    fixtures.to_str().unwrap(),
+                    "--account",
+                    id,
+                    "accounts",
+                    "clear",
+                    "--scope",
+                    scope,
+                ];
+                if confirmed {
+                    args.push("--confirm");
+                }
+                let cli = Cli::try_parse_from(args).unwrap();
+                for account in [id, other] {
+                    vapourfly_core::preferences::set(
+                        &paths.preferences,
+                        account,
+                        10,
+                        Some(vapourfly_core::preferences::Choice::Interested),
+                        1,
+                    )
+                    .unwrap();
+                }
+                let cache = vapourfly_api::cache::DiskCache::new(&paths.cache);
+                let activity = cache.path_for(vapourfly_api::activity::SOURCE, id);
+                std::fs::create_dir_all(activity.parent().unwrap()).unwrap();
+                std::fs::write(&activity, b"unreadable-private-marker").unwrap();
+                let Commands::Accounts {
+                    action:
+                        AccountsAction::Clear {
+                            scope: parsed,
+                            confirm,
+                        },
+                } = &cli.command
+                else {
+                    panic!("clear command");
+                };
+                clear_personal_with_paths(&cli, *parsed, *confirm, &paths).unwrap();
+                assert_eq!(activity.exists(), !(confirmed && scope == "cached"));
+                assert_eq!(
+                    paths.preferences.join(id).exists(),
+                    !(confirmed && scope == "authored")
+                );
+                assert!(paths.preferences.join(other).join("10.json").exists());
+            }
+        }
+        assert!(Cli::try_parse_from(["vapourfly", "accounts", "clear", "--confirm"]).is_err());
+    }
+
+    #[test]
+    fn personal_inventory_cli_is_read_only_offline_and_exports_no_identifiers() {
+        const CHILD: &str = "VAPOURFLY_TEST_INVENTORY_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let root = tempfile::tempdir().unwrap();
+            let paths = personal_test_paths(root.path());
+            let fixtures =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
+            vapourfly_core::preferences::set(
+                &paths.preferences,
+                "76561198000000000",
+                999999,
+                Some(vapourfly_core::preferences::Choice::NotInterested),
+                1,
+            )
+            .unwrap();
+            let before =
+                std::fs::read(paths.preferences.join("76561198000000000/999999.json")).unwrap();
+            for format in ["json", "table"] {
+                let cli = Cli::try_parse_from([
+                    "vapourfly",
+                    "--fixtures",
+                    fixtures.to_str().unwrap(),
+                    "--account",
+                    "76561198000000000",
+                    "--offline",
+                    "accounts",
+                    "inventory",
+                    "--format",
+                    format,
+                ])
+                .unwrap();
+                let Commands::Accounts {
+                    action: AccountsAction::Inventory { format },
+                } = &cli.command
+                else {
+                    panic!("inventory command")
+                };
+                inventory_with_paths(&cli, *format, &paths).unwrap();
+            }
+            assert_eq!(
+                std::fs::read(paths.preferences.join("76561198000000000/999999.json")).unwrap(),
+                before
+            );
+            assert!(!paths.cache.exists());
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::personal_inventory_cli_is_read_only_offline_and_exports_no_identifiers",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HOME", root.path())
+            .env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env_remove("VAPOURFLY_ACCOUNT")
+            .env_remove("VAPOURFLY_STEAM_DIR")
+            .env_remove("VAPOURFLY_STEAM_API_KEY")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(text.contains("disabled offline"));
+        assert!(text.contains("Local preferences: 1 on-disk records"));
+        assert!(text.contains("\"local_selection_grants_remote_permission\": false"));
+        assert!(!text.contains("76561198000000000"));
+        assert!(!text.contains("999999"));
+        assert!(!text.contains("not_interested"));
+    }
+
+    #[test]
+    fn personal_evidence_selection_errors_do_not_export_private_diagnostics() {
+        let root = tempfile::tempdir().unwrap();
+        let steam = root.path().join("private-persona-marker");
+        std::fs::create_dir_all(steam.join("config")).unwrap();
+        let paths = personal_test_paths(root.path());
+        let cli = Cli::try_parse_from([
+            "vapourfly",
+            "--fixtures",
+            steam.to_str().unwrap(),
+            "--account",
+            "private-persona-marker",
+            "accounts",
+            "profile",
+        ])
+        .unwrap();
+        let scan = ScanResult {
+            games: vec![],
+            warnings: vec![],
+            steam_dir: String::new(),
+            account: String::new(),
+        };
+        for (input, expected) in [
+            (None, PersonalSelectionError::Discovery),
+            (
+                Some("private-persona-marker {"),
+                PersonalSelectionError::Discovery,
+            ),
+            (
+                Some(r#""users" { "76561198000000000" { "AccountName" "other" } }"#),
+                PersonalSelectionError::Selection,
+            ),
+        ] {
+            if let Some(text) = input {
+                std::fs::write(steam.join("config/loginusers.vdf"), text).unwrap();
+            }
+            let Err(error) = personal_evidence_for_scan(&cli, &scan, &paths) else {
+                panic!("invalid selection must fail, not produce empty evidence");
+            };
+            assert_eq!(
+                error.downcast_ref::<PersonalSelectionError>(),
+                Some(&expected)
+            );
+            assert_eq!(error.to_string(), expected.to_string());
+            assert!(!format!("{error:?}").contains("private-persona-marker"));
+            assert!(!error.to_string().contains("private-persona-marker"));
+            assert!(error.source().is_none());
+            for error in [
+                profile_with_paths(&cli, OutputFormat::Json, &paths).unwrap_err(),
+                recommend_with_paths(
+                    &cli,
+                    RecommendArgs {
+                        minutes: 120,
+                        finish_short_game: false,
+                        count: 5,
+                        deck: false,
+                        installed_only: false,
+                        seed: None,
+                        exclude_collections: vec![],
+                        to_collection: false,
+                        dry_run: false,
+                        confirm: false,
+                        format: OutputFormat::Json,
+                    },
+                    &paths,
+                )
+                .unwrap_err(),
+                discover_with_paths(&cli, None, 5, None, &paths).unwrap_err(),
+            ] {
+                assert_eq!(
+                    error.downcast_ref::<PersonalSelectionError>(),
+                    Some(&expected)
+                );
+                assert_eq!(error.to_string(), expected.to_string());
+                assert!(!format!("{error:?}").contains("private-persona-marker"));
+                assert!(error.source().is_none());
+            }
+        }
+        assert!(!paths.cache.exists());
+        assert!(!paths.story.exists());
+        assert!(!paths.preferences.exists());
+    }
+
+    #[test]
+    fn personalized_discover_cli_is_offline_scoped_and_keeps_manual_playlist_contract() {
+        const CHILD: &str = "VAPOURFLY_TEST_DISCOVER_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let data = tempfile::tempdir().unwrap();
+            let paths = personal_test_paths(data.path());
+            let fixtures =
+                PathBuf::from(std::env::var_os("VAPOURFLY_TEST_DISCOVER_FIXTURES").unwrap());
+            let local = fixtures.join("userdata/76561198000000000/config/localconfig.vdf");
+            let before = std::fs::read(&local).unwrap();
+            let id = "76561198000000000";
+            vapourfly_core::preferences::set(
+                &paths.preferences,
+                "76561198000000001",
+                427520,
+                Some(vapourfly_core::preferences::Choice::NotInterested),
+                100,
+            )
+            .unwrap();
+            vapourfly_core::preferences::set(
+                &paths.preferences,
+                id,
+                427520,
+                Some(vapourfly_core::preferences::Choice::Interested),
+                100,
+            )
+            .unwrap();
+            vapourfly_core::progress::set_story_completed(&paths.story, id, 427520, true).unwrap();
+            let cli = Cli::try_parse_from([
+                "vapourfly",
+                "--fixtures",
+                fixtures.to_str().unwrap(),
+                "--account",
+                id,
+                "--offline",
+                "playlist",
+                "discover",
+            ])
+            .unwrap();
+            for seed in [None, Some(730)] {
+                let out = paths.playlists.join("export-check.json");
+                discover_with_paths(&cli, seed, 5, Some(out.clone()), &paths).unwrap();
+                let pf = playlist::import_playlist(&out).unwrap();
+                let PlaylistContent::Manual { app_ids } = &pf.playlist.content else {
+                    panic!("manual");
+                };
+                assert!(app_ids.contains(&427520));
+                let decoded =
+                    share_code::decode_share_code(&share_code::encode_share_code(&pf).unwrap())
+                        .unwrap();
+                let PlaylistContent::Manual {
+                    app_ids: decoded_ids,
+                } = decoded.playlist.content
+                else {
+                    panic!("manual");
+                };
+                assert_eq!(*app_ids, decoded_ids);
+            }
+            assert_eq!(std::fs::read(&local).unwrap(), before);
+            assert!(!paths.cache.exists());
+            return;
+        }
+        fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for entry in std::fs::read_dir(from).unwrap() {
+                let entry = entry.unwrap();
+                let target = to.join(entry.file_name());
+                if entry.file_type().unwrap().is_dir() {
+                    copy_tree(&entry.path(), &target);
+                } else {
+                    std::fs::copy(entry.path(), target).unwrap();
+                }
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let fixtures = root.path().join("Steam");
+        copy_tree(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal"),
+            &fixtures,
+        );
+        let local = fixtures.join("userdata/76561198000000000/config/localconfig.vdf");
+        let text = std::fs::read_to_string(&local)
+            .unwrap()
+            .replace("\"1038\"", "\"0\"");
+        std::fs::write(local, text).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::personalized_discover_cli_is_offline_scoped_and_keeps_manual_playlist_contract", "--nocapture"])
+            .env(CHILD, "1").env("VAPOURFLY_TEST_DISCOVER_FIXTURES", fixtures)
+            .env("HOME", root.path()).env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env("XDG_DATA_HOME", root.path().join("data")).env("XDG_CACHE_HOME", root.path().join("cache"))
+            .env_remove("VAPOURFLY_ACCOUNT").env_remove("VAPOURFLY_STEAM_DIR").output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(text.contains("Factorio [427520]"));
+        assert!(text.contains("+0.50 Interested"));
+        assert!(text.contains("-1.25 Story completed"));
+        assert!(text.contains("No validated cached IGDB seed link"));
+        assert!(text.contains("Cache/local only"));
+    }
+
+    #[test]
+    fn personalized_recommend_cli_is_account_scoped_and_offline() {
+        const CHILD: &str = "VAPOURFLY_TEST_RECOMMEND_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let data = tempfile::tempdir().unwrap();
+            let paths = personal_test_paths(data.path());
+            let fixtures =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
+            let id = "76561198000000000";
+            vapourfly_core::progress::set_story_completed(&paths.story, id, 427520, true).unwrap();
+            vapourfly_core::preferences::set(
+                &paths.preferences,
+                "76561198000000001",
+                427520,
+                Some(vapourfly_core::preferences::Choice::NotInterested),
+                100,
+            )
+            .unwrap();
+            let cli = Cli::try_parse_from([
+                "vapourfly",
+                "--fixtures",
+                fixtures.to_str().unwrap(),
+                "--account",
+                id,
+                "--offline",
+                "recommend",
+                "--minutes",
+                "120",
+            ])
+            .unwrap();
+            for finish_short_game in [false, true] {
+                for format in [OutputFormat::Json, OutputFormat::Table] {
+                    recommend_with_paths(
+                        &cli,
+                        RecommendArgs {
+                            minutes: 120,
+                            finish_short_game,
+                            count: 5,
+                            deck: false,
+                            installed_only: false,
+                            seed: Some(42),
+                            exclude_collections: vec![],
+                            to_collection: false,
+                            dry_run: false,
+                            confirm: false,
+                            format,
+                        },
+                        &paths,
+                    )
+                    .unwrap();
+                }
+            }
+            assert!(!paths.cache.exists());
+            // Personal edits are not disposable provider caches: corruption must be visible.
+            std::fs::write(paths.story.join(id).join("427520.json"), b"{broken").unwrap();
+            let error = recommend_with_paths(
+                &cli,
+                RecommendArgs {
+                    minutes: 120,
+                    finish_short_game: false,
+                    count: 5,
+                    deck: false,
+                    installed_only: false,
+                    seed: Some(42),
+                    exclude_collections: vec![],
+                    to_collection: false,
+                    dry_run: false,
+                    confirm: false,
+                    format: OutputFormat::Json,
+                },
+                &paths,
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("Invalid story completion record")
+            );
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::personalized_recommend_cli_is_account_scoped_and_offline",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HOME", root.path())
+            .env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env("XDG_DATA_HOME", root.path().join("data"))
+            .env("XDG_CACHE_HOME", root.path().join("cache"))
+            .env_remove("VAPOURFLY_ACCOUNT")
+            .env_remove("VAPOURFLY_STEAM_DIR")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(text.contains("\"intent\": \"session\""));
+        assert!(text.contains("\"intent\": \"finish_short_game\""));
+        assert!(text.contains("Session length is not measured"));
+        assert!(text.contains("Unknown/long estimates are excluded"));
+        assert!(text.contains("story_completed"));
+        assert!(text.contains("-1.25 Story completed"));
+        assert!(text.contains("not probability or player percentile"));
+    }
+
+    #[test]
+    fn account_profile_cli_fixture_json_and_table() {
+        const CHILD: &str = "VAPOURFLY_TEST_PROFILE_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let data = tempfile::tempdir().unwrap();
+            let paths = personal_test_paths(data.path());
+            let fixtures =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
+            for format in ["json", "table"] {
+                // Deliberately omit --offline: this command is always cache-only.
+                let cli = Cli::try_parse_from([
+                    "vapourfly",
+                    "--fixtures",
+                    fixtures.to_str().unwrap(),
+                    "--account",
+                    "76561198000000000",
+                    "accounts",
+                    "profile",
+                    "--format",
+                    format,
+                ])
+                .unwrap();
+                let Commands::Accounts {
+                    action: AccountsAction::Profile { format },
+                } = &cli.command
+                else {
+                    panic!("profile command");
+                };
+                profile_with_paths(&cli, *format, &paths).unwrap();
+            }
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::account_profile_cli_fixture_json_and_table",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HOME", root.path())
+            .env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env("XDG_DATA_HOME", root.path().join("data"))
+            .env("XDG_CACHE_HOME", root.path().join("cache"))
+            .env_remove("VAPOURFLY_ACCOUNT")
+            .env_remove("VAPOURFLY_STEAM_DIR")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("\"long_term\""));
+        assert!(stdout.contains("\"traits\""));
+        assert!(stdout.contains("Playstyle: Completion-focused"));
+        assert!(stdout.contains("insufficient evidence"));
+        assert!(stdout.contains("Story unmarked"));
+        assert!(stdout.contains("\"steam_id64\": \"76561198000000000\""));
+        assert!(stdout.contains("Top Tags (76561198000000000)"));
+        assert!(stdout.contains("No eligible titles"));
+    }
+
+    #[test]
+    fn local_preferences_collection_target_respects_config_account() {
+        const CHILD_ROOT: &str = "VAPOURFLY_TEST_CONFIG_ACCOUNT_ROOT";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            let root = PathBuf::from(root);
+            let steam_dir = root.join("steam");
+            std::fs::create_dir_all(steam_dir.join("config")).unwrap();
+            std::fs::write(
+                steam_dir.join("config/loginusers.vdf"),
+                r#""users" {
+                    "76561198000000000" { "AccountName" "alpha" "MostRecent" "1" }
+                    "76561198000000001" { "AccountName" "bravo" "MostRecent" "0" }
+                }"#,
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                let config_path = config::config_file_path().unwrap();
+                assert!(config_path.starts_with(&root));
+                std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+                std::fs::write(config_path, "account = \"bravo\"\n").unwrap();
+            }
+            let cli = Cli::try_parse_from([
+                "vapourfly",
+                "--fixtures",
+                steam_dir.to_str().unwrap(),
+                "--offline",
+                "scan",
+            ])
+            .unwrap();
+            assert!(cli.account.is_none());
+            assert_eq!(
+                cli.resolved_config().unwrap().account.as_deref(),
+                Some("bravo")
+            );
+            assert_eq!(
+                cli.cloud_storage_path().unwrap(),
+                steam::cloud_storage_path(&steam_dir, "76561198000000001")
+            );
+            return;
+        }
+
+        // Unix config files can be isolated via HOME/XDG; Windows Known Folders
+        // cannot, so exercise the merged environment account there without writes.
+        let temp = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "tests::local_preferences_collection_target_respects_config_account",
+            ])
+            .env(CHILD_ROOT, temp.path())
+            .env("HOME", temp.path())
+            .env("XDG_CONFIG_HOME", temp.path().join("config"))
+            .env("APPDATA", temp.path().join("config"))
+            .env_remove("VAPOURFLY_ACCOUNT")
+            .env_remove("VAPOURFLY_STEAM_DIR");
+        #[cfg(windows)]
+        child.env("VAPOURFLY_ACCOUNT", "bravo");
+        let output = child.output().unwrap();
+        assert!(
+            output.status.success(),
+            "child config regression failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn local_preferences_cli_actions_and_discoverable_reset_confirmation() {
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
+        let fixture_arg = fixtures.to_str().unwrap();
+        let cli = Cli::try_parse_from([
+            "vapourfly",
+            "--fixtures",
+            fixture_arg,
+            "--offline",
+            "accounts",
+            "preferences",
+            "set",
+            "730",
+            "not-now",
+        ])
+        .unwrap();
+        let Commands::Accounts {
+            action: AccountsAction::Preferences { ref action },
+        } = cli.command
+        else {
+            panic!("preferences command");
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let account = selected_preference_account(&cli).unwrap();
+        run_preference_action(&cli, action, temp.path(), 100).unwrap();
+        let prefs = vapourfly_core::preferences::load(temp.path(), &account.steam_id64).unwrap();
+        assert!(vapourfly_core::preferences::excludes(&prefs, 730, 100));
+        assert!(!vapourfly_core::preferences::excludes(
+            &prefs,
+            730,
+            100 + vapourfly_core::preferences::NOT_NOW_SECONDS
+        ));
+        run_preference_action(
+            &cli,
+            &PreferenceAction::List {
+                format: OutputFormat::Json,
+            },
+            temp.path(),
+            100,
+        )
+        .unwrap();
+        run_preference_action(
+            &cli,
+            &PreferenceAction::Reset { app_id: 730 },
+            temp.path(),
+            100,
+        )
+        .unwrap();
+        assert!(
+            vapourfly_core::preferences::load(temp.path(), &account.steam_id64)
+                .unwrap()
+                .is_empty()
+        );
+        run_preference_action(&cli, action, temp.path(), 100).unwrap();
+        run_preference_action(
+            &cli,
+            &PreferenceAction::ResetAll { confirm: true },
+            temp.path(),
+            100,
+        )
+        .unwrap();
+        assert!(
+            vapourfly_core::preferences::load(temp.path(), &account.steam_id64)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            Cli::try_parse_from(["vapourfly", "accounts", "preferences", "reset-all"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "vapourfly",
+                "accounts",
+                "preferences",
+                "reset-all",
+                "--confirm"
+            ])
+            .is_ok()
+        );
+        assert!(
+            run_preference_action(
+                &cli,
+                &PreferenceAction::Set {
+                    app_id: u32::MAX,
+                    choice: PreferenceChoice::Interested
+                },
+                temp.path(),
+                100
+            )
+            .is_err()
+        );
+    }
     use vapourfly_core::models::Playlist;
+
+    #[test]
+    fn story_progress_cli_exposes_reversible_edits_and_evidence_filters() {
+        for action in ["completed", "undo"] {
+            let cli = Cli::try_parse_from([
+                "vapourfly",
+                "--offline",
+                "accounts",
+                "progress",
+                "730",
+                "--story",
+                action,
+                "--format",
+                "json",
+            ])
+            .unwrap();
+            assert!(matches!(
+                cli.command,
+                Commands::Accounts {
+                    action: AccountsAction::Progress {
+                        app_id: Some(730),
+                        story: Some(_),
+                        ..
+                    }
+                }
+            ));
+        }
+        assert!(
+            Cli::try_parse_from(["vapourfly", "accounts", "progress", "--story", "completed"])
+                .is_err()
+        );
+        for filter in ["unfinished", "near-perfect"] {
+            assert!(
+                Cli::try_parse_from(["vapourfly", "accounts", "progress", "--filter", filter])
+                    .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn achievement_coverage_parses_bounded_explicit_refresh() {
+        let cli = Cli::try_parse_from([
+            "vapourfly",
+            "--offline",
+            "accounts",
+            "achievement-coverage",
+            "--app-id",
+            "620",
+            "--limit",
+            "3",
+            "--refresh",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        assert!(cli.offline);
+        assert!(matches!(
+            cli.command,
+            Commands::Accounts {
+                action: AccountsAction::AchievementCoverage {
+                    app_id: Some(620),
+                    limit: 3,
+                    refresh: true,
+                    format: OutputFormat::Json,
+                }
+            }
+        ));
+        let cli = Cli::try_parse_from(["vapourfly", "accounts", "achievement-coverage"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Accounts {
+                action: AccountsAction::AchievementCoverage {
+                    app_id: None,
+                    limit: 12,
+                    refresh: false,
+                    ..
+                }
+            }
+        ));
+        for limit in ["0", "13"] {
+            assert!(
+                Cli::try_parse_from([
+                    "vapourfly",
+                    "accounts",
+                    "achievement-coverage",
+                    "--limit",
+                    limit,
+                ])
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn achievement_coverage_output_reports_partial_coverage_and_stop() {
+        let coverage = vapourfly_api::achievements::BatchSummary {
+            selected: 12,
+            available: 2,
+            stale: 1,
+            unavailable: 1,
+            missing: 8,
+            attempted: 4,
+            pending: 8,
+            stop_reason: Some(vapourfly_api::achievements::Status::RateLimited),
+        };
+        let json = achievement_coverage_output(&coverage, OutputFormat::Json).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["selected"], 12);
+        assert_eq!(parsed["missing"], 8);
+        assert_eq!(parsed["pending"], 8);
+        assert_eq!(parsed["stop_reason"], "rate_limited");
+        assert_eq!(parsed.as_object().unwrap().len(), 8);
+        let table = achievement_coverage_output(&coverage, OutputFormat::Table).unwrap();
+        assert!(table.contains("2 available; 1 stale; 1 unavailable; 8 missing"));
+        assert!(table.contains("4 attempted; 8 pending; stop Some(RateLimited)"));
+    }
+
+    #[test]
+    fn achievement_coverage_offline_fixture_runs_status_and_refresh() {
+        let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../data/fixtures/steam_minimal");
+        assert!(fixtures.is_dir());
+        let cli = Cli {
+            fixtures: Some(fixtures),
+            steam_dir: None,
+            account: Some("76561198000000000".into()),
+            verbose: false,
+            offline: true,
+            allow_steam_running: false,
+            command: Commands::Doctor,
+        };
+        for refresh in [false, true] {
+            cmd_achievement_coverage(&cli, Some(730), 3, refresh, OutputFormat::Json).unwrap();
+        }
+        assert!(
+            cmd_achievement_coverage(&cli, Some(999999), 3, false, OutputFormat::Json).is_err()
+        );
+    }
 
     #[test]
     fn cache_refresh_accepts_every_enrichment_source() {

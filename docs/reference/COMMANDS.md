@@ -44,6 +44,94 @@ These flags are available on all commands:
 
 ## Commands
 
+### Personal Record Inventory (Read-Only)
+
+```bash
+vapourfly --offline accounts inventory
+vapourfly --account <steamid64> accounts inventory --format json
+```
+
+Inspect selected-account cached activity, cached achievements, local story marks
+and preference files, including titles no longer in the Library. This performs
+no network requests or writes. Counts describe on-disk records, not ownership,
+valid records or achievement coverage. Local write timestamps are not provider
+freshness. Activity evidence separately reports its cached availability and
+freshness; absent or unreadable snapshots mean unknown, not an empty library.
+Storage access failures are errors, not zero counts.
+
+Data Sources > Personal records shows the same inventory, credential-configured
+boolean and refresh prerequisites. Local selection grants no remote permission;
+refresh still requires an authorized key and provider visibility, and is disabled
+offline. Reopen the dialog for a fresh snapshot. Inventory exports omit account
+identifiers, per-game payloads and credentials. This command does not clear data.
+
+### Confirmed Personal Cleanup
+
+```bash
+vapourfly --offline --account <steamid64> accounts clear --scope cached
+vapourfly --offline --account <steamid64> accounts clear --scope cached --confirm
+vapourfly --offline --account <steamid64> accounts clear --scope authored --confirm
+```
+
+Without `--confirm`, print the inventory and scope warning without removing
+records. The preview takes account locks until it exits; live personal refresh
+and authored writers fail busy while another preview/cleanup owns their scope.
+`cached` removes the activity snapshot and all per-game player achievement
+records, including orphaned titles; shared achievement schemas remain.
+`authored` permanently removes the selected account's story marks and preferences
+(including invalid/temporary authored files). This cannot be undone.
+Other accounts, metadata, Playlists, unrelated settings and Steam files remain.
+No key or network is required. Partial failures are explicit; reopen inventory
+before retry. Following profile/ranking commands read current disk evidence.
+Data Sources has the same two preview/confirm actions, rejects active personal
+refresh, checks the current account again on confirm and reloads derived evidence.
+
+### Account Progress (Local And Cache-Only)
+
+```bash
+vapourfly accounts progress 730 --story completed
+vapourfly accounts progress 730 --story undo
+vapourfly --offline accounts progress --filter unfinished
+vapourfly accounts progress --filter near-perfect --format json
+```
+
+With no AppID, list/filter the selected account's owned Library. `--story`
+requires an owned AppID and changes only Vapourfly's local narrative mark,
+never Steam files or achievements. Unfinished excludes marked stories and
+achievement Perfected games, and requires known activity evidence. Near-perfect
+requires fresh authoritative achievement counts in [90%, 100%). Unknown activity
+excludes Unfinished; missing or stale achievement counts exclude Near-perfect.
+Known playtime alone can qualify for Unfinished. Table output includes evidence coverage; JSON
+contains AppID and progress only, without account identifiers or unlock history.
+No network requests or API credentials are required. Local marks survive cache
+clears; corrupt records report an error instead of silently losing the mark.
+
+### Local Preferences (Selected Account)
+
+```bash
+vapourfly accounts preferences list --format json
+vapourfly accounts preferences set 730 interested
+vapourfly accounts preferences set 730 not-interested
+vapourfly accounts preferences set 730 not-now
+vapourfly accounts preferences reset 730
+vapourfly accounts preferences reset-all --confirm
+```
+
+All preference operations are local/cache-only, use the resolved selected account,
+and never write Steam files. Set requires an owned AppID; reset can remove an old
+record even if the game is no longer scanned. List includes expired Not now
+records, with an explicit expiry in JSON; output omits account identifiers.
+Reset all requires confirmation and removes only this account's choices, not
+story marks, caches, Playlists or settings. It cannot be undone.
+
+Last choice wins. Not interested and active Not now exclude before scoring in
+`recommend` and `playlist discover`; Not now expires exactly 30 days after setting
+it. Interested adds an explained +0.5 without overriding existing eligibility or
+excluded Collections. Preferences are not Steam/community tags. Rescan the GUI
+after CLI edits; newly generated picks evaluate expiry using the current time.
+Corrupt preference records report errors rather than silently restoring excluded
+candidates. Existing dry-run/confirmation/backup/Steam-running write gates remain.
+
 ### `vapourfly doctor`
 
 Diagnose the Steam installation, accounts, credentials, and cache.
@@ -89,7 +177,7 @@ vapourfly scan --enrich --format json
 
 **JSON output** includes: `app_id`, `name`, `installed`, `playtime_minutes`, `playtime_2wks_minutes`, `collections`, `is_hidden`, plus a `warnings` array.
 
-`--enrich` uses IGDB, RAWG, ProtonDB, PCGW, HLTB, and Steam Store sources. It
+`--enrich` uses IGDB, RAWG, ProtonDB, PCGW, and Steam Store sources. It
 populates the local cache (and applies cached entries, including stale ones)
 unless global `--offline` is set.
 
@@ -163,7 +251,9 @@ Cannot use `--strict` and `--aggressive` together.
 
 **Signals evaluated:**
 - **Low playtime** -- playtime below threshold (default: 30 minutes)
-- **Short completion** -- HLTB main story below threshold (default: 7200 seconds / 2 hours)
+- **Short completion** -- effective completion time below threshold (default:
+  7200 seconds / 2 hours; manual override, legacy HLTB cache, then IGDB
+  `normally` time-to-beat)
 - **Low rating** -- rating below threshold (default: 2.5 out of 5)
 
 Each decision includes a confidence score (fraction of possible signals for which data was available) and lists which signals matched and which were missing.
@@ -197,7 +287,14 @@ vapourfly recommend --minutes 120 --count 5 --to-collection --dry-run
 vapourfly recommend --minutes 120 --count 5 --to-collection --confirm
 ```
 
-**Output columns (table):** App ID, Name, Score, Reasons.
+**Output columns (table):** App ID, Name, Score, signed Reasons and limitations.
+
+Ranking shares the selected account's cached canonical Taste Profile, activity,
+achievements and local Story completed/preferences with the GUI. Continuous
+affinity and bounded variety replace binary keywords/random relevance noise;
+`--seed` changes ties only. Unknown evidence is labeled, not treated as zero
+activity or completed story. Relative fit is not probability or a player
+percentile. This does not establish session-duration provider rights (#27/#36).
 
 Current CLI recommendations scan the library, hydrate from the local cache
 (ADR-0009), annotate junk flags, and then score games. Fetch failures degrade
@@ -234,6 +331,13 @@ vapourfly playlist discover --seed 367520 --out discover.json
 vapourfly playlist match my-playlist.json
 vapourfly playlist match my-playlist.json --format json
 ```
+
+Discover uses the selected account's cached canonical profile, progress and local
+feedback. Its output includes complete signed reasons, cache coverage and missing
+seed evidence. An optional seed only gets a bounded boost from validated cached
+IGDB links; no key/metadata still permits eligible owned picks. It does not fetch
+provider data or alter Steam files; the generated file is the existing Manual
+Playlist type. Use the normal explicit sync workflow to write a Collection.
 
 **Match report columns (table):** Owned, Missing, Played, Unplayed, Hidden, Junk counts, plus Completion price (sum of Steam Store final prices for **missing, non-free** playlist entries; owned/unplayed games are never included; rule playlists have no missing entries so their completion price is absent). In online mode missing prices are fetched on-demand from the Steam Store API; with `--offline` only cached prices are used. Mixed currencies are reported as per-currency grouped totals.
 
@@ -284,7 +388,7 @@ vapourfly cache refresh --source steam-store
 vapourfly cache refresh --source all
 ```
 
-Valid sources: `igdb`, `rawg`, `protondb`, `pcgw`, `hltb`, `steam-store`, `all`.
+Valid sources: `igdb`, `rawg`, `protondb`, `pcgw`, `steam-store`, `all`.
 
 Cache refresh is blocked in `--offline` mode.
 
@@ -405,3 +509,74 @@ Most commands that produce tabular output support `--format`:
 | `VAPOURFLY_RAWG_KEY` | RAWG API key |
 | `VAPOURFLY_STEAM_API_KEY` | Steam Web API key for owned-game name resolution (overrides `steam_api_key` in config) |
 | `RUST_LOG` | Override log level (default: `warn`, or `debug` with `--verbose`) |
+# Account achievement progress
+
+## Account taste profile
+
+`accounts profile [--format table|json]` derives reproducible Top Tags for the
+selected account. This command is always local/cache-only, even without
+`--offline`; it does not refresh providers or persist the derived profile.
+Output separates long-term/recent strengths, genre/descriptor kind, library-relative
+lift (never a population percentile), supporting titles and source/time/coverage
+evidence. A bare fixture/no-metadata library produces an honest empty explanation.
+The same output includes rule-based playstyle traits (Completion-focused, Deep
+diver, Explorer), thresholds and supporting/contrary/unknown titles. JSON retains
+eligible title activity provenance even without metadata. Missing story marks
+remain unknown; stale achievement counts never support completion-focused.
+Account selection follows the same resolved CLI/environment/config choice as scan.
+
+```bash
+vapourfly --offline accounts profile
+vapourfly --account 76561198000000000 accounts profile --format json
+```
+
+## Achievement progress
+
+`accounts achievements <AppID> [--refresh] [--format table|json]` inspects
+official progress for an owned Library game. The default and `--offline`
+are cache-only. Explicit refresh makes at most two documented Steam user-key
+requests and reports unknown/restricted/incomplete separately from zero.
+JSON excludes account identifiers and individual unlock history.
+
+`accounts achievement-coverage [--app-id <AppID>] [--limit 1..12]
+[--refresh] [--format table|json]` reports the bounded active subset, rather
+than whole-library completion. An explicitly selected owned game comes
+first, followed by recently played owned games from local play history and
+cached account activity. The default reads cache only.
+
+```bash
+vapourfly accounts achievement-coverage --format json
+vapourfly accounts achievement-coverage --app-id 620 --limit 3 --refresh
+vapourfly --offline accounts achievement-coverage --refresh
+```
+
+Explicit refresh processes at most 12 games sequentially, with at most one
+schema and one player request each (24 total), existing Steam pacing and no
+retries. One OS lock per account prevents concurrent batches. Provider-wide
+authorization, rate-limit, HTTP or transport failure stops the batch; prior
+counts remain stale evidence. Coverage reports available/stale/unavailable/
+missing counts, attempted games and pending games left after a stop.
+Offline and no-key refreshes inspect cached evidence without requests.
+
+### Recommendation intent and duration
+
+`recommend --minutes 60` plans a **play session**, not an entire campaign. A
+40-hour game remains eligible. Cached Arcade/Puzzle/Racing/Sport(s)/Roguelike
+concepts give a transparent +0.25 short-loop heuristic only for 1-60 minute
+windows; this is not measured session length or a promise of a stopping point.
+Missing session evidence is neutral/unknown. No completion-time bonus applies.
+
+Use `recommend --minutes 60 --finish-short-game` to deliberately restrict picks
+to positive cached **full completion estimates** within that window. Unknown,
+zero and longer estimates are excluded rather than called suitable. Reasons
+identify cached IGDB normally, legacy cached HLTB or explicitly supplied manual
+provenance. Playtime and achievements are never subtracted to invent remaining
+hours. Manual Junk overrides retain their existing Junk-only scope; this flag
+adds no override store. Offline/no credentials work without a provider request.
+
+The existing Planner uses the same default and an explicit **Finish a short
+game** switch; displayed results identify their generated request even when
+controls are subsequently edited. JSON requests add `intent` and human guidance;
+old core request JSON without `intent` means `session`. Existing duration-rule
+names, Playlist JSON, VF1 codes and explicit Steam-write confirmation are unchanged.
+This software distinction does not resolve the external #27 rights disposition.

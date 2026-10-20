@@ -19,8 +19,9 @@ same online and off.
 **2. Cache hydration (stale entries welcome).**
 Workflow commands (`junk`, `recommend`, playlists, dynamic templates,
 moods) then merge in external metadata from the local cache: ProtonDB
-tiers, HLTB times, ratings, prices, similar-game vectors. Entries are used
-even when stale -- a six-week-old HLTB time still beats no HLTB time. This
+tiers, legacy HLTB or IGDB completion times, ratings, prices, similar-game
+vectors. Entries are used even when stale, including legacy HLTB records, so
+existing caches remain meaningful without contacting HLTB. This
 is the step that resolves game names when a name source is available.
 
 **3. Background populate (network, optional).**

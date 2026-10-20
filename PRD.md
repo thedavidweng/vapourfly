@@ -11,7 +11,7 @@
 - Steam 库越来越大，"喜加一"垃圾游戏泛滥，难以找到"好游戏"。
 - Steam 自带收藏集/过滤器太基础，无法按个人游时、Deck 兼容、进度、心情智能分类。
 - 玩家想像 Spotify 一样：创建游戏单、分享、匹配库、猜你喜欢、按时长推荐。
-- 外部数据（HLTB 时长、ProtonDB Deck 评分、PCGW 手柄、RAWG/IGDB 评分）未被充分利用本地化。
+- 外部数据（完成时长、ProtonDB Deck 评分、PCGW 手柄、RAWG/IGDB 评分）未被充分利用本地化。
 
 ## 目标用户
 
@@ -21,7 +21,7 @@ Steam 重度玩家（尤其是 Deck 用户、中国"喜加一"党），想要更
 
 ### 1. Junk / 喜加一 智能识别与排除
 
-三个信号（游时 / HLTB 主线时长 / 评分）+ 三种模式：
+三个信号（游时 / 有效完成时长 / 评分）+ 三种模式：
 
 | 模式 | 逻辑 |
 |---|---|
@@ -29,9 +29,9 @@ Steam 重度玩家（尤其是 Deck 用户、中国"喜加一"党），想要更
 | **Strict** | 游时低 + 所有*可用*信号都低 + 至少 `min_available_signals` 个数据点 |
 | **Aggressive** | 游时低 + 至少一个其他信号低，不要求数据点数 |
 
-Default 是默认模式。每个判定可解释：matched 信号、missing 信号、confidence 分数。支持手动 override（force_include / force_exclude / 手动 HLTB / 手动评分）。可一键隐藏或建 Junk 收藏集。
+Default 是默认模式。每个判定可解释：matched 信号、missing 信号、confidence 分数。支持手动 override（force_include / force_exclude / 手动完成时长 / 手动评分）。有效完成时长优先使用手动值、兼容读取的旧 HLTB 缓存，再使用 IGDB `time-to-beat.normally`。可一键隐藏或建 Junk 收藏集。
 
-硬 AND 三条件不可用：HLTB/RAWG 覆盖率不全，硬 AND 几乎判不出游戏。
+硬 AND 三条件不可用：完成时长/RAWG 覆盖率不全，硬 AND 几乎判不出游戏。
 
 ### 2. 智能推荐 "今晚玩什么"
 
@@ -41,11 +41,11 @@ Default 是默认模式。每个判定可解释：matched 信号、missing 信�
 |---|---|---|
 | low_playtime | +2.0 | 游时 < 120min |
 | deck_compatible | +2.0/+1.5/+1.0 | Native/Platinum/Gold（仅 deck 模式） |
-| time_match | +1.5 | 已知主线时长（HLTB，缺省回退 IGDB time-to-beat）≤ 可用时长 |
+| time_match | +1.5 | 已知有效完成时长（旧 HLTB 缓存或 IGDB `normally`）≤ 可用时长 |
 | high_rating | +1.0 | RAWG ≥4.0 或 IGDB ≥80 |
 | taste_similarity | +1.0 | 口味向量重叠 >5% |
 | recently_played_penalty | −1.0 | 14 天内玩过 |
-| likely_finished_penalty | −0.5 | 游时 > 1.5× HLTB 主线 |
+| likely_finished_penalty | −0.5 | 游时 > 1.5× 有效完成时长 |
 
 **权重固定不可调**——用户只调外部参数（可用时长、数量、deck 模式、seed、排除集合）。Junk 和 hidden 游戏在打分前过滤掉。可选 seed 让结果可复现。推荐可写入临时 Steam 收藏集 `vapourfly-picks`。
 
@@ -64,7 +64,7 @@ Default 是默认模式。每个判定可解释：matched 信号、missing 信�
 
 **透明动态模板**（用户可见规则）：
 - **Deck Session**：Installed + NotHidden + NotJunk + ProtonAtLeast Gold + ControllerSupportFull + HltbMaxMinutes
-- **Finish It**：游时在 HLTB 主线的 0.5–1.25 倍之间（快通关了）
+- **Finish It**：游时在有效完成时长的 0.5–1.25 倍之间（快通关了）
 
 **编辑歌单（Editorial Moods）**（命名策展，隐藏条件，类似 Spotify 编辑歌单）：
 
@@ -73,10 +73,10 @@ Default 是默认模式。每个判定可解释：matched 信号、missing 信�
 | Today's Biggest Hits | 库内正在打折（Steam Store `discount_percent > 0`） |
 | Indie Rising | 独立游戏 + 高评分 + 近期发行 |
 | Friday Party | Steam Store 分类含 Co-op / Local Multiplayer / Party |
-| Deck Guardians | ProtonDB Platinum/Gold + 手柄全支持 + 短 HLTB |
+| Deck Guardians | ProtonDB Platinum/Gold + 手柄全支持 + 短完成时长 |
 | Unopened Treasures | 未玩 + 高评分 + 非 junk |
-| Weekend Marathon | 未玩 + 长 HLTB + 高评分 |
-| Quick Round | 未玩 + 短 HLTB + 非 junk |
+| Weekend Marathon | 未玩 + 长完成时长 + 高评分 |
+| Quick Round | 未玩 + 短完成时长 + 非 junk |
 
 编辑歌单名是英文规范名，中文显示名属于本地化层。见 [ADR-0004](docs/adr/0004-editorial-mood-replaces-tag-filter.md)。
 
@@ -90,7 +90,7 @@ Default 是默认模式。每个判定可解释：matched 信号、missing 信�
 | RAWG | 环境变量 | 类型、标签、评分 |
 | ProtonDB | 无 | Deck 兼容 tier |
 | PCGamingWiki | 无 | 手柄支持、修复链接 |
-| HLTB | 无；默认构建启用，可用 `--no-default-features` 关掉 | 主线/完成时长 |
+| 旧 HLTB 缓存 | 无 | 只读兼容数据；不再请求或刷新 |
 | Steam Store | 无 | App 详情、价格、平台支持、分类 |
 | Steam Web API | 用户自建 key（`steam_api_key` / `VAPOURFLY_STEAM_API_KEY`） | 一次请求解析全部已拥有游戏名 |
 

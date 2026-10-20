@@ -21,7 +21,7 @@ shipped desktop GUI is a GPUI application using gpui-component.
 | Steam directory detection | Yes | Yes | Uses platform defaults, `--steam-dir`, `VAPOURFLY_STEAM_DIR`, or the standard config file path. |
 | Steam account selection | Yes | Yes | CLI supports `--account` and `accounts list`; GUI has an Account Override setting plus a detected accounts list with a one-click override action. If unset, Vapourfly selects the most recent Steam account or the only account. |
 | Setup diagnostics | Yes | Yes | CLI `vapourfly doctor` and GUI Settings setup check report Steam paths, accounts, library folders, cloud storage, cache path, and credential status. |
-| Library scan | Yes | Yes | CLI `scan`; GUI scans on startup and via the Library rescan button. Both read installed games, playtime, hidden state, and Steam collections. GUI Library has a one-row toolbar: search, scope control (All, Installed, Unplayed, Hidden), a **Filters** popover (Cozy / Story-rich / Great on Deck / Short sessions presets, Steam Deck and controller switches, minimum ProtonDB tier, hide junk / exclude hidden, genre, tag, playtime and HLTB ranges), a sort menu, and a grid/list switch. Active filters show as removable chips. With no search or filter active, the grid view opens on a "continue playing" hero for the most recent game (with Play, which launches or installs the game through Steam) and a Recently played shelf. The virtualized grid of portrait capsules uses Steam artwork from the local Steam cache, downloads missing art in the background, and falls back to generated covers offline. Clicking a game opens a detail sheet. While the library snapshot is being prepared in the background, skeleton cards are shown. Short sessions filters by HLTB main_story_seconds ≤ 120 min (falls back to IGDB time_to_beat when HLTB is absent). |
+| Library scan | Yes | Yes | CLI `scan`; GUI scans on startup and via the Library rescan button. Both read installed games, playtime, hidden state, and Steam collections. GUI Library has a one-row toolbar: search, scope control (All, Installed, Unplayed, Hidden), a **Filters** popover (Cozy / Story-rich / Great on Deck / Short sessions presets, Steam Deck and controller switches, minimum ProtonDB tier, hide junk / exclude hidden, genre, tag, playtime and completion-time ranges), a sort menu, and a grid/list switch. Active filters show as removable chips. With no search or filter active, the grid view opens on a "continue playing" hero for the most recent game (with Play, which launches or installs the game through Steam) and a Recently played shelf. The virtualized grid of portrait capsules uses Steam artwork from the local Steam cache, downloads missing art in the background, and falls back to generated covers offline. Clicking a game opens a detail sheet. While the library snapshot is being prepared in the background, skeleton cards are shown. Short sessions uses explicit completion-time precedence: manual override, cached legacy HLTB, then documented IGDB `normally` data. |
 | Enriched scan output | Yes | Yes | CLI `vapourfly scan --enrich` adds external metadata to that command's output and cache. GUI Library hydrates cached metadata and shows Proton/Deck badges and detail on poster cards when cache entries exist. |
 | Library card actions | — | Yes | Every Library card has a context menu (View details, Find similar games, Copy App ID, Open store page); the game sheet offers the same actions. Find similar opens Discover seeded with that AppID (Discover owns the seed-based similar-picks surface — ADR-0005). |
 | Collections list | Yes | Yes | CLI lists Steam collections; GUI shows a read-only card grid with a cover collage of up to four members, name, game count, and a Hidden tag when applicable. No member drill-in editor in v1. |
@@ -29,7 +29,7 @@ shipped desktop GUI is a GPUI application using gpui-component.
 | Junk preview | Yes | Yes | Evaluates Default, Strict, or Aggressive junk modes after hydrating cached external metadata into scanned game records. GUI opens Junk cleanup from the Library header (**Clean up**), not a sidebar item (ADR-0006). Page: mode → **Run preview** → Evaluated / Flagged / Selected tiles and a table with per-row checkbox, cover, verdict, and confidence; optional Keep rows; bulk **Select all flagged** / **Clear**. Apply and hide operate on the selected subset only. |
 | Junk apply to collection | Yes | Yes | Writes the selected junk candidates to a Steam collection after dry-run/confirmation and backup. GUI action lives in the Junk cleanup bottom bar (**Add to Junk collection**). |
 | Junk hide | Yes | Yes | Adds the selected junk candidates to Steam's hidden collection after dry-run/confirmation and backup. GUI action lives in the Junk cleanup bottom bar (**Hide in Steam**). |
-| Recommendations | Yes | Yes | Recommends from hydrated scanned game records by available minutes, count, installed-only, Deck mode, optional deterministic shuffle seed, and excluded Steam collections (CLI `--exclude-collection`, repeatable; GUI Exclude-collections picker). GUI top-level view is labeled **Recommendations**; Session Planner card with shuffle-seed field, top-3 highlight cards with 220×124 cover images, rank badges, match-percent badges, and compact metadata (HLTB, rating, ProtonDB, playtime), explanation rail (Results, Avg score, Top score, methodology), and full results list with match percent and human reason labels. Seed-by-game similarity lives in Discover (ADR-0005), not here. |
+| Recommendations | Yes | Yes | Recommends from hydrated scanned game records by available minutes, count, installed-only, Deck mode, optional deterministic shuffle seed, and excluded Steam collections (CLI `--exclude-collection`, repeatable; GUI Exclude-collections picker). GUI top-level view is labeled **Recommendations**; Session Planner card with shuffle-seed field, top-3 highlight cards with 220×124 cover images, rank badges, match-percent badges, and compact metadata (completion time, rating, ProtonDB, playtime), explanation rail (Results, Avg score, Top score, methodology), and full results list with match percent and human reason labels. Seed-by-game similarity lives in Discover (ADR-0005), not here. |
 | Temporary recommendation collection | Yes | Yes | CLI `recommend --to-collection --dry-run|--confirm` and GUI Recommendations **Save as Steam collection** write to `vapourfly-picks` after dry-run confirmation. |
 | Playlist import | Yes | Yes | Imports Vapourfly JSON playlist files. CLI stores imported playlists under the app data playlist directory. |
 | Playlist export | Yes | Yes | CLI exports a stored playlist by ID. GUI exports the currently loaded playlist to a selected JSON path. |
@@ -37,8 +37,8 @@ shipped desktop GUI is a GPUI application using gpui-component.
 | Playlist completion price | Yes | Yes | CLI `playlist match`/`playlist import` and GUI match report show the sum of Steam Store final prices for **missing, non-free** Playlist entries with available price data. Owned/unplayed games are never included. Rule Playlists have no missing entries, so their completion price is absent. Single-currency totals return one Money value; mixed currencies return per-currency grouped totals. Price coverage (priced/missing-non-free) is shown when partial. In online mode, missing AppIDs without cache entries are fetched on-demand via the Steam Store API; in offline mode, only cached prices are used. When no price is available, the CLI reports "unavailable — missing entries may be free, unpriced, or not cached". |
 | Rule-based playlists | Yes | Yes | CLI `playlist create-rules` and GUI Playlists view create rule-based playlists. CLI/GUI workflows hydrate cached metadata before rule evaluation. Rule operators: `ProtonAtLeast`, `HltbMaxMinutes`, `ControllerSupportFull`, `PlaytimeBetween`, `RatingAtLeast`, `HasGenre`, `HasTag`, `Installed`, `NotJunk`, `NotHidden`, `And`, `Or`, `Not`. |
 | Playlist sync to Steam collection | Yes | Yes | CLI `vapourfly sync collection <playlist-id>` and GUI Playlists sync resolve a playlist and write a Steam collection with dry-run/confirmation. |
-| Data source cache refresh | Yes | Yes | CLI `cache refresh --source <source>` and GUI Data Sources **Refresh All** / per-row Refresh support `igdb`, `rawg`, `protondb`, `pcgw`, `hltb`, `steam-store`, and `all`. Refresh is disabled while offline or when required credentials are missing. |
-| Data source status | Yes | Yes | CLI `sources status`; GUI Data Sources shows Sources / Cached entries / Stale / Missing credentials tiles and a table (Steam Store, IGDB, ProtonDB, PCGW, HLTB, RAWG) with credential tag, entries, freshness, last updated, and per-row refresh. |
+| Data source cache refresh | Yes | Yes | CLI `cache refresh --source <source>` and GUI Data Sources **Refresh All** / per-row Refresh support `igdb`, `rawg`, `protondb`, `pcgw`, `steam-store`, and `all`. Refresh is disabled while offline or when required credentials are missing. |
+| Data source status | Yes | Yes | CLI `sources status`; GUI Data Sources shows Sources / Cached entries / Stale / Missing credentials tiles and a table for live sources (Steam Store, IGDB, ProtonDB, PCGW, RAWG) with credential tag, entries, freshness, last updated, and per-row refresh. |
 | Offline mode | Yes | Yes | CLI `--offline` blocks all network calls, including the bounded Steam Web API name-map request and on-demand Playlist prices. GUI offline toggle lives on **Data Sources**; when enabled it blocks cache refresh and forces cache-only hydration (ADR-0009). |
 | Controller and Steam Deck | — | Yes | The GUI reads game controllers directly (Steam Deck controls, Xbox-style pads): D-pad / left stick move focus, A selects, B goes back, LB / RB switch pages, LT / RT and the right stick scroll, Y focuses search, Start opens Settings, Select toggles the sidebar. The Library grid and list move card by card. On SteamOS, text fields open Steam's on-screen keyboard. Game Mode opens fullscreen at 1280×800 and the write-confirmation dialog warns that Steam must be closed. `VAPOURFLY_NO_GAMEPAD=1` disables controller input; `--deck` simulates a Deck. Linux installs use `scripts/install-steamos.sh`. |
 | Backup list | Yes | Yes | Lists backups next to the Steam cloud storage file. GUI lists backups under **Settings → Backups** (not a top-level sidebar item; ADR-0006). |
@@ -49,8 +49,125 @@ shipped desktop GUI is a GPUI application using gpui-component.
 | Playlist creation/editing UI | Yes | Yes | CLI `playlist create`; GUI Playlists view supports load existing, create/edit fields, save, match report, export, import file, VF1 share codes, and sync to Steam Collection after dry-run confirmation. The left rail lists stored playlists and a **+** menu (blank, template, mood, import file, paste share code). The editor has a hero with cover, editable name and description, game count, average HLTB, and ID, then Games / Rules / Match / Share tabs. Games tab: search-based Add/Remove from library as the primary editor, with an optional direct App ID field. Rules tab: active rules as removable chips (recursive And/Or/Not), quick-add (Installed, NotHidden, NotJunk, ControllerSupportFull), parameterized rule rows (HasGenre, HasTag, HltbMaxMinutes, ProtonAtLeast, PlaytimeBetween with min≤max validation, RatingAtLeast with 0.0–5.0 validation), and a JSON toggle. No Discover control on this page (ADR-0006). |
 | Share codes | Yes | Yes | `VF1:` compact binary playlist codes (ADR-0003) via CLI `playlist share` / `playlist import --code` and GUI copy/import controls. The payload carries content + name + description, DEFLATE-compressed and base64url-encoded. No backward compatibility with the old base64url(JSON) format. |
 | Discover / similar-game playlist generation | Yes | Yes | CLI `playlist discover`; GUI **Discover** top-level view (optional searchable game seed, pick count 10 / 20 / 40, **Find matches** or **Match my taste** without a seed) shows pick cards with relative match and human reason labels. Discover owns the entire "similar picks" surface (ADR-0005); Playlists has no Discover control (ADR-0006). On success the GUI writes the stable slot id `discover` and overwrites on regenerate (ADR-0007). Continuation: **Open as playlist** (loads the slot for edit/share/sync); optional **Sync to Steam** remains dry-run confirmed. |
-| Dynamic collection templates | Yes | Yes | CLI `collections dynamic <template>`; GUI Playlists **+ → From a template** generates `deck-session` / `finish-it`. Deck Session requires installed, not hidden, not junk, ProtonDB Gold-or-better, PCGW full controller support, and HLTB within the requested session length. On success the GUI writes under stable slot ids `dynamic-deck-session` / `dynamic-finish-it` and overwrites on regenerate (ADR-0007). |
+| Dynamic collection templates | Yes | Yes | CLI `collections dynamic <template>`; GUI Playlists **+ → From a template** generates `deck-session` / `finish-it`. Deck Session requires installed, not hidden, not junk, ProtonDB Gold-or-better, PCGW full controller support, and effective completion time within the requested session length. On success the GUI writes under stable slot ids `dynamic-deck-session` / `dynamic-finish-it` and overwrites on regenerate (ADR-0007). |
 | Editorial Moods | Yes | Yes | CLI `collections mood [name]`; GUI Playlists **+ → From a mood** lists the seven canonical Editorial Moods with opaque criteria (ADR-0004): Today's Biggest Hits, Indie Rising, Friday Party, Deck Guardians, Unopened Treasures, Weekend Marathon, Quick Round. On success the GUI writes under stable slot ids `mood-<id>` (one slot per mood) and overwrites on regenerate (ADR-0007). |
+
+## Local Story Completion And Library Progress
+
+Library game details offer **Mark story completed** / **Undo story completion**.
+This reversible narrative mark lives in Vapourfly's durable data directory,
+`personal/story/<SteamID64>/<AppID>.json`, not in the disposable provider cache
+or any Steam file. It requires a matching selected-account Library scan and is
+disabled in demo mode; offline operation requires no Web API key.
+
+The independent progress dimensions are Not played / In progress / Unknown,
+the manual Story completed mark, and authoritative achievement Perfected.
+Missing playtime is not zero. Neither playtime nor a narrative mark invents an
+achievement denominator; unsupported/unavailable/incomplete achievement data
+does not establish Perfected. Cached stale authoritative counts remain labeled.
+
+The Library **Filters > Progress** controls include **Unfinished** (known
+activity, neither locally story completed nor achievement Perfected) and
+**Near-perfect** (fresh authoritative counts at least 90% but below 100%).
+Unknown activity excludes Unfinished; missing or stale authoritative achievement
+counts exclude Near-perfect. Known playtime alone can qualify for Unfinished.
+Coverage and errors remain visible
+above the Library. Reads share the existing background prepare, with no network
+or per-frame disk reads. Rescan reloads externally edited local marks.
+
+CLI parity: `accounts progress [AppID] [--story completed|undo]`
+`[--filter all|unfinished|near-perfect] [--format table|json]`. It is cache-only
+even without `--offline`. JSON excludes account identity and unlock history.
+The automated fixture/state tests do not establish native keyboard/controller
+or authorized live Steam provider acceptance; those remain separately tracked.
+
+## Explicit Local Preferences
+
+Game details (also opened from Recommendations/Discover cards) offer Interested,
+Not interested, Not now, Reset this preference, and a confirmed Reset all account
+preferences action. These are personal choices, not community tags or Steam
+Collections. Demo edits are disabled. CLI parity lives under `accounts preferences`.
+
+State is atomic per SteamID64/AppID in
+`{data}/vapourfly/personal/preferences/<SteamID64>/<AppID>.json`, separate from
+provider caches, story marks and Playlists. Only the choice, record version and
+optional expiry are stored. No network service, telemetry or Steam writes are
+introduced. Reset one removes one choice; reset all removes only the selected
+account's choices. Reset is irreversible, while a choice can be changed at any time.
+Malformed/unreadable preferences report an error and block personalized generation
+rather than silently ignoring exclusions; reset can remove corrupt local records.
+
+The latest explicit choice replaces the previous one. Not interested excludes
+before Recommendations and Discover scoring. Not now does the same until exactly
+30 days after setting it, with no automatic renewal. Expired records are labeled
+and no longer affect newly generated picks. Interested adds an explained **+0.5**,
+never overriding hidden/junk/non-game, installed-only, unplayed Discover or
+explicit excluded-Collection constraints. Collections are not rewritten or treated
+as tags; only existing explicit exclusions take precedence over Interested.
+
+GUI feedback reloads the local snapshot and invalidates old/in-flight picks,
+refreshing previously active Recommendations. Discover picks are cleared until
+the next explicit Find matches action, preserving saved Playlists and unsaved
+editor contents. Account switches reject prior preferences and clear prior picks.
+External CLI edits load on rescan; expiry is
+evaluated at generation time. Preference reads are part of background preparation,
+not per-frame disk/network reads. Existing Playlist files, share codes, exports
+and Steam write gates are unchanged; feedback does not rewrite a saved Playlist.
+
+## Explainable playstyle
+
+The existing Library/Discover profile panel and `accounts profile` expose the
+same deterministic rules. Only supported labels appear in the compact summary;
+Evidence/table/JSON include all rules and supporting/contrary/unknown examples.
+No PlayTracker dependency, imported text, cohort data or new personal store.
+
+- Completion-focused: at least 3 completed titles and 60% of known completion
+  evidence. Local story marks and fresh authoritative perfected achievements
+  support it. Fresh incomplete achievements are contrary achievement evidence,
+  not proof of an unfinished story; missing marks/stale counts stay unknown.
+- Deep diver: at least 2 titles with 1200+ lifetime minutes and at least half of
+  played titles with known lifetime minutes. Unknown minutes are not zero.
+- Explorer: at least 5 titles with 60+ lifetime minutes spanning 3 canonical
+  broad genres. Missing metadata stays unknown; Interested/ownership alone are
+  never play. These are descriptive thresholds, not psychological claims or
+  completion-duration estimates. Partial coverage remains visible.
+
+Local story edits recompute traits immediately; account switches and cached
+refreshes invalidate the same prepared profile. Keyboard and real-controller
+acceptance are separate; automated fixtures cannot certify physical hardware.
+
+## Derived Top Tags
+
+Library and Discover show a compact Top Tags summary with an Evidence dialog;
+`accounts profile --format table|json` provides the same derived account profile.
+Reads use existing local Steam activity, the selected SteamID64's cached owned/
+recent snapshots, cached game descriptors and local Interested choices. No HTTP
+requests, profile database, Game schema changes or new navigation destination.
+No optional Steam Spy source is enabled. Missing metadata produces explicit
+coverage/empty explanations, not invented tastes. Invalid preferences are errors.
+
+Genres, themes, keywords, tags and categories from cached Steam/IGDB/RAWG records
+are normalized and merged, with conservative aliases (RPG/role-playing, co-op,
+single-player, sci-fi). Each concept counts once per title and retains all its
+source labels; genre evidence takes precedence over descriptor classification.
+Hidden/junk and known non-games do not contribute. Ownership alone has no weight.
+Lifetime weights are `minutes/(minutes+600)`, recent weights
+`minutes/(minutes+120)`: continuous and bounded, so one huge playtime cannot grow
+without limit. Interested adds 0.25 to long-term only and resetting removes it.
+Recommendations and Discover consume this profile (see Personal Owned-Library
+Ranking and Personal Discover).
+
+Local/cached minutes are combined by maximum, never added across sources. Cached
+recent samples older than 14 days and observations whose known last-played time
+is outside that window do not contribute to recent strength. Failed refreshes
+may retain historical data with its original fetch time and explicit availability;
+they do not refresh that time. Local evidence has no fetch timestamp, which is
+stated rather than represented as fresh authoritative data. Strength is a
+non-exclusive share of engagement among metadata-covered titles. Library-relative
+lift divides that share by the concept's frequency in this library: it is **not a
+player-population percentile**. Evidence includes title IDs/names, activity values,
+interest, timestamps, sources and coverage. Preference edits recompute the view;
+rescan/cache/activity refresh and account switches invalidate the prepared view.
 
 ## Current Data Flow
 
@@ -71,7 +188,7 @@ then re-classify junk with the desired mode if different from Default.
 | RAWG | `VAPOURFLY_RAWG_KEY` | Genres, tags, ratings, store availability |
 | ProtonDB | None | Linux and Steam Deck compatibility tier |
 | PCGamingWiki | None | Controller support, Steam Deck notes, fixes URL |
-| HLTB | None (enabled in the default build; disable with `--no-default-features`) | Completion times from HowLongToBeat |
+| Legacy HLTB cache | None | Read-only compatibility data from prior versions; no live endpoint |
 | Steam Store | None | App details, store metadata, price, platform support |
 
 API credentials must be provided as environment variables before launching the
@@ -146,3 +263,54 @@ Available rule operators: `ProtonAtLeast`, `HltbMaxMinutes`,
 
 The interactive GUI checklist lives in [gui-smoke-test.md](../gui-smoke-test.md).
 Run it with `--ui-demo` and at 1024px / 1280px / 1440px before a release.
+
+## Personal Owned-Library Ranking
+
+Recommendations use the same cache-only canonical account Taste Profile as
+Library Evidence. Continuous long-term/recent affinity, known low activity,
+bounded quality/recency, explicit story/authoritative achievement evidence and
+Interested/Favorites have signed explanations. Not interested/active Not now
+and existing eligibility/exclusion constraints apply before scoring. Missing or
+stale completion evidence is not a completion guess. A seeded AppID tie-break
+and bounded canonical overlap reranking provide reproducible variety without
+random relevance noise. The GUI's relative fit is within the current result set,
+not a probability or global percentile. CLI/GUI show full contributions and
+coverage limitations; local story edits invalidate stale/in-flight picks.
+Existing Steam write preview/confirmation/backup/running guards remain unchanged.
+
+## Personal Discover
+
+Discover remains the owned/unplayed Manual Playlist factory, not a session planner
+or population-graph recommendation service. It reuses the selected account's
+prepared canonical long-term/recent profile, cached achievements, local story
+marks and preferences. Hidden/junk/non-games and active Not interested/Not now
+are excluded before scoring. Existing local-unplayed eligibility is retained;
+unknown local activity does not assert zero lifetime activity.
+
+Shared signed contributions follow Recommendations, without duration or Deck
+planner terms. Optional seed relatedness adds at most 0.75 only when both cached
+IGDB records have confirmed Steam mappings and the seed's similar-game IDs name
+the candidate. Missing/unvalidated links add nothing and are explicitly labeled.
+Known lifetime activity contributes novelty `0.25/(1+minutes/120)`; missing
+activity is neutral. Canonical Jaccard diversity subtracts at most 0.35 per pick.
+Input order does not change results. Sparse/no-key profiles keep useful eligible
+picks even when scores are zero or negative, with honest limited-evidence reasons.
+
+CLI and GUI display the same complete signed reasons and relative-fit semantics.
+The CLI keeps existing seed/taste playlist IDs; the GUI overwrites only its
+existing `discover` generator slot. Edit, match, export, VF1 sharing and confirmed
+Steam sync retain the existing Manual Playlist contract and safety guards.
+Story/feedback edits invalidate old displayed/in-flight picks, but do not silently
+regenerate and overwrite a saved playlist or unsaved editor: generate again when
+ready. Reads use prepared local caches, never trigger provider refreshes.
+
+### Session intent versus completion estimates
+
+Recommendations defaults to a play session: long campaigns remain eligible and
+full completion duration never awards a fit bonus. An explicit Planner switch /
+CLI `--finish-short-game` instead requires a positive cached full completion
+estimate within the requested window. Complete signed reasons label source and
+unknown remaining time. A bounded +0.25 cached short-loop-tag heuristic for
+1-60 minute sessions is not measured duration; absent evidence stays neutral.
+No remote request, new store/navigation or Playlist/VF1 migration is introduced.
+#27 source-rights disposition and native/controller acceptance remain separate.

@@ -1,21 +1,227 @@
-//! Scoring primitives — taste vector, taste overlap, and high-rating check.
+//! Shared cache/local personal attribution, normalization and deterministic variety.
 //!
-//! Deep module: owns the shared scoring primitives that [`recommend`] and
-//! [`discover`] both depend on. Each caller applies its own weights and
-//! thresholds; the signal extraction and normalization live here.
-//!
-//! ## Primitives
-//!
-//! - [`build_taste_vector`]: maps keywords to log-scaled playtime weights.
-//! - [`taste_overlap`]: normalized overlap between a game's keywords and a
-//!   taste vector (0.0–1.0).
-//! - [`is_high_rating`]: true when RAWG rates ≥ 4.0 or IGDB rates ≥ 80,
-//!   evaluated as an independent OR over the two sources.
+//! Factories own eligibility and request-specific terms. Legacy public taste-vector
+//! helpers remain for callers; personal ranking uses the canonical Taste Profile.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use crate::models::Game;
+use crate::models::{Game, RecommendReason};
 use crate::signal;
+use crate::{preferences, progress, taste};
+
+const RECENT_SECONDS: i64 = 14 * 86400;
+const DIVERSITY_WEIGHT: f32 = 0.35;
+
+pub(crate) fn contribution(
+    reasons: &mut Vec<RecommendReason>,
+    code: &str,
+    description: String,
+    weight: f32,
+) {
+    reasons.push(RecommendReason {
+        code: code.into(),
+        description,
+        weight,
+    });
+}
+
+fn title(profile: &taste::TasteProfile, app_id: u32) -> Option<&taste::SupportingTitle> {
+    // The shared derivation emits title evidence in AppID order.
+    profile
+        .titles
+        .binary_search_by_key(&app_id, |t| t.app_id)
+        .ok()
+        .map(|i| &profile.titles[i])
+}
+
+pub(crate) fn known_playtime(profile: &taste::TasteProfile, app_id: u32) -> Option<u32> {
+    title(profile, app_id).and_then(|t| t.activity.iter().filter_map(|a| a.lifetime_minutes).max())
+}
+
+/// Shared attribution only: each factory owns eligibility and its request-specific terms.
+pub(crate) fn personal_reasons(
+    game: &Game,
+    profile: &taste::TasteProfile,
+    concepts: &BTreeSet<String>,
+    progress: Option<&progress::Summary>,
+    prefs: &preferences::Preferences,
+    now: i64,
+) -> Vec<RecommendReason> {
+    let mut reasons = Vec::new();
+    let title = title(profile, game.app_id);
+    if let Some(weight) = quality(game) {
+        contribution(
+            &mut reasons,
+            "high_rating",
+            "Above-midpoint cached game quality (bounded 0..1; low/missing neutral; not personal completion)".into(),
+            weight,
+        );
+    }
+    for (code, tags, weight) in [
+        ("taste_similarity", &profile.long_term, 3.0),
+        ("recent_taste", &profile.recent, 0.5),
+    ] {
+        let affinity = profile_affinity(concepts, tags);
+        if affinity > 0.0 {
+            let matches = tags
+                .iter()
+                .filter(|t| concepts.contains(&t.tag))
+                .map(|t| t.tag.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            contribution(
+                &mut reasons,
+                code,
+                format!("Cached canonical profile affinity {affinity:.3}: {matches}"),
+                weight * affinity,
+            );
+        }
+    }
+    contribution(
+        &mut reasons,
+        "evidence_limits",
+        format!(
+            "Cache/local only; descriptors {}/{} eligible titles; absent matches are not dislike; fit is not probability or player percentile",
+            profile.coverage.metadata_titles, profile.coverage.eligible_titles
+        ),
+        0.0,
+    );
+
+    if let Some(last) = title.and_then(|t| t.last_played_at) {
+        let age = now - last;
+        if (0..RECENT_SECONDS).contains(&age) {
+            let days = age / 86400;
+            let label = match days {
+                0 => "Played today".into(),
+                1 => "Played 1 day ago".into(),
+                n => format!("Played {n} days ago"),
+            };
+            contribution(
+                &mut reasons,
+                "recently_played_penalty",
+                label,
+                -(1.0 - age as f32 / RECENT_SECONDS as f32),
+            );
+        }
+    }
+    match progress {
+        Some(p) if p.story_completed => contribution(&mut reasons, "story_completed", "Story completed (your local mark); achievements are separate".into(), -1.25),
+        Some(p) if p.achievements.is_some_and(|e| !e.stale && e.total > 0 && e.unlocked == e.total) => contribution(&mut reasons, "perfected", "Fresh authoritative achievements: all unlocked; not a story inference".into(), -1.0),
+        Some(p) if p.achievements.is_some_and(|e| !e.stale && e.total > 0 && e.unlocked > 0 && e.unlocked < e.total) => {
+            let e = p.achievements.unwrap();
+            contribution(&mut reasons, "achievement_progress", format!("Fresh authoritative achievements {}/{}; incomplete achievements do not imply unfinished story", e.unlocked, e.total), 0.5 * e.unlocked as f32 / e.total as f32);
+        }
+        _ => contribution(&mut reasons, "progress_unknown", "Story unmarked; achievement completion missing/stale/zero; no playtime or duration completion guess".into(), 0.0),
+    }
+    if preferences::interested(prefs, game.app_id, now) {
+        contribution(
+            &mut reasons,
+            "local_interested",
+            "Interested (your local preference)".into(),
+            preferences::INTERESTED_WEIGHT,
+        );
+    }
+    if game
+        .steam_collections
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case("favorites"))
+    {
+        contribution(
+            &mut reasons,
+            "favorite",
+            "Steam Favorites (explicit choice, not a game tag)".into(),
+            0.25,
+        );
+    }
+    reasons
+}
+
+fn tie_key(seed: Option<u64>, app_id: u32) -> u64 {
+    let Some(seed) = seed else {
+        return u64::from(app_id);
+    };
+    let mut z = (seed ^ u64::from(app_id)).wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Stable greedy relevance-minus-overlap ordering; returns source indices and signed-penalty magnitudes.
+pub(crate) fn diverse_order(
+    scores: &[(u32, f32)],
+    tags: &BTreeMap<u32, BTreeSet<String>>,
+    count: usize,
+    seed: Option<u64>,
+) -> Vec<(usize, f32)> {
+    let mut remaining: Vec<_> = (0..scores.len()).collect();
+    let mut result: Vec<(usize, f32)> = Vec::new();
+    while !remaining.is_empty() && result.len() < count {
+        let penalty = |i: usize| {
+            result
+                .iter()
+                .map(|(picked, _)| {
+                    let a = &tags[&scores[i].0];
+                    let b = &tags[&scores[*picked].0];
+                    let union = a.union(b).count();
+                    if union == 0 {
+                        0.0
+                    } else {
+                        DIVERSITY_WEIGHT * a.intersection(b).count() as f32 / union as f32
+                    }
+                })
+                .fold(0.0, f32::max)
+        };
+        let (slot, amount) = remaining
+            .iter()
+            .enumerate()
+            .map(|(slot, i)| (slot, penalty(*i)))
+            .max_by(|(ai, ap), (bi, bp)| {
+                let a = scores[remaining[*ai]];
+                let b = scores[remaining[*bi]];
+                (a.1 - ap)
+                    .total_cmp(&(b.1 - bp))
+                    .then_with(|| tie_key(seed, b.0).cmp(&tie_key(seed, a.0)))
+                    .then_with(|| b.0.cmp(&a.0))
+            })
+            .unwrap();
+        result.push((remaining.swap_remove(slot), amount));
+    }
+    result
+}
+
+/// L1-normalized profile mass covered by this game's canonical concepts.
+pub fn profile_affinity(tags: &BTreeSet<String>, strengths: &[crate::taste::TagStrength]) -> f32 {
+    let total: f64 = strengths.iter().map(|t| t.strength).sum();
+    if total == 0.0 {
+        return 0.0;
+    }
+    (strengths
+        .iter()
+        .filter(|t| tags.contains(&t.tag))
+        .map(|t| t.strength)
+        .sum::<f64>()
+        / total) as f32
+}
+
+/// Above-midpoint cached quality contributes at most one point; low/missing is neutral.
+pub fn quality(game: &Game) -> Option<f32> {
+    [
+        game.rawg
+            .as_ref()
+            .and_then(|r| r.rating_0_5)
+            .map(|r| r / 5.0),
+        game.igdb
+            .as_ref()
+            .and_then(|i| i.rating_0_100.or(i.total_rating_0_100))
+            .map(|r| r / 100.0),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|r| r.is_finite())
+    .map(|r| r.clamp(0.0, 1.0))
+    .max_by(f32::total_cmp)
+    .map(|q| ((q - 0.5) * 2.0).max(0.0))
+}
 
 /// Build a taste vector from the user's library.
 ///
@@ -89,20 +295,20 @@ pub fn is_high_rating(game: &Game) -> bool {
     rawg_high || igdb_high
 }
 
-/// A "short game" fits a single short session: HLTB main story ≤ 4 hours.
+/// A "short game" fits a single short session: effective completion time ≤ 4 hours.
 pub const SHORT_GAME_MAX_SECONDS: u32 = 4 * 3600;
 
-/// A "long game" earns a marathon: HLTB main story ≥ 20 hours.
+/// A "long game" earns a marathon: effective completion time ≥ 20 hours.
 pub const LONG_GAME_MIN_SECONDS: u32 = 20 * 3600;
 
 /// True when the game's main story fits a short session (≤ 4 hours).
-/// Fails closed when HLTB data is missing.
+/// Fails closed when completion-time data is missing.
 pub fn is_short_game(game: &Game) -> bool {
     signal::main_story_seconds(game).is_some_and(|s| s <= SHORT_GAME_MAX_SECONDS)
 }
 
 /// True when the game's main story is marathon-length (≥ 20 hours).
-/// Fails closed when HLTB data is missing.
+/// Fails closed when completion-time data is missing.
 pub fn is_long_game(game: &Game) -> bool {
     signal::main_story_seconds(game).is_some_and(|s| s >= LONG_GAME_MIN_SECONDS)
 }

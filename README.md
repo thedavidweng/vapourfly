@@ -10,7 +10,7 @@ Manage your Steam library like Spotify playlists. Vapourfly is a local-first
 CLI and desktop GUI for organizing, filtering, and cleaning up a Steam library
 without going through Steam's own UI.
 
-- **Playlists**: manual or rule-based (installed, genre, HLTB length, ProtonDB
+- **Playlists**: manual or rule-based (installed, genre, completion time, ProtonDB
   tier, rating, and more), shareable as compact `VF1:` codes, and syncable to
   Steam collections.
 - **Discover, Recommendations, and Moods**: similar-game picks, session-length
@@ -60,6 +60,12 @@ CLI on your `PATH`.
 Official macOS releases from v0.3.1 use Developer ID signing and Apple
 notarization. The app includes a stapled notarization ticket. The standalone CLI
 requires network access for its first notarization check.
+
+The x86_64 AppImage bundles its native dependencies and supports AppImageUpdate.
+Download the `.AppImage` from Releases, make it executable, and run it. Its embedded
+update information selects stable releases; the adjacent `.zsync` file enables
+delta updates. Release acceptance requires offline startup as a normal user on
+Ubuntu 22.04. The runtime-library instructions below apply to the tar archive.
 
 On Linux, install the runtime libraries (SteamOS already has them):
 
@@ -152,8 +158,10 @@ Details: [Steam file safety](docs/reference/STEAM_FILE_SAFETY.md) and
 
 ## Data sources and credentials
 
-Steam Store, ProtonDB, PCGamingWiki, and HowLongToBeat work without
-credentials. Optional keys add more metadata:
+Steam Store, ProtonDB, PCGamingWiki, and existing legacy HLTB cache records
+work without credentials. HLTB is never fetched or refreshed; new completion
+times come from documented IGDB time-to-beat data or manual overrides. Optional
+keys add more metadata:
 
 | Setting | Get it from | Adds |
 |---|---|---|

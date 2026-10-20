@@ -19,9 +19,7 @@ use vapourfly_core::models::JunkMode;
 
 use super::widgets::{self, PAGE_PX};
 use super::{GuiRoot, hx};
-use crate::app::{
-    GameSummary, PendingAction, View, format_playtime, proton_tier_label, reason_badge_label,
-};
+use crate::app::{GameSummary, PendingAction, View, format_playtime, proton_tier_label};
 use crate::theme;
 
 const PICK_MIN_W: f32 = 210.;
@@ -37,6 +35,44 @@ const TIME_OPTIONS: [(&str, u32); 5] = [
 const COUNT_OPTIONS: [u32; 3] = [5, 10, 20];
 const DISCOVER_COUNTS: [u32; 3] = [10, 20, 40];
 
+fn discover_empty_copy(loading: bool, generated: bool) -> (&'static str, &'static str) {
+    if loading {
+        (
+            "Finding owned picks",
+            "Ranking your eligible library using cached/local evidence.",
+        )
+    } else if generated {
+        (
+            "No eligible owned picks",
+            "No owned titles meet the current unplayed and preference filters. Missing metadata is not dislike; no seed similarity or remote activity is assumed.",
+        )
+    } else {
+        (
+            "Discover owned picks",
+            "Choose an optional seed or Match my taste. Only cached/local evidence is used; missing metadata is not dislike.",
+        )
+    }
+}
+
+fn recommend_empty_copy(loading: bool, generated: bool) -> (&'static str, &'static str) {
+    if loading {
+        (
+            "Finding session picks",
+            "Ranking your eligible owned library using cached/local evidence.",
+        )
+    } else if generated {
+        (
+            "No eligible recommendations",
+            "No owned titles meet the generated request. Finish a short game requires a positive known full estimate within its limit; unknown is not short. Check the request and filters above.",
+        )
+    } else {
+        (
+            "What should you play tonight?",
+            "Generate cache-only owned-library picks. Relative fit compares this result set, not probability or player percentiles.",
+        )
+    }
+}
+
 /// Ranker scores are additive weights, so show them relative to the best
 /// result in the same set.
 fn relative(score: f32, best: f32) -> f32 {
@@ -44,7 +80,7 @@ fn relative(score: f32, best: f32) -> f32 {
 }
 
 fn match_label(score: f32) -> String {
-    format!("{:.0}% match", (score * 100.).clamp(0., 100.))
+    format!("{:.0}% relative fit", (score * 100.).clamp(0., 100.))
 }
 
 impl GuiRoot {
@@ -143,8 +179,7 @@ impl GuiRoot {
                         div()
                             .text_size(px(13.))
                             .text_color(cx.theme().muted_foreground)
-                            .truncate()
-                            .child(reason.unwrap_or_else(|| "Similar feel".into())),
+                            .child(reason.unwrap_or_else(|| "Limited cached evidence".into())),
                     ),
             )
             .into_any_element()
@@ -271,6 +306,7 @@ impl GuiRoot {
         let results: Vec<_> = self.app.discover_results.clone();
         let best = results.iter().map(|p| p.score).fold(0., f32::max);
         let body = if results.is_empty() {
+            let (title, description) = discover_empty_copy(self.app.discover_loading, has_playlist);
             div()
                 .flex_1()
                 .flex()
@@ -278,8 +314,8 @@ impl GuiRoot {
                 .justify_center()
                 .child(widgets::empty_state(
                     IconName::Compass,
-                    "Pick a seed to begin",
-                    "Vapourfly compares genres, tags and play style to surface the closest matches you already own.",
+                    title,
+                    description,
                     None,
                 ))
                 .into_any_element()
@@ -313,10 +349,7 @@ impl GuiRoot {
                                 .gap_x(px(PICK_GAP))
                                 .gap_y(px(26.))
                                 .children(results.iter().map(|pick| {
-                                    let reason = pick
-                                        .reasons
-                                        .first()
-                                        .map(|r| reason_badge_label(r.code, r.description));
+                                    let reason = Some(vapourfly_core::discover::explanation(pick));
                                     self.pick_card(
                                         pick.app_id,
                                         &pick.name,
@@ -341,6 +374,7 @@ impl GuiRoot {
                 cx,
             ))
             .child(seed_panel)
+            .child(self.top_tags_panel(cx))
             .child(body)
     }
 
@@ -385,10 +419,11 @@ impl GuiRoot {
 
         let controls = widgets::panel(cx).mx(px(PAGE_PX)).px_4().py_3().child(
             h_flex()
+                .flex_wrap()
                 .gap_8()
                 .items_end()
                 .child(field(
-                    "Time you have",
+                    "Sitting time / full-estimate limit",
                     widgets::segmented(
                         "rec-time",
                         TIME_OPTIONS
@@ -423,6 +458,15 @@ impl GuiRoot {
                     .into_any_element(),
                     cx,
                 ))
+                .child(
+                    Switch::new("rec-finish-short")
+                        .checked(self.app.recommend_finish_short_game)
+                        .label("Finish a short game")
+                        .on_click(cx.listener(|this, value: &bool, _, cx| {
+                            this.app.recommend_finish_short_game = *value;
+                            cx.notify();
+                        })),
+                )
                 .child(div().flex_1())
                 .child(
                     h_flex()
@@ -461,6 +505,10 @@ impl GuiRoot {
         let best = results.iter().map(|r| r.score).fold(0., f32::max);
 
         let body = if results.is_empty() {
+            let (title, detail) = recommend_empty_copy(
+                self.app.recommend_loading,
+                self.app.recommend_request_at_start.is_some(),
+            );
             div()
                 .flex_1()
                 .flex()
@@ -468,19 +516,15 @@ impl GuiRoot {
                 .justify_center()
                 .child(widgets::empty_state(
                     IconName::Sparkles,
-                    "What should you play tonight?",
-                    "Choose how much time you have, then generate a ranked shortlist from your backlog.",
+                    title,
+                    detail,
                     None,
                 ))
                 .into_any_element()
         } else {
             let featured = results.iter().take(3).enumerate().map(|(rank, rec)| {
                 let s = summary(rec.app_id);
-                let reason = rec
-                    .reasons
-                    .first()
-                    .map(|r| r.description.clone())
-                    .unwrap_or_default();
+                let reason = vapourfly_core::recommend::explanation(rec);
                 let id = rec.app_id;
                 let group = SharedString::from(format!("rec-top-{id}"));
                 let frame = div()
@@ -540,7 +584,6 @@ impl GuiRoot {
                                 div()
                                     .text_size(px(15.))
                                     .text_color(cx.theme().muted_foreground)
-                                    .line_clamp(2)
                                     .child(reason),
                             )
                             .child(
@@ -550,14 +593,25 @@ impl GuiRoot {
                                     .text_size(px(13.))
                                     .text_color(cx.theme().muted_foreground)
                                     .child(format!(
-                                        "{} to beat",
-                                        s.hltb_minutes.map_or_else(|| "—".into(), format_playtime)
+                                        "{} full estimate",
+                                        s.hltb_minutes
+                                            .filter(|m| *m > 0)
+                                            .map_or_else(|| "—".into(), format_playtime)
                                     ))
                                     .child("·")
-                                    .child(match s.playtime_minutes {
-                                        0 => "Unplayed".to_string(),
-                                        m => format!("{} played", format_playtime(m)),
-                                    })
+                                    .child(
+                                        match prepared
+                                            .as_ref()
+                                            .and_then(|games| games.iter().find(|g| g.app_id == id))
+                                            .and_then(|g| g.playtime_minutes)
+                                        {
+                                            None => "Local playtime unavailable".to_string(),
+                                            Some(0) => "No local playtime recorded".to_string(),
+                                            Some(m) => {
+                                                format!("{} local playtime", format_playtime(m))
+                                            }
+                                        },
+                                    )
                                     .when_some(s.rating_0_5, |this, r| {
                                         this.child("·").child(format!("{r:.1}★"))
                                     }),
@@ -568,11 +622,7 @@ impl GuiRoot {
             let rest = results.iter().enumerate().skip(3).map(|(ix, rec)| {
                 let s = summary(rec.app_id);
                 let id = rec.app_id;
-                let reason = rec
-                    .reasons
-                    .first()
-                    .map(|r| r.description.clone())
-                    .unwrap_or_default();
+                let reason = vapourfly_core::recommend::explanation(rec);
                 let content = h_flex()
                     .w_full()
                     .gap_4()
@@ -608,7 +658,6 @@ impl GuiRoot {
                                 div()
                                     .text_size(px(13.))
                                     .text_color(cx.theme().muted_foreground)
-                                    .truncate()
                                     .child(reason),
                             ),
                     )
@@ -624,9 +673,9 @@ impl GuiRoot {
                             .w(px(100.))
                             .text_size(px(15.))
                             .text_color(cx.theme().muted_foreground)
-                            .child(s.hltb_minutes.map_or_else(
+                            .child(s.hltb_minutes.filter(|m| *m > 0).map_or_else(
                                 || "—".into(),
-                                |m| format!("{} to beat", format_playtime(m)),
+                                |m| format!("{} full estimate", format_playtime(m)),
                             )),
                     )
                     .child(
@@ -638,7 +687,8 @@ impl GuiRoot {
                             .child(match_label(relative(rec.score, best))),
                     );
                 widgets::focus_row(("rec-row", id as usize), false, cx)
-                    .h(px(76.))
+                    .min_h(px(76.))
+                    .py_3()
                     .px_2()
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_game_sheet(id, window, cx);
@@ -676,11 +726,58 @@ impl GuiRoot {
             .size_full()
             .child(widgets::page_header(
                 "Recommendations",
-                "A ranked shortlist from your backlog, sized to the time you have.",
+                "Plan a sitting or deliberately finish a short game; full completion time is not session length.",
                 actions,
                 cx,
             ))
             .child(controls)
+            .when_some(
+                self.app.recommend_request_at_start.as_ref(),
+                |this, request| {
+                    this.child(
+                        div()
+                            .mx(px(PAGE_PX))
+                            .py_2()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "Generated request: {}",
+                                vapourfly_core::recommend::intent_guidance(request)
+                            )),
+                    )
+                },
+            )
             .child(body)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{discover_empty_copy, recommend_empty_copy};
+
+    #[test]
+    fn recommend_empty_distinguishes_generated_request_from_initial_prompt() {
+        assert_eq!(
+            recommend_empty_copy(false, false).0,
+            "What should you play tonight?"
+        );
+        assert_eq!(recommend_empty_copy(true, false).0, "Finding session picks");
+        assert_eq!(recommend_empty_copy(true, true).0, "Finding session picks");
+        let (title, detail) = recommend_empty_copy(false, true);
+        assert_eq!(title, "No eligible recommendations");
+        assert!(detail.contains("generated request"));
+        assert!(detail.contains("positive known full estimate"));
+        assert!(detail.contains("unknown is not short"));
+    }
+
+    #[test]
+    fn discover_empty_distinguishes_initial_loading_and_completed_generation() {
+        assert_eq!(discover_empty_copy(false, false).0, "Discover owned picks");
+        assert_eq!(discover_empty_copy(true, true).0, "Finding owned picks");
+        assert_eq!(discover_empty_copy(true, false).0, "Finding owned picks");
+        let (title, reason) = discover_empty_copy(false, true);
+        assert_eq!(title, "No eligible owned picks");
+        assert!(reason.contains("unplayed and preference filters"));
+        assert!(reason.contains("no seed similarity or remote activity is assumed"));
     }
 }
