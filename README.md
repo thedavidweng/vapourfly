@@ -47,8 +47,8 @@ Upgrade:
 brew upgrade --cask vapourfly
 ```
 
-The Homebrew cask installs the signed macOS release and links both `vapourfly`
-(CLI) and `vapourfly-gui` (desktop app) onto your `PATH`.
+The Homebrew cask installs the signed macOS release, links the `vapourfly` CLI
+into Homebrew's bin directory, and installs `Vapourfly.app` as the desktop app.
 
 ### Pre-built binaries
 
