@@ -6,11 +6,6 @@
 use vapourfly_core::display;
 use vapourfly_core::models::{JunkMode, JunkSignal};
 
-/// Mask a Steam ID, showing only the last 4 characters.
-pub fn mask_id(id: &str) -> String {
-    display::mask_id(id)
-}
-
 /// Truncate a string to `max_len` display characters, adding an ellipsis if truncated.
 pub fn truncate(s: &str, max_len: usize) -> String {
     if s.chars().count() <= max_len {

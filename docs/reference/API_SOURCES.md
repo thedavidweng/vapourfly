@@ -197,8 +197,8 @@ vapourfly settings set steam_api_key <your-key>
 export VAPOURFLY_STEAM_API_KEY="your-key"
 ```
 
-The environment variable overrides the config file. `settings show` and
-`doctor` print the key masked. Per Valve's terms the key is personal and is
+The environment variable overrides the config file. `settings show`, `settings set`
+and `doctor` print only configuration status, never key bytes or suffixes. Per Valve's terms the key is personal and is
 never bundled with the app.
 
 Without a key, existing Steam Store caches may resolve names; fresh Store fetching is disabled.

@@ -65,10 +65,11 @@ All API responses are cached locally. See [API_SOURCES.md](API_SOURCES.md) for c
 By default, Vapourfly redacts sensitive information in CLI output:
 
 - **Steam directory paths** are shown as partial paths with middle segments replaced by `***` (e.g., `/Users/***/Library/Application Support/Steam`)
-- **Steam account names** are shown as `***` (the persona name is shown, but the login name is masked)
-- **Steam IDs** show only the last 4 characters (e.g., `***7890`)
+- **Account listing** shows public persona names and the selected marker only. Login names and Steam IDs, including suffixes, are omitted even with `--verbose`. Public persona names can be used with `--account`.
+- **Settings output** reports an account override as `configured` or automatic, not its value. The JSON `account` field is `"configured"` or `null`.
+- **Steam Web API credentials** are reported only as configured/not configured; settings show/set never print key bytes or suffixes.
 
-Use `--verbose` to disable redaction and show full paths and identifiers.
+Use `--verbose` to show full paths. It does not reveal account selectors or credentials in account-list/settings output. Other explicitly requested account-scoped data commands retain their documented output contracts.
 
 ```bash
 # Default: redacted
@@ -148,5 +149,5 @@ In offline mode, all external API calls are blocked. Only locally cached data an
 ## Credential Storage
 
 - **IGDB and RAWG** credentials are read from environment variables at runtime. They are not written to `config.toml`.
-- **Steam Web API key** may be stored locally in `config.toml` as `steam_api_key`, or supplied via `VAPOURFLY_STEAM_API_KEY` (env wins). The key is never bundled with the app, never logged, and is shown masked in `doctor` / `settings show`.
+- **Steam Web API key** may be stored locally in `config.toml` as `steam_api_key`, or supplied via `VAPOURFLY_STEAM_API_KEY` (env wins). The key is never bundled with the app; `doctor`, `settings show` and setting confirmations report configuration status without printing any key bytes.
 - Credentials are transmitted only as required by the external API's authentication flow (IGDB OAuth token exchange, Steam Web API query parameter) over HTTPS.

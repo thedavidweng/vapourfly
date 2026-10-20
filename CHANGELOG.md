@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CLI account listings show public persona names and the selected marker only,
+  never login names or Steam IDs, even with `--verbose`. Settings show/set omit
+  account selectors and all Steam API key bytes, including masked suffixes.
+  The settings JSON `account` field is now `"configured"` or `null`, not the
+  configured selector; scripts needing selection should supply `--account`.
+
 - Discover consumes the same account-scoped canonical profile, progress and
   feedback as Recommendations, with bounded validated IGDB seed links, novelty
   and deterministic variety. CLI and GUI expose full signed reasons, including
