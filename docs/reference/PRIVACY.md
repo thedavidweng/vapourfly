@@ -65,7 +65,7 @@ All API responses are cached locally. See [API_SOURCES.md](API_SOURCES.md) for c
 By default, Vapourfly redacts sensitive information in CLI output:
 
 - **Steam directory paths** are shown as partial paths with middle segments replaced by `***` (e.g., `/Users/***/Library/Application Support/Steam`)
-- **Account listing** shows public persona names and the selected marker only. Login names and Steam IDs, including suffixes, are omitted even with `--verbose`. Public persona names can be used with `--account`.
+- **Account listing** shows anonymous presence and the selected marker only. Persona names, login names and Steam IDs, including suffixes, are omitted even with `--verbose`. Existing `--account` selectors still work; look up names in the Steam client. Doctor reports detected/selected status without account counts or identities.
 - **Settings output** reports an account override as `configured` or automatic, not its value. The JSON `account` field is `"configured"` or `null`.
 - **Steam Web API credentials** are reported only as configured/not configured; settings show/set never print key bytes or suffixes.
 
