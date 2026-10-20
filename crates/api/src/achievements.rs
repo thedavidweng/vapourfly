@@ -140,7 +140,10 @@ fn provider_stop(status: Status) -> bool {
     )
 }
 
-pub(crate) fn batch_lock(cache: &DiskCache, id: &str) -> Result<std::fs::File> {
+pub(crate) fn batch_lock(
+    cache: &DiskCache,
+    id: &str,
+) -> Result<vapourfly_core::personal_store::AccountLock> {
     let path = cache.path_for(SOURCE, id);
     vapourfly_core::personal_store::lock_account(path.parent().expect("cache source directory"), id)
         .map_err(VapourflyError::from)
