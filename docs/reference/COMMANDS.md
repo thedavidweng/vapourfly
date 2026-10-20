@@ -143,7 +143,7 @@ vapourfly doctor --verbose
 
 Reports:
 - Steam directory (auto-detected or overridden)
-- Number of detected accounts and which one is selected
+- Account detection and selection status (without identities or counts)
 - Number of library folders
 - Cloud storage availability
 - Cache root location
@@ -151,7 +151,11 @@ Reports:
 
 ### `vapourfly accounts list`
 
-List detected Steam accounts. The active account is marked with `*`.
+List anonymous detected Steam accounts. The active account is marked with `*`.
+Names and Steam IDs are never printed, even with `--verbose`. For explicit
+`--account` selection, use the account's name from the Steam client; existing
+name/ID selector semantics are unchanged. `doctor` reports detection/selection
+status without an account count or identity.
 
 ```bash
 vapourfly accounts list
@@ -463,7 +467,7 @@ request; without one, names backfill progressively from Steam Store
 hydration. The key stays on your machine (`config.toml`, or the
 `VAPOURFLY_STEAM_API_KEY` environment variable, which takes precedence) —
 it is personal per Valve's API terms and is never bundled with the app.
-`settings show` displays it masked.
+`settings show` and setting confirmations report only `configured`, never key bytes or suffixes. Account overrides are also status-only: table output shows `configured` or `(auto)`, and the JSON `account` field is `"configured"` or `null`. This applies even with `--verbose`. `accounts list` reports anonymous presence and selection only; use the Steam client to look up account names.
 
 `settings show` reports the resolved configuration (CLI flags and environment
 variables override config file values, matching the precedence documented at
