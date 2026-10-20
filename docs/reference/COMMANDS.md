@@ -463,7 +463,7 @@ request; without one, names backfill progressively from Steam Store
 hydration. The key stays on your machine (`config.toml`, or the
 `VAPOURFLY_STEAM_API_KEY` environment variable, which takes precedence) —
 it is personal per Valve's API terms and is never bundled with the app.
-`settings show` displays it masked.
+`settings show` and setting confirmations report only `configured`, never key bytes or suffixes. Account overrides are also status-only: table output shows `configured` or `(auto)`, and the JSON `account` field is `"configured"` or `null`. This applies even with `--verbose`. Use `accounts list` for selectable public persona names; it never prints login names or Steam IDs.
 
 `settings show` reports the resolved configuration (CLI flags and environment
 variables override config file values, matching the precedence documented at

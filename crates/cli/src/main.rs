@@ -907,15 +907,15 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                 println!("Steam dir:     {}", steam::redact_path(dir));
             }
 
-            let accounts = steam::detect_accounts(dir).unwrap_or_default();
+            let detected_users = steam::detect_accounts(dir).unwrap_or_default();
             let selected = steam::select_account(
-                &accounts,
+                &detected_users,
                 resolved
                     .as_ref()
                     .and_then(|config| config.account.as_deref()),
             )
             .ok();
-            println!("Accounts:      {} detected", accounts.len());
+            println!("Accounts:      {} detected", detected_users.len());
             if selected.is_some() {
                 println!("Selected:      account detected");
             }
@@ -1010,28 +1010,17 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 fn cmd_accounts_list(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let resolved = cli.resolved_config()?;
 
-    let accounts = steam::detect_accounts(&resolved.steam_dir)?;
-    let selected = steam::select_account(&accounts, resolved.account.as_deref()).ok();
+    let detected_users = steam::detect_accounts(&resolved.steam_dir)?;
+    let selected = steam::select_account(&detected_users, resolved.account.as_deref()).ok();
 
-    for acc in &accounts {
+    for acc in &detected_users {
         let marker = if Some(&acc.steam_id64) == selected.map(|s| &s.steam_id64) {
             " *"
         } else {
             ""
         };
-        if cli.verbose {
-            println!(
-                "{} ({}) [{}]{}",
-                acc.persona_name, acc.account_name, acc.steam_id64, marker
-            );
-        } else {
-            println!(
-                "{} (***) [{}]{}",
-                acc.persona_name,
-                format::mask_id(&acc.steam_id64),
-                marker
-            );
-        }
+        // Public persona names are selectable without exposing login names or IDs.
+        println!("{}{}", acc.persona_name, marker);
     }
     Ok(())
 }
@@ -2844,7 +2833,11 @@ fn cmd_settings_show(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std:
             println!(
                 "{:<22} {}",
                 "Account:",
-                cfg.account.as_deref().unwrap_or("(auto)"),
+                if cfg.account.is_some() {
+                    "configured"
+                } else {
+                    "(auto)"
+                },
             );
             println!("{:<22} {}", "Store country code:", cfg.cc);
             println!("{:<22} {}", "Store language:", cfg.lang);
@@ -2873,11 +2866,10 @@ fn cmd_settings_show(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std:
             println!(
                 "{:<22} {}",
                 "Steam Web API key:",
-                match &cfg.steam_api_key {
-                    Some(key) => format!("configured ({})", format::mask_id(key)),
-                    None => "not configured — create one at \
-                             https://steamcommunity.com/dev/apikey"
-                        .to_string(),
+                if cfg.steam_api_key.is_some() {
+                    "configured"
+                } else {
+                    "not configured — create one at https://steamcommunity.com/dev/apikey"
                 },
             );
             println!();
@@ -2892,7 +2884,7 @@ fn cmd_settings_show(cli: &Cli, format: OutputFormat) -> Result<(), Box<dyn std:
             let json = serde_json::json!({
                 "config_file": config_path.map(|p| p.display().to_string()),
                 "steam_dir": cfg.steam_dir.display().to_string(),
-                "account": cfg.account,
+                "account": cfg.account.as_ref().map(|_| "configured"),
                 "cc": cfg.cc,
                 "lang": cfg.lang,
                 "backup_retention_count": cfg.backup_retention_count,
@@ -2924,9 +2916,9 @@ fn cmd_settings_set(key: String, value: String) -> Result<(), Box<dyn std::error
     config::set_config_field(field, &normalised)?;
 
     let path = config::config_file_path();
-    // Never echo secrets back in full.
-    let display_value = if field == ConfigField::SteamApiKey {
-        format::mask_id(&normalised)
+    // Configuration confirmations must not expose even a secret/identity suffix.
+    let display_value = if matches!(field, ConfigField::SteamApiKey | ConfigField::Account) {
+        "configured".to_owned()
     } else {
         normalised
     };
@@ -3038,6 +3030,82 @@ fn print_match_counts(report: &vapourfly_core::models::PlaylistMatchReport) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_and_credential_output_omits_private_values_even_when_verbose() {
+        const CHILD: &str = "VAPOURFLY_TEST_PRIVATE_OUTPUT_CHILD";
+        const KEY: &str = concat!("1234567890abcdef", "1234567890ab9e7b");
+        if let Some(root) = std::env::var_os(CHILD) {
+            let root = PathBuf::from(root);
+            let fixtures =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/fixtures/steam_minimal");
+            for verbose in [false, true] {
+                let mut cli = Cli::try_parse_from([
+                    "vapourfly",
+                    "--steam-dir",
+                    fixtures.to_str().unwrap(),
+                    "--offline",
+                    "accounts",
+                    "list",
+                ])
+                .unwrap();
+                cli.verbose = verbose;
+                cmd_accounts_list(&cli).unwrap();
+                cmd_doctor(&cli).unwrap();
+                cmd_settings_show(&cli, OutputFormat::Table).unwrap();
+                cmd_settings_show(&cli, OutputFormat::Json).unwrap();
+            }
+            // Unix HOME/XDG isolate the actual config writer; Windows Known
+            // Folders cannot be redirected safely by these environment values.
+            #[cfg(unix)]
+            {
+                assert!(config::config_file_path().unwrap().starts_with(root));
+                cmd_settings_set("steam_api_key".into(), KEY.into()).unwrap();
+                cmd_settings_set("account".into(), "vapourfly_fixture_user".into()).unwrap();
+            }
+            #[cfg(not(unix))]
+            let _ = root;
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::account_and_credential_output_omits_private_values_even_when_verbose",
+                "--nocapture",
+            ])
+            .env(CHILD, root.path())
+            .env("HOME", root.path())
+            .env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env("XDG_CACHE_HOME", root.path().join("cache"))
+            .env("XDG_DATA_HOME", root.path().join("data"))
+            .env("VAPOURFLY_ACCOUNT", "vapourfly_fixture_user")
+            .env("VAPOURFLY_STEAM_API_KEY", KEY)
+            .env_remove("VAPOURFLY_STEAM_DIR")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "private-output child failed");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(text.contains("Vapourfly Fixture *"));
+        assert!(text.contains("Accounts:      1 detected"));
+        assert!(text.contains("Selected:      account detected"));
+        assert!(text.contains("\"account\": \"configured\""));
+        assert!(text.contains("\"has_steam_api_key\": true"));
+        for private in [
+            "vapourfly_fixture_user",
+            "76561198000000000",
+            "***0000",
+            KEY,
+            "9e7b",
+        ] {
+            assert!(!text.contains(private), "private value reached CLI output");
+        }
+    }
 
     fn personal_test_paths(root: &Path) -> PersonalPaths {
         PersonalPaths {
