@@ -2,8 +2,9 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Sizable, StyledExt,
+    ActiveTheme, Disableable, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
+    dialog::DialogFooter,
     h_flex,
     input::Input,
     scroll::ScrollableElement,
@@ -13,8 +14,8 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, Context, Div, InteractiveElement, IntoElement, ParentElement, SharedString,
-    Styled, Window, div, prelude::*, px,
+    AnyElement, App, Context, Div, InteractiveElement, IntoElement, ParentElement, ScrollHandle,
+    SharedString, Styled, Window, div, prelude::*, px,
 };
 use vapourfly_core::models::SteamCollection;
 
@@ -79,7 +80,7 @@ fn credential_tag(signal: CredentialSignal) -> Tag {
     match signal {
         CredentialSignal::Configured => widgets::tone_tag(Tone::Success, signal.label()),
         CredentialSignal::Missing => widgets::tone_tag(Tone::Warning, signal.label()),
-        CredentialSignal::NotRequired | CredentialSignal::Optional => {
+        CredentialSignal::NotRequired | CredentialSignal::CacheOnly => {
             Tag::secondary().child(signal.label())
         }
     }
@@ -92,6 +93,63 @@ fn backup_label(path: &std::path::Path) -> String {
 }
 
 impl GuiRoot {
+    fn personal_clear_button(
+        &self,
+        scope: vapourfly_api::personal_data::ClearScope,
+        cx: &mut Context<Self>,
+    ) -> Button {
+        use vapourfly_api::personal_data::ClearScope;
+        let (id, label) = match scope {
+            ClearScope::Cached => ("preview-cached-clear", "Clear personal caches…"),
+            ClearScope::Authored => ("preview-authored-clear", "Clear local marks & choices…"),
+        };
+        Button::new(id).ghost().label(label)
+            .disabled(self.app.ui_demo || self.app.active_account().is_none()
+                || self.app.activity_loading || self.app.achievement_refreshing())
+            .on_click(cx.listener(move |this, _, window, cx| {
+                let plan = match this.app.preview_personal_clear(scope) {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        window.push_notification(error, cx);
+                        return;
+                    }
+                };
+                let rows = plan.inventory.summary();
+                let owner = std::rc::Rc::new(std::cell::RefCell::new(Some(plan)));
+                let entity = cx.entity();
+                window.open_dialog(cx, move |dialog, _, cx| {
+                    let cancel = owner.clone();
+                    let confirm = owner.clone();
+                    let entity = entity.clone();
+                    dialog.title("Preview selected-account cleanup")
+                        .child(v_flex().gap_3()
+                            .child(widgets::caption(scope.warning(), cx))
+                            .children(rows.iter().cloned().map(|row| widgets::caption(row, cx)))
+                            .child(widgets::caption("Shared metadata, saved Playlists, settings and Steam files will not be removed. Cancel or Escape keeps all records.", cx)))
+                        .footer(DialogFooter::new()
+                            .child(Button::new("personal-clear-cancel").ghost().label("Cancel")
+                                .on_click(move |_, window, cx| {
+                                    cancel.borrow_mut().take();
+                                    window.close_dialog(cx);
+                                }))
+                            .child(Button::new("personal-clear-confirm").primary().label("Confirm clear")
+                                .on_click(move |_, window, cx| {
+                                    if let Some(plan) = confirm.borrow_mut().take() {
+                                        entity.update(cx, |this, cx| {
+                                            match this.app.confirm_personal_clear(plan) {
+                                                Ok(()) => window.push_notification("Personal records cleared; evidence reloading.", cx),
+                                                Err(error) => window.push_notification(error, cx),
+                                            }
+                                            this.arm_poll(cx);
+                                            cx.notify();
+                                        });
+                                    }
+                                    window.close_dialog(cx);
+                                })))
+                });
+            }))
+    }
+
     fn page_width(&self, window: &Window) -> f32 {
         let width: f32 = window.viewport_size().width.into();
         width - self.sidebar_width(window) - 10. - PAGE_PX * 2.
@@ -317,6 +375,56 @@ impl GuiRoot {
                     })),
             )
             .child(
+                Button::new("personal-inventory")
+                    .ghost()
+                    .label("Personal records")
+                    .disabled(self.app.ui_demo || self.app.active_account().is_none())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let Some(selected) = this.app.active_account() else { return };
+                        let inventory = vapourfly_api::personal_data::inspect(
+                            &vapourfly_api::cache::DiskCache::new(&this.app.cache_dir),
+                            &this.app.story_dir,
+                            &this.app.preferences_dir,
+                            &selected.steam_id64,
+                        );
+                        let mut rows = match inventory {
+                            Ok(inventory) => inventory.summary(),
+                            Err(error) => vec![error.to_string()],
+                        };
+                        let key_configured = !this.app.steam_api_key_edit.trim().is_empty()
+                            || vapourfly_core::config::resolve_steam_api_key().is_some();
+                        rows.push(format!("Steam key configured: {key_configured}. {}",
+                            if this.app.offline_mode { "Refresh disabled offline." }
+                            else if key_configured { "Explicit activity/achievement refresh available; provider permission and visibility still required." }
+                            else { "Refresh requires an authorized Steam Web API key." }));
+                        rows.push("Local selection grants no remote permission. This is a read-only snapshot; reopen to inspect again. Shared metadata, Playlists, settings and Steam contents are separate.".into());
+                        let scroll = ScrollHandle::new();
+                        window.open_dialog(cx, move |dialog, _, cx| {
+                            let keyboard_scroll = scroll.clone();
+                            dialog.title("Selected-account personal records").child(
+                                v_flex().id("personal-inventory-scroll").max_h(px(400.)).overflow_y_scroll().gap_3()
+                                    .focusable().tab_index(0).track_scroll(&scroll)
+                                    .on_key_down(move |event, window, cx| {
+                                        if let Some(y) = super::library::evidence_scroll_offset(
+                                            &event.keystroke.key,
+                                            keyboard_scroll.offset().y.into(),
+                                            keyboard_scroll.max_offset().y.into(),
+                                            keyboard_scroll.bounds().size.height.into(),
+                                        ) {
+                                            let mut offset = keyboard_scroll.offset();
+                                            offset.y = px(y);
+                                            keyboard_scroll.set_offset(offset);
+                                            cx.stop_propagation();
+                                            window.refresh();
+                                        }
+                                    })
+                                    .child(widgets::caption("Tab into records; arrows, Page Up/Down and Home/End scroll. Escape closes.", cx))
+                                    .children(rows.iter().cloned().map(|row| widgets::caption(row, cx)))
+                            )
+                        });
+                    })),
+            )
+            .child(
                 Button::new("refresh-all")
                     .primary()
                     .icon(IconName::RefreshCw)
@@ -328,7 +436,32 @@ impl GuiRoot {
                         this.arm_poll(cx);
                         cx.notify();
                     })),
+            )
+            .child(
+                Button::new("refresh-account-activity")
+                    .ghost()
+                    .icon(IconName::User)
+                    .label("Refresh activity")
+                    .loading(self.app.activity_loading)
+                    .disabled(offline || self.app.activity_loading || self.app.ui_demo)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.app.start_account_activity_refresh();
+                        this.arm_poll(cx);
+                        cx.notify();
+                    })),
             );
+
+        let activity_label = self
+            .app
+            .activity_msg
+            .clone()
+            .or_else(|| {
+                self.app
+                    .activity_snapshot
+                    .as_ref()
+                    .map(|snapshot| format!("Activity: {}", snapshot.summary()))
+            })
+            .unwrap_or_else(|| "Activity: no cached snapshot".into());
 
         let col = |w: f32| div().flex_none().w(px(w));
         let header = h_flex()
@@ -340,12 +473,19 @@ impl GuiRoot {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(div().flex_1().child("Source"))
-            .child(col(120.).child("Credentials"))
+            .child(col(120.).child("Access"))
             .child(col(90.).text_right().child("Entries"))
             .child(col(160.).child("Freshness"))
             .child(col(120.).child("Last updated"))
             .child(col(84.));
 
+        let personal_clear = h_flex()
+            .flex_wrap()
+            .gap_2()
+            .child(self.personal_clear_button(vapourfly_api::personal_data::ClearScope::Cached, cx))
+            .child(
+                self.personal_clear_button(vapourfly_api::personal_data::ClearScope::Authored, cx),
+            );
         let rows = statuses.iter().enumerate().map(|(i, st)| {
             let id = st.name.clone();
             let signal = source_credential_signal(&id, self.app.has_igdb, self.app.has_rawg);
@@ -394,9 +534,19 @@ impl GuiRoot {
                                 .font_medium()
                                 .child(source_display_name(&id)),
                         )
-                        .when(!st.cache_dir_exists, |this| {
-                            this.child(widgets::caption("No cache on disk yet", cx))
-                        }),
+                        .when_some(
+                            vapourfly_api::http::live_access_restriction(&id),
+                            |this, _reason| {
+                                this.child(widgets::caption(
+                                    "Live refresh disabled; see API Sources",
+                                    cx,
+                                ))
+                            },
+                        )
+                        .when(
+                            !st.cache_dir_exists && signal != CredentialSignal::CacheOnly,
+                            |this| this.child(widgets::caption("No cache on disk yet", cx)),
+                        ),
                 )
                 .child(col(120.).flex().child(credential_tag(signal)))
                 .child(
@@ -433,9 +583,11 @@ impl GuiRoot {
         });
 
         let subtitle = if offline {
-            "Offline — Vapourfly uses cached metadata only.".to_string()
+            format!("Offline — Vapourfly uses cached metadata only. · {activity_label}")
         } else {
-            "Metadata that powers filters, Proton ratings and play-time estimates.".to_string()
+            format!(
+                "Metadata that powers filters, Proton ratings and play-time estimates. · {activity_label}"
+            )
         };
 
         v_flex()
@@ -479,6 +631,49 @@ impl GuiRoot {
                                 cx,
                             )),
                     )
+                    .child(
+                        setting_row(
+                            "Steam achievement coverage",
+                            self.app.achievement_coverage_summary(),
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    Button::new("refresh-achievement-coverage")
+                                        .outline()
+                                        .icon(IconName::RefreshCw)
+                                        .label("Refresh active games")
+                                        .loading(self.app.achievement_refreshing())
+                                        .disabled(
+                                            offline || self.app.ui_demo
+                                                || self.app.achievement_refreshing()
+                                                || self.app.scan_result.is_none(),
+                                        )
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.app.start_achievement_coverage(true);
+                                            this.arm_poll(cx);
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new("cancel-achievement-coverage")
+                                        .ghost()
+                                        .label("Cancel")
+                                        .disabled(!self.app.achievement_refreshing())
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.app.cancel_achievement_refresh();
+                                            cx.notify();
+                                        })),
+                                ),
+                            cx,
+                        ),
+                    )
+                    .child(widgets::caption(
+                        "Steam user-key API · Selected owned game first, then recent games · Up to 12 games, 24 paced requests, no retries.",
+                        cx,
+                    ))
+                    .when_some(self.app.achievement_msg.clone(), |this, message| {
+                        this.child(widgets::caption(message, cx))
+                    })
                     .when_some(self.app.cache_refresh_msg.clone(), |this, msg| {
                         this.child(
                             h_flex()
@@ -490,6 +685,7 @@ impl GuiRoot {
                                 .child(widgets::caption(msg, cx)),
                         )
                     })
+                    .child(personal_clear)
                     .child(
                         widgets::panel(cx)
                             .overflow_hidden()

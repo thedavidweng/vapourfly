@@ -4,10 +4,10 @@ Vapourfly is designed with a local-first philosophy. This document explains what
 
 ## Local-First Design
 
-- **All library data stays on your machine.** Vapourfly reads and writes Steam configuration files directly. Your library metadata, playtime, collections, and preferences never pass through a Vapourfly server.
+- **No Vapourfly server.** Local library state and authored preferences stay on your machine. Optional provider requests described below go directly to those providers.
 - **No telemetry.** Vapourfly does not phone home, report usage statistics, or send analytics.
 - **No account creation.** There is no Vapourfly account, login, or cloud sync service.
-- **No data collection.** Vapourfly does not collect, store, or transmit your Steam credentials, library contents, or personal information.
+- **Local personal storage.** Vapourfly stores optional account-specific API snapshots and authored marks/preferences locally. It never collects Steam login credentials; optional API credentials and identifiers are transmitted only as described below.
 
 ## What Vapourfly Reads
 
@@ -25,13 +25,17 @@ Vapourfly reads the following files from your Steam installation:
 
 ## What Vapourfly Writes
 
-Vapourfly writes to a single file:
+The Steam write target is limited to:
 
 ```
 userdata/<account_id_or_steam_id64>/config/cloudstorage/cloud-storage-namespace-1.json
 ```
 
 This is Steam's cloud storage file for user-defined collections. See [STEAM_FILE_SAFETY.md](STEAM_FILE_SAFETY.md) for details on the write process and backup strategy.
+
+Outside Steam, Vapourfly writes its own caches, settings, saved Playlists,
+backups, and account-scoped local story marks and preference feedback. These
+authored records are distinct from disposable provider caches.
 
 ## External API Calls
 
@@ -44,9 +48,15 @@ When credentials are configured or a source needs no key, Vapourfly makes HTTPS 
 | ProtonDB (protondb.com) | AppID (in URL path) | Compatibility tier and confidence |
 | PCGamingWiki (pcgamingwiki.com) | Game name (in MediaWiki query) | Controller support, fixes URL |
 | Steam Store (store.steampowered.com) | AppID (in query parameter) | Store metadata, pricing, platform info |
-| Steam Web API (api.steampowered.com) | User-created API key and SteamID64 (`GetOwnedGames`) | Owned AppID → name map |
+| Steam Web API (api.steampowered.com) | User-created API key, SteamID64 and, for achievements, AppID | Owned/recent activity, name map, per-game achievement progress and shared schema |
 
-IGDB, RAWG, ProtonDB, PCGW, and Steam Store calls use only game AppIDs or names. The optional Steam Web API call is the exception: it sends the user's SteamID64 with the key they created, solely to resolve owned-game names. Library contents, playtime, and Steam login credentials are never sent.
+IGDB, RAWG, ProtonDB, PCGW, and Steam Store requests use game AppIDs or names,
+not the selected Steam account. Live eligibility is constrained by
+[API_SOURCES.md](API_SOURCES.md), including currently disabled interfaces.
+Optional Steam Web API requests send the selected SteamID64 and user-created
+key for the documented name/activity/achievement operations. Local account
+selection does not grant remote permission or bypass profile visibility. Steam
+login credentials and local story/preferences are never sent.
 
 All API responses are cached locally. See [API_SOURCES.md](API_SOURCES.md) for caching details.
 
@@ -101,6 +111,36 @@ In offline mode, all external API calls are blocked. Only locally cached data an
 
 ## Data Retention
 
+- **Confirmed personal cleanup:** `accounts clear --scope cached|authored`
+  previews the selected account's inventory and removal scope; only `--confirm`
+  deletes. Data Sources offers the same two previews with Cancel/Escape and
+  explicit Confirm clear. Cached removes activity snapshots and per-game player
+  achievement caches. Authored permanently removes local story marks and
+  preference choices, including invalid/temporary authored records; no undo.
+  Both preserve other accounts, shared achievement schemas/metadata, saved
+  Playlists, settings and Steam files. Cleanup never calls a provider.
+- **Synchronization and reload:** A preview holds cross-process account locks
+  shared by personal refresh and authored writes until confirmation/cancellation.
+  Busy operations fail explicitly. Close the preview to release ownership.
+  GUI cleanup is unavailable during personal refresh and immediately invalidates
+  old profile/ranking/jobs, including on partial removal failure, then reloads
+  cache-only evidence. A partial failure reports that some records may already
+  be removed; reopen inventory before retry. Cleared remote evidence is unknown,
+  not an empty owned library; authorized explicit refresh may repopulate caches.
+  Small persistent `.lock` coordination files contain no personal payload and
+  must not be removed while Vapourfly processes are active.
+- **Personal inventory:** `accounts inventory` or Data Sources > Personal records
+  reads only the selected SteamID64's activity/achievement caches and authored
+  story/preferences, including orphaned title records. Counts and local write
+  times are distinct from provider freshness, visibility and record validity.
+  Inventory exports omit identifiers and per-game payloads; credentials appear
+  only as configured/not configured. It does not clear records or create storage.
+  Reopen the GUI dialog to refresh this read-only snapshot.
+- **Account separation:** Activity uses `steam-activity/<SteamID64>.json`,
+  achievement progress `steam-achievements/<SteamID64>-<AppID>.json` under the
+  cache root. Story and preference roots each use `<SteamID64>/<AppID>.json`.
+  Shared achievement schema, metadata, saved Playlists, settings and Steam
+  collections are separate from this personal inventory.
 - **API cache:** Stored locally until explicitly refreshed (`vapourfly cache refresh`) or manually deleted.
 - **Backups:** Stored alongside the original file, pruned to the most recent 5 after each write.
 - **Playlists:** Stored locally in the Vapourfly playlist directory. Never uploaded anywhere.

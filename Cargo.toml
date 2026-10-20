@@ -23,7 +23,7 @@ toml = "1"
 ureq = "3"
 winreg = "0.56"
 serial_test = "4"
-gpui-kit = "0.7.0"
+gpui-kit = "0.8.0"
 rfd = "0.17"
 gilrs = "0.11"
 base64 = "0.23"
@@ -34,6 +34,10 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+
+[profile.release-size]
+inherits = "release"
+opt-level = "s"
 
 [workspace.lints.rust]
 unused_must_use = "deny"

@@ -15,13 +15,18 @@ pub mod error;
 pub mod junk;
 pub mod models;
 pub mod mood;
+pub mod personal_store;
 pub mod playlist;
 pub mod playlist_store;
+pub mod preferences;
+pub mod progress;
 pub mod recommend;
 pub mod scoring;
 pub mod share_code;
 pub mod signal;
 pub mod steam;
+pub mod taste;
+pub mod traits;
 pub mod write;
 
 pub use error::{Result, SafePath, VapourflyError};

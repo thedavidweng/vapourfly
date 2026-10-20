@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Library Filters retain focused-button Enter/Space activation instead of
+  toggling the ancestor popover, using the released GPUI Kit 0.8.0 repair.
+
+### Added
+
+- Account-scoped playstyle traits explain original Completion-focused, Deep diver,
+  and Explorer rules, with thresholds and supporting, contrary, and unknown games
+  in the existing Library/Discover Evidence dialog and `accounts profile` output.
+
+### Changed
+
+- Discover consumes the same account-scoped canonical profile, progress and
+  feedback as Recommendations, with bounded validated IGDB seed links, novelty
+  and deterministic variety. CLI and GUI expose full signed reasons, including
+  missing seed/activity evidence; cold libraries retain eligible picks.
+  `DiscoverReason` now aliases the shared `RecommendReason` (owned code and
+  description strings). Existing Manual Playlist formats and write guards
+  are unchanged; no persisted migration is needed.
+
+- Owned-library Recommendations now use canonical continuous account taste,
+  bounded quality/recency/explicit progress/feedback and deterministic variety.
+  Seed affects ties only, never relevance. CLI and GUI show all signed reasons
+  and coverage limitations; no completion inference from playtime/duration.
+  Story edits invalidate in-flight and displayed personalized picks.
+
+- Unreleased Rust profile API: `profile::derive` now requires the selected account's
+  progress map after the activity snapshot argument. `AccountProfile` adds `traits`
+  and `TasteProfile` adds `titles`; downstream struct literals must supply these
+  fields. The CLI profile JSON gains the corresponding fields. Profiles are
+  derived, serialize-only output, not persisted records or a deserialization
+  contract; no stored-data migration or defaulted evidence is introduced.
+
+## [0.3.1] - 2026-10-17
+
+### Fixed
+
+- macOS releases now require Developer ID signatures, Apple notarization, and stapled tickets before publication.
+
 ## [0.3.0] - 2026-10-04
 
 First public release of Vapourfly, a local-first CLI and desktop GUI for
@@ -50,9 +90,10 @@ by the [trademark policy](TRADEMARKS.md).
 
 ### Data sources
 
-- Metadata from Steam Store, ProtonDB, PCGamingWiki, and HowLongToBeat
-  without credentials, plus IGDB and RAWG with your own API keys. An optional
-  Steam Web API key resolves all owned-game names in one request.
+- Metadata from Steam Store, ProtonDB, PCGamingWiki, and legacy HLTB cache
+  records without credentials, plus documented IGDB time-to-beat and RAWG with
+  your own API keys. An optional Steam Web API key resolves all owned-game
+  names in one request. HLTB is no longer fetched or refreshed.
 - Cache-first hydration (ADR-0009): commands render from the local cache
   immediately, and missing entries are filled by `cache refresh`,
   `scan --enrich`, or the GUI background job. `--offline` blocks all network
@@ -83,5 +124,6 @@ by the [trademark policy](TRADEMARKS.md).
 - Logs and `vapourfly diagnostics export` redact paths, account names, and
   SteamIDs by default.
 
-[Unreleased]: https://github.com/thedavidweng/vapourfly/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/thedavidweng/vapourfly/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/thedavidweng/vapourfly/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/thedavidweng/vapourfly/releases/tag/v0.3.0

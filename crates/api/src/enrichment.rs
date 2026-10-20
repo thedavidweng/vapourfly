@@ -22,25 +22,25 @@ const IGDB_TTL: Duration = Duration::from_secs(14 * 24 * 3600); // ratings/keywo
 const RAWG_TTL: Duration = Duration::from_secs(14 * 24 * 3600);
 const PROTONDB_TTL: Duration = Duration::from_secs(7 * 24 * 3600); // tiers change rarely
 const PCGW_TTL: Duration = Duration::from_secs(14 * 24 * 3600);
-const HLTB_TTL: Duration = Duration::from_secs(30 * 24 * 3600); // 30 days
 const STEAM_STORE_TTL: Duration = Duration::from_secs(3 * 24 * 3600); // prices/sales move fastest
 
 pub const SOURCE_IGDB: &str = "igdb";
 pub const SOURCE_RAWG: &str = "rawg";
 pub const SOURCE_PROTONDB: &str = "protondb";
 pub const SOURCE_PCGW: &str = "pcgw";
+/// Legacy cache namespace retained so existing HLTB records remain readable.
+/// It is intentionally absent from [`ALL_SOURCES`] and is never refreshed.
 pub const SOURCE_HLTB: &str = "hltb";
 pub const SOURCE_STEAM_STORE: &str = "steam-store";
 
-/// All sources in enrichment order. AppID-keyed sources run first —
-/// Steam Store hydration backfills placeholder names ("App <id>"), so the
-/// name-keyed sources (HLTB, RAWG) that follow can look those games up.
+/// All supported live sources in enrichment order. AppID-keyed sources run
+/// first — Steam Store hydration backfills placeholder names ("App <id>"),
+/// so the name-keyed RAWG source that follows can look those games up.
 pub const ALL_SOURCES: &[&str] = &[
     SOURCE_STEAM_STORE,
     SOURCE_IGDB,
     SOURCE_PROTONDB,
     SOURCE_PCGW,
-    SOURCE_HLTB,
     SOURCE_RAWG,
 ];
 
@@ -275,7 +275,7 @@ fn put_fresh_record<T: Clone + serde::Serialize>(
     }
 }
 
-/// The per-source enrichment protocol, written once for all six sources:
+/// The per-source enrichment protocol, written once for all live sources:
 ///
 /// 1. fresh cache hit (unless `force`) → apply, skip
 /// 2. `offline` → leave the field for cache-only hydration
@@ -379,31 +379,6 @@ fn enrich_source(
                     key: app_key,
                     field: |g| &mut g.pcgw,
                     fetch: &|g| client.fetch_by_appid(g.app_id).map(Some),
-                },
-                options,
-                &mut stats,
-                errors,
-            );
-        }
-        SOURCE_HLTB => {
-            let client = crate::hltb::HltbClient::with_http(http.clone());
-            enrich_with(
-                games,
-                cache,
-                SourceAdapter {
-                    source: SOURCE_HLTB,
-                    ttl: HLTB_TTL,
-                    key: name_key,
-                    // Placeholder names would query (and cache) garbage —
-                    // treat them as "no data" until a real name backfills.
-                    fetch: &|g| {
-                        if g.has_placeholder_name() {
-                            Ok(None)
-                        } else {
-                            client.fetch(&g.name)
-                        }
-                    },
-                    field: |g| &mut g.hltb,
                 },
                 options,
                 &mut stats,
@@ -558,6 +533,8 @@ pub fn hydrate_from_cache(games: &mut [Game], cache: &DiskCache) -> HydrationSum
         backfill_names_from_store(std::slice::from_mut(game));
 
         let name = name_key(game);
+        // HLTB is legacy cache data only: it is readable for compatibility,
+        // but has no live enrichment path or refresh action.
         hydrate_field::<HltbData>(cache, SOURCE_HLTB, &name, &mut game.hltb, &mut summary);
         hydrate_field::<RawgData>(cache, SOURCE_RAWG, &name, &mut game.rawg, &mut summary);
     }
@@ -725,7 +702,9 @@ mod tests {
     use crate::http::{HttpResponse, MockBackend};
     use std::collections::HashMap;
     use tempfile::TempDir;
-    use vapourfly_core::models::{Game, IgdbData, ProtonDbData, ProtonTier, SteamAppType};
+    use vapourfly_core::models::{
+        Game, HltbData, HltbSource, IgdbData, ProtonDbData, ProtonTier, SteamAppType,
+    };
 
     fn store_details(app_id: u32, name: &str) -> SteamStoreDetails {
         SteamStoreDetails {
@@ -1127,7 +1106,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache = DiskCache::new(tmp.path());
         let options = EnrichmentOptions {
-            sources: vec![SOURCE_HLTB.to_string(), SOURCE_RAWG.to_string()],
+            sources: vec![SOURCE_RAWG.to_string()],
             offline: false,
             force: true,
         };
@@ -1147,6 +1126,54 @@ mod tests {
         assert_eq!(summary.network_fetches, 0);
         assert!(games[0].hltb.is_none());
         assert!(games[0].rawg.is_none());
+    }
+
+    #[test]
+    fn legacy_hltb_cache_is_readable_but_never_refreshed() {
+        let tmp = TempDir::new().unwrap();
+        let cache = DiskCache::new(tmp.path());
+        cache
+            .put(&CacheRecord {
+                source: SOURCE_HLTB.to_string(),
+                key: "name/Legacy Game".into(),
+                fetched_at: chrono::Utc::now(),
+                ttl: Duration::from_secs(30 * 24 * 3600),
+                data: HltbData {
+                    main_story_seconds: Some(3600),
+                    main_extra_seconds: Some(7200),
+                    completionist_seconds: Some(10_800),
+                    source: HltbSource::HltbScrape,
+                },
+                stale: false,
+                etag: None,
+            })
+            .unwrap();
+
+        let mut game = make_test_game(1, "Legacy Game");
+        let hydration = hydrate_from_cache(std::slice::from_mut(&mut game), &cache);
+        assert_eq!(hydration.fields_hydrated, 1);
+        assert_eq!(
+            game.hltb.as_ref().map(|data| data.source.clone()),
+            Some(HltbSource::HltbScrape)
+        );
+
+        // The legacy source id is deliberately inert even if a caller passes
+        // it explicitly. No private HLTB endpoint can be reached here.
+        let http = HttpClient::with_backend(Box::new(MockBackend::new()));
+        let summary = enrich_games_with(
+            &mut [make_test_game(2, "Another Game")],
+            &cache,
+            &EnrichmentOptions {
+                sources: vec![SOURCE_HLTB.to_string()],
+                offline: false,
+                force: true,
+            },
+            &SourceCredentials::default(),
+            &http,
+        );
+        assert_eq!(summary.network_fetches, 0);
+        assert!(summary.errors.is_empty());
+        assert!(!ALL_SOURCES.contains(&SOURCE_HLTB));
     }
 
     #[test]

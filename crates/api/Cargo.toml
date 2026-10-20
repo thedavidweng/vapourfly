@@ -1,13 +1,9 @@
 [package]
 name = "vapourfly-api"
-version = "0.3.0"
+version = "0.3.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-
-[features]
-default = ["hltb_scrape"]
-hltb_scrape = []
 
 [dependencies]
 vapourfly-core = { path = "../core" }

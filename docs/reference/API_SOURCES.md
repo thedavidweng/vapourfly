@@ -6,13 +6,37 @@ Vapourfly enriches your Steam library with metadata from external data sources. 
 
 | Source | Credentials | Data Provided | Notes |
 |---|---|---|---|
-| **IGDB** | Client ID + Secret | Genres, themes, keywords, ratings (0-100), time-to-beat, similar games | Uses Twitch OAuth. Data is authoritative for game metadata. |
+| **IGDB** | Client ID + Secret | Genres, themes, keywords, ratings (0-100), time-to-beat, similar games | Uses Twitch OAuth. Provider metadata; estimates are not proof of story completion. |
 | **RAWG** | API key | Genres, tags, ratings (0-5), store availability | Large database with community-sourced data. |
-| **ProtonDB** | None | Compatibility tier (Borked/Native/Platinum/Gold/Silver/Bronze), confidence, score | Community-reported Linux/Steam Deck compatibility. |
-| **PCGamingWiki** | None | Controller support (Full/Partial/None), fixes URL | MediaWiki Cargo API. Steam Deck notes come from ProtonDB. |
-| **HLTB** | None | Main story time, main + extras time, completionist time | Enabled in the default build (`hltb_scrape`). |
-| **Steam Store** | None | App name, type, description, developers, publishers, genres, categories, price, platforms, Metacritic score | Public Steam Store API. |
-| **Steam Web API** | User-created key | Owned-game AppID → name map | One cached `GetOwnedGames` request. Optional; names otherwise backfill from Steam Store. |
+| **ProtonDB** | None | Compatibility tier (Borked/Native/Platinum/Gold/Silver/Bronze), confidence, score | Legacy cache only; summary endpoint permission unverified. |
+| **PCGamingWiki** | None | Controller support (Full/Partial/None), fixes URL | Legacy cache only; Cargo now requires bot login. |
+| **Legacy HLTB cache** | None | Previously cached main story, main + extras, and completionist times | Read-only compatibility data; never fetched or refreshed. |
+| **Steam Store** | None | App name, type, description, developers, publishers, genres, categories, price, platforms, Metacritic score | Legacy cache only; published interface permission unverified. |
+| **Steam Web API** | User-created key | Owned/recent activity, playtime and AppID → name map | Explicit account refresh makes at most one `GetOwnedGames` and one `GetRecentlyPlayedGames` request; snapshots are partitioned by SteamID64. |
+
+## Access and licensing audit (2026-10-18)
+
+A reachable URL does not establish permission. This inventory separates a
+published interface from a data license. No provider key is bundled with
+Vapourfly. Local scanning and existing caches remain usable without keys.
+The production HTTP backend rejects the three disabled legacy integrations
+before network I/O; parser tests may still use mock responses.
+
+| Source / actual endpoints | Published access and eligibility | License / quota evidence | Current decision |
+|---|---|---|---|
+| IGDB `/v4/external_games`, `/v4/games`, `/v4/game_time_to_beats`; Twitch `/oauth2/token` | [IGDB documentation](https://api-docs.igdb.com/): Twitch developer account, 2FA, own client ID/secret, client-credentials OAuth | Noncommercial use under Twitch Developer Service Agreement; commercial partnership and user-facing attribution required for commercial products. Local caching explicitly permitted. 4 req/s, 8 open requests. | Enabled only with user credentials; 3 req/s, one in-flight request per shared client. Commercial redistribution requires the provider arrangement, not merely possession of a key. |
+| RAWG `/api/games` search and game details | [RAWG API/pricing/terms](https://rawg.io/apidocs): own API key on every request | Free personal/hobby plan is noncommercial, 20,000/month with backlinks wherever data is used; business plans have separate eligibility/quotas. No unrestricted data/image redistribution license is inferred. | Credential-gated. User must choose an eligible plan; local pacing is not monthly quota enforcement. |
+| Steam Web `/IPlayerService/GetOwnedGames/v1/` (and planned recent/achievement interfaces) | [IPlayerService](https://partner.steamgames.com/doc/webapi/IPlayerService), [key classes](https://partner.steamgames.com/doc/webapi_overview/auth): normal user key and profile/game-details visibility; publisher key is not required for these player interfaces | [Valve terms](https://steamcommunity.com/dev/apiterms): personal-use Steam Data subject to terms, key secrecy, privacy, 100,000 calls/day. No privacy bypass or permission to scrape other sites. | Optional user key. Cache account-specific responses by SteamID64. No embedded key or Steam-client key extraction. |
+| Steam Store `/api/appdetails` | No Valve published API contract for this endpoint was established by this audit. Steam Web API documentation is not evidence for Store endpoint permission. | No published Store-specific rate/license entitlement verified. Previous 200/5min claim was an observation, not policy. | **Live disabled, cache reads retained.** Restore only after an official interface/permission is established. |
+| ProtonDB `/api/v1/reports/summaries/{appid}.json` | [Provider data-export repository](https://github.com/bdefore/protondb-data) publishes exports, not a supported summary API contract | Export ODbL does not itself authorize arbitrary live endpoints or transfer artwork rights; summary API rate/access policy unverified. | **Live disabled, cache reads retained.** A separately licensed export importer or provider authorization is needed before re-enabling. |
+| PCGamingWiki `/w/api.php?action=cargoquery` | [Official API policy](https://www.pcgamingwiki.com/wiki/PCGamingWiki:API): since August 2026 Cargo requires bot-password login; existing anonymous client does not implement it | [Copyrights](https://www.pcgamingwiki.com/wiki/PCGamingWiki:Copyrights): CC Attribution Non-Commercial Share Alike unless noted; 60 requests/minute, identifying user-agent; permission errors must not become empty data. | **Live disabled, cache reads retained.** A documented login implementation, eligible credentials and attribution are prerequisites to restore. |
+| HLTB | Undocumented website interfaces removed in #54 | No new live access or redistribution entitlement claimed | **Live removed.** Existing local records retain provenance; no published asset/cache rewrite. |
+
+Re-enable prerequisites are explicit engineering/provider work, not a reason
+to block local-first Steam activity implementation. Do not replace disabled
+interfaces with scraping, reverse engineered tokens or hidden fallbacks.
+Data/cover-image rights are separate from source-code licenses; no newly
+bundled third-party dataset or artwork is included by this change.
 
 ## IGDB
 
@@ -44,7 +68,7 @@ export VAPOURFLY_IGDB_CLIENT_SECRET="your_client_secret"
 
 ### Rate Limiting
 
-IGDB allows 4 requests per second. Vapourfly respects this limit and caches responses locally.
+IGDB documents 4 requests per second and at most 8 open requests. Vapourfly paces requests at 3 per second without an initial burst and serializes IGDB requests across clones of one client. Separate application processes do not share a limiter. Responses are cached locally.
 
 ## RAWG
 
@@ -76,7 +100,7 @@ RAWG allows 20,000 requests per month on the free tier. Vapourfly caches respons
 ## ProtonDB
 
 **Endpoint:** `https://www.protondb.com/api/v1/reports/summaries/{appid}.json`
-**Authentication:** None
+**Authentication:** None in the legacy adapter; live requests disabled.
 
 ### Data Used
 
@@ -97,7 +121,7 @@ ProtonDB data is useful for Steam Deck and Linux compatibility filtering:
 ## PCGamingWiki
 
 **Endpoint:** `https://www.pcgamingwiki.com/w/api.php`
-**Authentication:** None (MediaWiki Cargo query)
+**Authentication:** Bot login required for Cargo since August 2026; not implemented. Live requests disabled.
 
 ### Data Used
 
@@ -106,20 +130,22 @@ ProtonDB data is useful for Steam Deck and Linux compatibility filtering:
 
 Steam Deck compatibility is taken from ProtonDB, not PCGW.
 
-## HLTB (HowLongToBeat)
+## Completion time
 
-**Source:** `howlongtobeat.com` (`bleed` endpoints)
-**Authentication:** None
-**Feature:** `hltb_scrape` (enabled by default; omit with `--no-default-features`)
+Vapourfly's supported live completion-time source is the documented IGDB
+`game_time_to_beats` endpoint, available when IGDB credentials are configured.
+The `normally` value is used for time-dependent workflows and remains marked
+as `IgdbGameTimeToBeat` in the model. Explicit manual overrides take priority.
 
-Time-to-beat data is also available through IGDB when IGDB credentials are
-configured.
-
-### Data Used
-
-- **Main Story** -- Average time to complete the main story (seconds)
-- **Main + Extras** -- Main story plus significant side content
-- **Completionist** -- 100% completion time
+Previously cached HLTB records remain readable under the `hltb` cache namespace
+and retain `HltbScrape` provenance. They are legacy compatibility data: the
+application never calls HLTB endpoints, does not refresh that namespace, and
+does not list it in CLI or GUI source controls. If no cached legacy value or
+documented IGDB value exists, completion-time workflows treat the signal as
+unknown rather than translating another duration field. While a legacy record
+exists, it remains the preferred completion value; removing that local cache
+record allows the documented IGDB value to be used on the next refresh without
+rewriting or silently reinterpreting the HLTB record.
 
 ### Use in Playlists and Junk Detection
 
@@ -127,12 +153,14 @@ configured.
 { "op": "HltbMaxMinutes", "args": { "minutes": 600 } }
 ```
 
-Junk detection uses the main story time to identify short games that the user has not played.
+The completion-time rule uses the supported precedence above. Legacy HLTB data
+is still useful when present, while new live data is explicitly attributed to
+IGDB.
 
 ## Steam Store
 
 **Endpoint:** `https://store.steampowered.com/api/appdetails`
-**Authentication:** None
+**Authentication:** None in the legacy adapter; live requests disabled.
 
 ### Data Used
 
@@ -153,8 +181,10 @@ Junk detection uses the main story time to identify short games that the user ha
 **Endpoint:** `https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/`
 **Authentication:** User-created Steam Web API key
 
-Used only to resolve `"App <id>"` placeholder names when `appinfo.vdf` is
-missing (common on macOS). One request, cached for one day.
+Used for explicit account activity refreshes and, when needed, to resolve
+`"App <id>"` placeholder names when `appinfo.vdf` is missing (common on
+macOS). Activity refresh makes at most one request per documented endpoint;
+responses are cached for one day.
 
 ### Setup
 
@@ -171,8 +201,112 @@ The environment variable overrides the config file. `settings show` and
 `doctor` print the key masked. Per Valve's terms the key is personal and is
 never bundled with the app.
 
-Without a key, names backfill progressively from Steam Store hydration.
-Name-keyed sources (HLTB, RAWG) skip placeholder-named games.
+Without a key, existing Steam Store caches may resolve names; fresh Store fetching is disabled.
+
+The remaining name-keyed source (RAWG) skips placeholder-named games.
+
+### Account activity snapshots
+
+`accounts inventory` and Data Sources > Personal records inspect only local
+selected-account storage. They show activity evidence separately from on-disk
+counts and local write timestamps; achievement counts do not infer per-game
+freshness or visibility. Missing data remains unknown. No provider requests,
+new files, credential values or per-game payload exports are produced. Inventory
+is not a clear operation; shared schema and game metadata remain separate.
+
+`accounts activity refresh` is an explicit, bounded operation. It uses the
+documented `IPlayerService/GetOwnedGames` and
+`IPlayerService/GetRecentlyPlayedGames` user-key interfaces, never extracts a
+key from Steam files, and never blocks `workflow::prepare` or Library first
+paint. Each selected SteamID64 has an independent `steam-activity/<id>` cache
+record. A refresh makes no more than one request to each endpoint; `--offline`
+and a missing key make zero requests and leave the last snapshot unchanged.
+
+The snapshot distinguishes available data, a confirmed empty response,
+restricted/private visibility, unauthorized keys, rate limiting, malformed
+payloads, incomplete payloads and transport/HTTP failures. Failed refreshes
+retain the last valid game rows and fetched timestamp while reporting the
+failure state. Request URLs and diagnostics never retain or print the key.
+
+The status command reads the cached snapshot without network access. The
+refresh command is explicit and may make at most one request per endpoint:
+
+```bash
+vapourfly accounts activity status --account <steamid64>
+vapourfly accounts activity refresh --account <steamid64>
+```
+
+No real key or device sign-in is required by tests or local cache workflows;
+provider permission and private-profile behavior remain real-account
+acceptance boundaries.
+
+### Account achievement progress
+
+The documented Steam user-key interfaces are
+`ISteamUserStats/GetSchemaForGame/v2` and
+`ISteamUserStats/GetPlayerAchievements/v1`
+([provider reference](https://partner.steamgames.com/doc/webapi/ISteamUserStats)).
+They use the player's locally configured normal Web API key; a publisher key
+is not requested. Local account selection does not grant permission to read
+private Steam profiles. Real-key eligibility and privacy behavior must be
+verified by an authorized account holder.
+
+```bash
+# Read only; never requests data.
+vapourfly accounts achievements 620 --format json
+# Explicit bounded refresh (maximum one schema + one player request).
+vapourfly accounts achievements 620 --refresh
+```
+
+Library game details start a bounded background refresh when cached progress
+is absent or stale and credentials are available. First paint, offline reads
+and no-key reads never wait for achievements. Schema IDs define the
+denominator; only a complete matching player set can produce a percentage or
+Perfected. Zero unlocks, no achievements, missing schema, restricted visibility,
+incomplete responses and request failures remain distinct.
+
+Progress is stored in `steam-achievements/<SteamID64>-<AppID>.json` under the
+cache root. Schema is shared game metadata in `steam-achievement-schema`.
+Failures preserve prior counts and data timestamps but invalidate current
+percentage/Perfected claims. Account switching discards visible progress and
+cancels further requests for the previous account. No Steam file is modified.
+
+### Bounded active-game achievement coverage
+
+`accounts achievement-coverage` selects at most 12 owned games from an
+explicit `--app-id` followed by recent local or cached account activity.
+Selection and default status are cache-only, even for a 1,000+ game library.
+The reported coverage describes this selected subset, not the entire library.
+
+`--refresh` uses the same documented achievement interfaces and local key
+as the single-game command. Games run sequentially, each with at most one
+schema and one player request, no retry and existing Steam pacing (60/min).
+The total budget is 24 requests; `--limit` can reduce it to 1..12 games.
+An OS file lock scoped by SteamID64 owns each live batch and is released on
+completion, failure, cancellation or process exit. Cached schemas remain
+shared; player results remain account-specific.
+
+Unauthorized, rate-limited, HTTP and transport failures stop further batch
+requests. Restricted, missing-schema and incomplete game responses remain
+distinct and do not erase prior counts. Automatic callers retain the existing
+one-hour failure cooldown; explicit refresh can retry on player request.
+Offline and no-key operations issue no requests and acquire no batch lock.
+Output contains coverage counts and stop status, not account identifiers,
+API keys or individual unlock history.
+
+The GUI starts the same bounded batch after a local Library scan, without
+waiting for achievement responses before first paint. Data Sources shows
+selected/available/stale/unavailable/missing counts, pending games and a stop
+reason, with explicit **Refresh active games** and **Cancel** controls.
+Inspecting a game reads its account-scoped cache immediately; it does not
+supersede an existing batch. Cancellation retains the worker owner until exit.
+Account switches cancel the old worker and discard its visible coverage;
+switching offline cancels live work. Automatic refresh respects provider-wide
+failure cooldown before starting other games; explicit refresh can retry.
+
+Controlled transport and GUI state tests prove bounded requests, nonblocking
+prepared-Library access and cancellation. Authorized live-provider/privacy
+checks and native-device acceptance remain separate and unverified.
 
 ## Caching
 
@@ -185,7 +319,6 @@ All API responses are cached locally under the Vapourfly cache directory (report
 ```bash
 # Refresh a single source
 vapourfly cache refresh --source igdb
-vapourfly cache refresh --source steam-store
 
 # Refresh all sources
 vapourfly cache refresh --source all
@@ -199,8 +332,8 @@ Cache refresh is blocked in `--offline` mode.
 `workflow::prepare` (junk, recommend, playlist, discover, editorial mood,
 dynamic template, GUI library scan) hydrates from this cache only — including
 stale entries — plus at most one bounded name-map request when a Steam Web
-API key is configured (ADR-0009). Playlist match may fetch missing-entry
-Steam Store prices on demand. Populate missing or stale entries with
+API key is configured (ADR-0009). Playlist match can use cached
+Steam Store prices; uncached prices remain unknown. For enabled sources, populate missing or stale entries with
 `cache refresh`, `scan --enrich`, or the GUI's background populate job.
 `--offline` blocks every network call. Per-game fetch failures degrade
 gracefully — the workflow always returns a result.
@@ -212,7 +345,7 @@ When multiple sources provide the same data, Vapourfly uses this priority order:
 - **Ratings:** RAWG (native 0-5) > IGDB (0-100, converted to 0-5) > Manual override
 - **Genres:** IGDB + RAWG (union of both)
 - **Tags:** RAWG tags + IGDB keywords + IGDB themes + Steam collections (union)
-- **Completion time:** Manual override > HLTB (if the scrape client is compiled in) > IGDB time-to-beat
+- **Completion time:** Manual override > cached legacy HLTB > IGDB `normally` time-to-beat
 
 ## Graceful Degradation
 
@@ -221,5 +354,5 @@ Vapourfly works without any API credentials. When external data is unavailable:
 - Junk detection uses only Steam playtime data (confidence score reflects missing signals)
 - Recommendation scoring falls back to local metadata
 - Playlist rules that depend on missing data fail closed (positive predicates return false, negated predicates pass through)
-- Names stay as `"App <id>"` until Steam Store or the owned-games map fills them
+- Names stay as `"App <id>"` until local/cached metadata or the optional owned-games map fills them
 - `vapourfly doctor` and `vapourfly sources status` report which credentials are missing

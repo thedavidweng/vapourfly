@@ -9,6 +9,7 @@ use gpui_kit::component::{
     button::{Button, ButtonCustomVariant, ButtonVariants},
     checkbox::Checkbox,
     description_list::DescriptionList,
+    dialog::DialogFooter,
     h_flex,
     input::Input,
     menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
@@ -22,10 +23,11 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     Anchor, AnyElement, App, ClipboardItem, Context, Entity, Hsla, InteractiveElement, IntoElement,
-    ObjectFit, ParentElement, SharedString, Styled, StyledImage, Window, div, img,
+    ObjectFit, ParentElement, ScrollHandle, SharedString, Styled, StyledImage, Window, div, img,
     linear_color_stop, linear_gradient, list, prelude::*, px, rgb, uniform_list,
 };
 use vapourfly_core::models::{ControllerSupport, Game, JunkMode, ProtonTier};
+use vapourfly_core::signal;
 
 use super::controller::CardScope;
 use super::widgets::{self, PAGE_PX};
@@ -44,6 +46,19 @@ const CARD_TEXT_H: f32 = 46.;
 const HERO_H: f32 = 400.;
 /// Shortest hero, used on 800px-tall screens such as the Steam Deck.
 const HERO_MIN_H: f32 = 300.;
+
+pub(super) fn evidence_scroll_offset(key: &str, current: f32, max: f32, page: f32) -> Option<f32> {
+    let next = match key {
+        "down" => current - 40.,
+        "up" => current + 40.,
+        "pagedown" => current - page * 0.9,
+        "pageup" => current + page * 0.9,
+        "home" => 0.,
+        "end" => -max,
+        _ => return None,
+    };
+    Some(next.clamp(-max, 0.))
+}
 
 /// Hero height for a window `viewport_h` tall: full size on desktop, cut
 /// down on short screens so the Recently played shelf starts above the fold.
@@ -115,10 +130,7 @@ fn played_label(game: &Game) -> String {
 }
 
 fn hltb_minutes(game: &Game) -> Option<u32> {
-    game.hltb
-        .as_ref()
-        .and_then(|h| h.main_story_seconds)
-        .map(|s| s / 60)
+    signal::main_story_seconds(game).map(|s| s / 60)
 }
 
 fn genres(game: &Game) -> Vec<String> {
@@ -282,6 +294,111 @@ fn game_menu(menu: PopupMenu, entity: Entity<GuiRoot>, id: u32) -> PopupMenu {
 }
 
 impl GuiRoot {
+    pub(super) fn top_tags_panel(&self, cx: &App) -> AnyElement {
+        let profile = match self.app.taste_profile() {
+            Ok(profile) => profile.clone(),
+            Err(error) => {
+                return div()
+                    .px(px(PAGE_PX))
+                    .pb_2()
+                    .child(widgets::caption(
+                        format!("Top Tags unavailable: {error}"),
+                        cx,
+                    ))
+                    .into_any_element();
+            }
+        };
+        let summary = |label: &str, tags: &[vapourfly_core::taste::TagStrength]| {
+            format!(
+                "{label}: {}",
+                if tags.is_empty() {
+                    "no supported tags".into()
+                } else {
+                    tags.iter()
+                        .take(3)
+                        .map(|tag| format!("{} {:.0}%", tag.tag, tag.strength * 100.0))
+                        .collect::<Vec<_>>()
+                        .join(" / ")
+                }
+            )
+        };
+        let long = summary("Long-term", &profile.taste.long_term);
+        let recent = summary("Recent", &profile.taste.recent);
+        let supported = profile
+            .traits
+            .iter()
+            .filter(|t| t.supported)
+            .map(|t| t.label.as_str())
+            .collect::<Vec<_>>();
+        let traits = if supported.is_empty() {
+            "Playstyle: insufficient evidence for a supported trait".into()
+        } else {
+            format!("Playstyle: {}", supported.join(" / "))
+        };
+        let c = &profile.taste.coverage;
+        let coverage = format!(
+            "{}/{} titles with descriptors; {} played, {} Interested. Cached/local evidence only.",
+            c.metadata_titles, c.eligible_titles, c.activity_titles, c.interested_titles
+        );
+        v_flex().px(px(PAGE_PX)).pb_2().gap_1()
+            .child(h_flex().gap_3().flex_wrap()
+                .child(v_flex().flex_1().min_w_0().gap_1()
+                    .child(widgets::caption(format!("Top Tags | {long}"), cx))
+                    .child(widgets::caption(recent, cx)))
+                .child(Button::new("top-tags-evidence").ghost().label("Evidence")
+                    .on_click(move |_, window, cx| {
+                        let profile = profile.clone();
+                        let scroll = ScrollHandle::new();
+                        window.open_dialog(cx, move |dialog, _, cx| {
+                            let keyboard_scroll = scroll.clone();
+                            let mut rows = vec![
+                                profile.taste.explanation.clone(),
+                                format!("Account {}; as of {}. {}", profile.steam_id64, profile.taste.as_of, profile.activity_status),
+                            ];
+                            for (label, tags) in [("Long-term", &profile.taste.long_term), ("Recent", &profile.taste.recent)] {
+                                for tag in tags {
+                                    rows.push(format!("{label}: {} ({:?}) {:.1}% strength; {:.2}x library-relative lift (not player percentile)", tag.tag, tag.kind, tag.strength * 100.0, tag.library_relative_lift));
+                                    for title in &tag.supporting_titles {
+                                        rows.push(format!("{} [{}]: {}m lifetime / {}m recent; last played {:?}; Interested {}; metadata {:?}; activity {:?}", title.name, title.app_id, title.lifetime_minutes, title.recent_minutes, title.last_played_at, title.interested, title.metadata_sources, title.activity));
+                                    }
+                                }
+                            }
+                            for item in &profile.traits {
+                                rows.push(format!("{}: {}. Rule: {}", item.label, if item.supported { "supported" } else { "insufficient evidence" }, item.rule));
+                                for (label, examples) in [("Supporting", &item.supporting), ("Contrary", &item.contrary), ("Unknown", &item.unknown)] {
+                                    rows.push(format!("{label}: {} titles", examples.len()));
+                                    for example in examples {
+                                        rows.push(format!("{} [{}]: {}", example.name, example.app_id, example.evidence));
+                                    }
+                                }
+                            }
+                            dialog.title("Top Tags and playstyle evidence").child(
+                                v_flex().id("top-tags-evidence-scroll").max_h(px(480.)).overflow_y_scroll().gap_3()
+                                    .focusable().tab_index(0).track_scroll(&scroll)
+                                    .on_key_down(move |event, window, cx| {
+                                        if let Some(y) = evidence_scroll_offset(
+                                            &event.keystroke.key,
+                                            keyboard_scroll.offset().y.into(),
+                                            keyboard_scroll.max_offset().y.into(),
+                                            keyboard_scroll.bounds().size.height.into(),
+                                        ) {
+                                            let mut offset = keyboard_scroll.offset();
+                                            offset.y = px(y);
+                                            keyboard_scroll.set_offset(offset);
+                                            cx.stop_propagation();
+                                            window.refresh();
+                                        }
+                                    })
+                                    .child(widgets::caption("Tab into evidence; arrows, Page Up/Down and Home/End scroll. Escape closes.", cx))
+                                    .children(rows.into_iter().map(|row| widgets::caption(row, cx)))
+                            )
+                        });
+                    })))
+            .child(widgets::caption(coverage, cx))
+            .child(widgets::caption(traits, cx))
+            .into_any_element()
+    }
+
     fn content_width(&self, window: &Window) -> f32 {
         let width: f32 = window.viewport_size().width.into();
         // Page inset (8) + panel border (2) + page padding on both sides.
@@ -310,6 +427,8 @@ impl GuiRoot {
 
     pub(super) fn open_game_sheet(&mut self, id: u32, window: &mut Window, cx: &mut Context<Self>) {
         self.app.library_selected_app_id = Some(id);
+        self.app.inspect_achievements(id);
+        self.arm_poll(cx);
         cx.notify();
         let entity = cx.entity();
         window.open_sheet(cx, move |sheet, _, cx| {
@@ -323,6 +442,72 @@ impl GuiRoot {
                 .size(px(520.))
                 .child(body)
         });
+    }
+
+    fn preference_controls(&self, id: u32, entity: Entity<Self>, cx: &App) -> AnyElement {
+        let reset = entity.clone();
+        let reset_all = entity.clone();
+        v_flex()
+            .gap_2()
+            .child(widgets::caption(self.app.preference_summary(id), cx))
+            .child(
+                h_flex().gap_2().flex_wrap()
+                    .children(vapourfly_core::preferences::Choice::ALL.into_iter().enumerate().map(|(index, choice)| {
+                        let entity = entity.clone();
+                        Button::new(("detail-preference", index)).outline().label(choice.label())
+                            .disabled(self.app.ui_demo)
+                            .on_click(move |_, window, cx| {
+                                entity.update(cx, |this, cx| {
+                                    match this.app.edit_preference(Some(id), Some(choice)) {
+                                        Ok(()) => window.push_notification("Local preference updated", cx),
+                                        Err(error) => window.push_notification(error, cx),
+                                    }
+                                    this.arm_poll(cx);
+                                    cx.notify();
+                                });
+                            })
+                    }))
+                    .child(Button::new("detail-preference-reset").ghost().label("Reset this preference")
+                        .disabled(self.app.ui_demo)
+                        .on_click(move |_, window, cx| {
+                            reset.update(cx, |this, cx| {
+                                if let Err(error) = this.app.edit_preference(Some(id), None) {
+                                    window.push_notification(error, cx);
+                                }
+                                this.arm_poll(cx);
+                                cx.notify();
+                            });
+                        })),
+            )
+            .child(Button::new("detail-preference-reset-all").ghost().label("Reset all account preferences…")
+                .disabled(self.app.ui_demo)
+                .on_click(move |_, window, cx| {
+                    let entity = reset_all.clone();
+                    let account = entity.read(cx).app.active_account().map(|a| a.steam_id64.clone());
+                    window.open_dialog(cx, move |dialog, _, _| {
+                        let entity = entity.clone();
+                        let account = account.clone();
+                        dialog.title("Reset this account's local preferences?")
+                            .child("Interested, Not interested and Not now choices will be removed. Story marks, Playlists and Steam files are unchanged. This cannot be undone.")
+                            .footer(DialogFooter::new()
+                                .child(Button::new("preferences-cancel").ghost().label("Cancel")
+                                    .on_click(|_, window, cx| window.close_dialog(cx)))
+                                .child(Button::new("preferences-confirm").primary().label("Reset preferences")
+                                    .on_click(move |_, window, cx| {
+                                        entity.update(cx, |this, cx| {
+                                            if this.app.active_account().map(|a| &a.steam_id64) != account.as_ref() {
+                                                window.push_notification("Account changed; reset cancelled", cx);
+                                            } else if let Err(error) = this.app.edit_preference(None, None) {
+                                                window.push_notification(error, cx);
+                                            }
+                                            this.arm_poll(cx);
+                                            cx.notify();
+                                        });
+                                        window.close_dialog(cx);
+                                    })))
+                    });
+                }))
+            .into_any_element()
     }
 
     fn game_detail(&self, game: &Game, entity: Entity<Self>, cx: &App) -> impl IntoElement {
@@ -361,6 +546,9 @@ impl GuiRoot {
             .and_then(|s| s.developers.first().cloned());
 
         let similar = entity.clone();
+        let story_action = entity.clone();
+        let progress = self.app.game_progress(id);
+        let story_completed = progress.is_some_and(|p| p.story_completed);
         let demo = self.app.ui_demo;
         let installed = game.installed;
         let name = game.name.clone();
@@ -443,6 +631,28 @@ impl GuiRoot {
                             }),
                     ),
             )
+            .child(
+                Button::new("detail-story")
+                    .outline()
+                    .label(if story_completed {
+                        "Undo story completion"
+                    } else {
+                        "Mark story completed"
+                    })
+                    .disabled(self.app.ui_demo || progress.is_none())
+                    .on_click(move |_, window, cx| {
+                        story_action.update(cx, |this, cx| {
+                            match this.app.set_story_completed(id, !story_completed) {
+                                Ok(()) => {
+                                    window.push_notification("Local story completion updated", cx);
+                                }
+                                Err(error) => window.push_notification(error, cx),
+                            }
+                            cx.notify();
+                        });
+                    }),
+            )
+            .child(self.preference_controls(id, entity.clone(), cx))
             .when_some(description, |this, text| {
                 this.child(
                     div()
@@ -467,6 +677,8 @@ impl GuiRoot {
                         1,
                     )
                     .item("Last played", last_played, 1)
+                    .item("Achievements", self.app.achievement_summary(id), 2)
+                    .item("Progress", self.app.game_progress_summary(id), 2)
                     .item(
                         "Time to beat",
                         hltb_minutes(game).map_or_else(|| "—".to_string(), format_playtime),
@@ -505,6 +717,9 @@ impl GuiRoot {
     fn active_filter_labels(&self) -> Vec<(&'static str, String)> {
         let app = &self.app;
         let mut out = Vec::new();
+        if app.progress_filter != vapourfly_core::progress::Filter::All {
+            out.push(("progress", app.progress_filter.label().into()));
+        }
         if app.library_quick_view != QuickView::All {
             out.push(("preset", app.library_quick_view.label().to_string()));
         }
@@ -542,6 +757,7 @@ impl GuiRoot {
     fn clear_filter(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         let app = &mut self.app;
         match key {
+            "progress" => app.progress_filter = Default::default(),
             "preset" => {
                 app.apply_quick_view(QuickView::All);
                 self.reapply_scope();
@@ -568,6 +784,7 @@ impl GuiRoot {
     }
 
     fn reset_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.app.progress_filter = Default::default();
         self.app.apply_quick_view(QuickView::All);
         self.app.filter_not_junk = false;
         self.app.filter_not_hidden = false;
@@ -712,6 +929,13 @@ impl GuiRoot {
             .size_full()
             .child(widgets::page_header("Library", subtitle, actions, cx))
             .child(self.library_toolbar(cx))
+            .child(self.top_tags_panel(cx))
+            .child(
+                div()
+                    .px(px(PAGE_PX))
+                    .pb_2()
+                    .child(widgets::caption(self.app.progress_coverage(), cx)),
+            )
             .child(self.active_filter_chips(cx))
             .child(body)
     }
@@ -844,6 +1068,7 @@ impl GuiRoot {
             .content(move |_, _, cx| {
                 let app = &entity.read(cx).app;
                 let preset = app.library_quick_view;
+                let progress_filter = app.progress_filter;
                 let deck = app.filter_deck_compatible;
                 let controller = app.filter_controller_full;
                 let not_junk = app.filter_not_junk;
@@ -878,6 +1103,34 @@ impl GuiRoot {
                     .w(px(340.))
                     .gap_4()
                     .p_1()
+                    .child(
+                        v_flex()
+                            .gap_2()
+                            .child(widgets::section_label("Progress", cx))
+                            .child(
+                                h_flex().gap_1p5().flex_wrap().children(
+                                    vapourfly_core::progress::Filter::ALL.into_iter().map(
+                                        |filter| {
+                                            let entity = entity.clone();
+                                            Button::new(SharedString::from(format!(
+                                                "progress-{}",
+                                                filter.label()
+                                            )))
+                                            .small()
+                                            .outline()
+                                            .label(filter.label())
+                                            .selected(progress_filter == filter)
+                                            .on_click(move |_, _, cx| {
+                                                entity.update(cx, |this, cx| {
+                                                    this.app.progress_filter = filter;
+                                                    cx.notify();
+                                                });
+                                            })
+                                        },
+                                    ),
+                                ),
+                            ),
+                    )
                     .child(
                         v_flex()
                             .gap_2()
@@ -1840,7 +2093,32 @@ impl GuiRoot {
 
 #[cfg(test)]
 mod tests {
-    use super::{HERO_H, HERO_MIN_H, hero_height};
+    use super::{HERO_H, HERO_MIN_H, evidence_scroll_offset, hero_height};
+
+    #[test]
+    fn evidence_keyboard_scroll_reaches_both_ends_and_clamps() {
+        assert_eq!(
+            evidence_scroll_offset("pagedown", 0., 1000., 480.),
+            Some(-432.)
+        );
+        assert_eq!(
+            evidence_scroll_offset("pageup", -1000., 1000., 480.),
+            Some(-568.)
+        );
+        assert_eq!(evidence_scroll_offset("end", 0., 1000., 480.), Some(-1000.));
+        assert_eq!(
+            evidence_scroll_offset("home", -1000., 1000., 480.),
+            Some(0.)
+        );
+        assert_eq!(
+            evidence_scroll_offset("down", -990., 1000., 480.),
+            Some(-1000.)
+        );
+        assert_eq!(evidence_scroll_offset("up", -10., 1000., 480.), Some(0.));
+        assert_eq!(evidence_scroll_offset("end", 0., 0., 480.), Some(0.));
+        assert_eq!(evidence_scroll_offset("escape", 0., 1000., 480.), None);
+        assert_eq!(evidence_scroll_offset("tab", 0., 1000., 480.), None);
+    }
 
     #[test]
     fn hero_shrinks_on_short_screens() {

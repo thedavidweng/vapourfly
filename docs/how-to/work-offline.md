@@ -18,7 +18,6 @@ steam-store     not required    2026-08-13 10:52 720      720      yes
 igdb            missing         n/a             0        0        no        
 protondb        not required    2026-08-13 10:30 865      865      yes       
 pcgw            not required    2026-08-13 11:26 705      0        yes       
-hltb            not required    2026-08-13 11:50 612      0        yes       
 rawg            missing         n/a             0        0        no        
 ```
 
