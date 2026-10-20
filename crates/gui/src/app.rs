@@ -2940,6 +2940,10 @@ impl VapourflyApp {
 
     /// Start Recommendations Preview in a background thread.
     pub(crate) fn start_recommend_preview(&mut self) {
+        self.start_recommend_preview_at(chrono::Utc::now().timestamp());
+    }
+
+    fn start_recommend_preview_at(&mut self, now: i64) {
         if self.recommend_loading {
             return;
         }
@@ -2994,7 +2998,7 @@ impl VapourflyApp {
                 &preferences,
                 &profile.taste,
                 &progress,
-                chrono::Utc::now().timestamp(),
+                now,
             );
             repaint.request();
             RECOMMEND_RESULT.set(job_id, Ok(results));
@@ -7076,6 +7080,7 @@ mod tests {
         assert_eq!(session.intent, RecommendIntent::Session);
         for finish in [false, true] {
             app.recommend_finish_short_game = finish;
+            let now = chrono::Utc::now().timestamp();
             let request = app.recommend_request_from_inputs().unwrap();
             let snapshot = app.prepared_snapshot.as_ref().unwrap();
             let expected = recommend_personalized(
@@ -7084,10 +7089,10 @@ mod tests {
                 snapshot.preferences.as_ref().unwrap(),
                 &snapshot.taste.as_ref().unwrap().taste,
                 snapshot.progress.as_ref().unwrap(),
-                chrono::Utc::now().timestamp(),
+                now,
             );
             assert_eq!(expected.iter().any(|r| r.app_id == long_id), !finish);
-            app.start_recommend_preview();
+            app.start_recommend_preview_at(now);
             for _ in 0..1000 {
                 if !app.recommend_loading {
                     break;

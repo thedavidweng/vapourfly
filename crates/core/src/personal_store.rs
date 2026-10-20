@@ -30,9 +30,23 @@ impl From<LockError> for VapourflyError {
     }
 }
 
+/// Exclusive ownership for one account operation, not for inherited descriptors.
+#[derive(Debug)]
+pub struct AccountLock {
+    file: File,
+}
+
+impl Drop for AccountLock {
+    fn drop(&mut self) {
+        // Closing alone retains a Unix lock while a forked child holds a copy.
+        // Drop cannot report errors; the owned file is also closed immediately.
+        let _ = self.file.unlock();
+    }
+}
+
 /// Locks live beside, never inside, the account records being removed.
-/// Keep the returned file alive for the whole operation; never unlink it.
-pub fn lock_account(root: &Path, id: &str) -> Result<File, LockError> {
+/// Keep the returned guard alive for the whole operation; never unlink the file.
+pub fn lock_account(root: &Path, id: &str) -> Result<AccountLock, LockError> {
     if id.len() != 17 || !id.bytes().all(|b| b.is_ascii_digit()) {
         return Err(LockError::InvalidIdentity);
     }
@@ -45,7 +59,7 @@ pub fn lock_account(root: &Path, id: &str) -> Result<File, LockError> {
         .open(root.join(format!("{id}.lock")))
         .map_err(|_| LockError::Open)?;
     file.try_lock().map_err(|_| LockError::Busy)?;
-    Ok(file)
+    Ok(AccountLock { file })
 }
 
 #[cfg(test)]
@@ -61,6 +75,22 @@ mod tests {
         drop(owner);
         assert!(lock_account(root.path(), "76561198000000001").is_ok());
         assert!(lock_account(root.path(), "../private-marker").is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn operation_releases_lock_even_while_a_duplicate_descriptor_survives() {
+        let root = tempfile::tempdir().unwrap();
+        let id = "76561198000000001";
+        let owner = lock_account(root.path(), id).unwrap();
+        let inherited = owner.file.try_clone().unwrap();
+        assert_eq!(lock_account(root.path(), id).unwrap_err(), LockError::Busy);
+        drop(owner);
+        let next_owner = lock_account(root.path(), id).unwrap();
+        drop(inherited);
+        assert_eq!(lock_account(root.path(), id).unwrap_err(), LockError::Busy);
+        drop(next_owner);
+        assert!(lock_account(root.path(), id).is_ok());
     }
 
     #[test]

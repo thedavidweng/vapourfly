@@ -67,7 +67,7 @@ pub struct ClearPlan {
     pub inventory: Inventory,
     pub scope: ClearScope,
     targets: Vec<ClearTarget>,
-    _owners: Vec<std::fs::File>,
+    _owners: Vec<vapourfly_core::personal_store::AccountLock>,
 }
 
 impl ClearPlan {
