@@ -915,7 +915,11 @@ fn cmd_doctor(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                     .and_then(|config| config.account.as_deref()),
             )
             .ok();
-            println!("Accounts:      {} detected", detected_users.len());
+            if detected_users.is_empty() {
+                println!("Accounts:      not detected");
+            } else {
+                println!("Accounts:      detected");
+            }
             if selected.is_some() {
                 println!("Selected:      account detected");
             }
@@ -1019,8 +1023,7 @@ fn cmd_accounts_list(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         } else {
             ""
         };
-        // Public persona names are selectable without exposing login names or IDs.
-        println!("{}{}", acc.persona_name, marker);
+        println!("Steam account detected{marker}");
     }
     Ok(())
 }
@@ -1273,7 +1276,9 @@ impl std::fmt::Display for PersonalSelectionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Discovery => "Could not read Steam accounts; check the selected Steam directory",
-            Self::Selection => "Could not select a Steam account; use accounts list and --account",
+            Self::Selection => {
+                "Could not select a Steam account; pass --account with a name from the Steam client"
+            }
         })
     }
 }
@@ -3091,12 +3096,13 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(text.contains("Vapourfly Fixture *"));
-        assert!(text.contains("Accounts:      1 detected"));
+        assert!(text.contains("Steam account detected *"));
+        assert!(text.contains("Accounts:      detected"));
         assert!(text.contains("Selected:      account detected"));
         assert!(text.contains("\"account\": \"configured\""));
         assert!(text.contains("\"has_steam_api_key\": true"));
         for private in [
+            "Vapourfly Fixture",
             "vapourfly_fixture_user",
             "76561198000000000",
             "***0000",
