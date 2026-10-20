@@ -151,7 +151,7 @@ pub fn prepare_with(
                 code: "unresolved_names".into(),
                 message: format!(
                     "{still_unresolved} games have placeholder names (no local name source); \
-                 names backfill from Steam Store hydration when online"
+                 configure an optional Steam Web API key or use existing cached names"
                 ),
             });
     }

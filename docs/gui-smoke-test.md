@@ -4,6 +4,81 @@ Manual testing steps for the Vapourfly GUI. Automated unit tests cover app
 creation, fixture scanning, navigation contract, and playtime formatting; this
 document covers the interactive flows that require a running GUI.
 
+## Top Tags
+
+1. Offline, scan the selected account. Library and Discover show long-term/recent
+   Top Tags and metadata/activity/interest coverage without a new navigation item.
+   Bare fixtures without descriptors show honest empty supported-tags text.
+2. Open Evidence using keyboard Tab/Enter. Verify strengths, supporting titles,
+   genre/descriptor kind, source labels, original data times and the explicit
+   library-relative/not-player-percentile explanation. Close with Escape.
+3. Set Interested on an unplayed described title: long-term changes modestly,
+   recent does not invent playtime. Reset/remove via CLI then rescan; verify reversal.
+4. Switch account or refresh cached activity: old prepared profile must disappear
+   until rebuilt. Compare `accounts profile --format json` using the same account,
+   metadata and local evidence; missing providers require no key/network request.
+
+## Player-style traits
+
+1. In the existing Library, verify the compact Playstyle line. An account below
+   the documented thresholds shows insufficient evidence, not invented labels.
+2. Open Evidence with Tab/Enter; inspect each rule, its supporting, contrary and
+   unknown title counts/examples. Escape closes. Compare the same account's
+   `accounts profile --format table|json`; no network or new page is involved.
+3. Mark a third qualifying story complete: Completion-focused should update
+   immediately when at least 60% of known completion evidence supports it.
+   Unmarked stories remain unknown, even with incomplete achievement counts.
+4. Switch accounts, restart offline and refresh cached achievements. Verify
+   isolation/recomputation; stale perfected achievements alone must not support
+   completion. Repeat controller navigation on real hardware separately.
+
+## Local Preferences
+
+Run real keyboard acceptance separately from real controller acceptance. State
+tests are not native execution; demo mode intentionally disables personal edits.
+
+1. Offline with a selected account, open an owned game's details from Library,
+   Recommendations or Discover. Use Tab/Enter/Space to choose Interested and
+   verify the local label and +0.5 explanation on regenerated eligible picks.
+2. Choose Not interested, then Not now: verify both candidate surfaces exclude
+   the game before scoring. Not now expires 30 days after setting, not on restart.
+3. Reset this preference. Verify refreshed picks, persistence across rescan/restart,
+   and no override of hidden/junk/excluded Collections. Compare CLI table/JSON.
+4. Open Reset all account preferences, cancel once, then confirm. Verify only
+   current-account choices disappear and story marks/Playlists/Steam files remain.
+   Switch accounts while confirmation is open: confirmation must cancel safely.
+5. Switch accounts and back; no prior choices or in-flight picks may leak. Repeat
+   with an invalid local record and verify explicit failure, not silent exclusion
+   loss. Use reset to repair. Repeat on a real supported controller when available;
+   record keyboard, controller and real-account/provider acceptance independently.
+
+## Story Completion And Progress Filters
+
+Automated store/rule/CLI/GUI-state tests are not native interaction evidence.
+Run these steps with real keyboard input on a runnable GUI, then separately on a
+real supported controller before recording each part of #31 native acceptance:
+
+1. Offline, select an account and scan. Open an owned game's Library details.
+   Activate **Mark story completed** with keyboard Enter/Space (controller A in the
+   separate hardware run).
+   Verify **Story completed (local)** appears independently of the achievement
+   count and Perfected state. Rescan/restart and confirm persistence.
+2. Activate **Undo story completion**; confirm it disappears and survives rescan.
+   Verify **Filters > Progress > Unfinished**, then **Near-perfect**, and removable
+   filter chips. Unknown activity excludes Unfinished, but known playtime alone
+   can qualify. Near-perfect requires fresh authoritative 90%..<100% counts,
+   not merely high playtime; missing/stale counts never qualify.
+   From Search, Tab to Filters and use Enter to open it. Tab to Unfinished and
+   activate with Enter, then Tab to Near-perfect and activate with Space. Each
+   activation must update the filter chip/results without closing the popover.
+   Shift-Tab to All progress and activate it; Escape must dismiss the popover.
+   This checks the toolkit's child-control routing, not just pointer filtering.
+3. Switch accounts: old marks/counts must not appear before or after the next scan.
+   Switch back and confirm the original account's marks remain. Verify the progress
+   coverage caption and explicit corrupt-record error state. Demo edits are disabled.
+4. Compare with `accounts progress` table/JSON and `--story completed|undo` offline.
+   Confirm no Steam configuration, achievements or Steam Collections changed.
+
 ## Prerequisites
 
 - Build the GUI: `cargo build -p vapourfly-gui` (GPUI + gpui-component desktop shell)
@@ -158,7 +233,7 @@ virtualized `uniform_list`.
 
 1. Navigate to Data Sources via the sidebar.
 2. Verify the header has an **Offline mode** switch and **Refresh all**, followed by Sources / Cached entries / Stale / Missing credentials tiles.
-3. Verify the table lists Steam Store, IGDB, ProtonDB, PCGW, HLTB, and RAWG with credential tag, entries, freshness, last updated, and a per-row Refresh.
+3. Verify the table lists Steam Store, IGDB, ProtonDB, PCGW, and RAWG with credential tag, entries, freshness, last updated, and a per-row Refresh. Previously cached HLTB records are compatibility data and are not listed or refreshed.
 4. Turn on **Offline mode** and verify **Refresh all** and every row's Refresh are disabled.
 5. Turn it off and click a source's Refresh; verify the refresh runs (or reports that a scan is needed first).
 
@@ -205,3 +280,114 @@ Run with any Xbox-style gamepad connected, on a Steam Deck, or with
 9. While the controller is in use, a footer shows the button hints. Moving the mouse hides it.
 10. In Game Mode (or `--deck`), start a write: the confirmation dialog warns that Steam is running in Game Mode.
 11. On a Deck in Game Mode, Vapourfly opens fullscreen at 1280×800 and the Library hero is shorter, so the Recently played shelf starts on the first screen. In Desktop Mode at 125% scaling the window fits the screen.
+
+## Issue 27 duration/source audit smoke (2026-10-18)
+
+Built and launched the owned worktree binary, not the installed application:
+
+```sh
+cargo build -p vapourfly-gui
+target/debug/vapourfly-gui --ui-demo --view data-sources
+target/debug/vapourfly-gui --fixtures data/fixtures/steam_minimal --offline --view data-sources
+target/debug/vapourfly-gui --ui-demo --offline --view library
+```
+
+Observed in the native macOS window: five metadata rows and no HLTB refresh
+row; fixture account with three local games, Offline mode on and disabled
+refresh buttons; demo Library hero `Fields of Luma` showing `10h to beat`.
+These are rendering/launch checks. Native click attempts did not reliably
+change the view and are not counted as successful interaction checks.
+IGDB-only duration provenance/filtering and zero-fetch legacy-cache behavior
+are covered by automated tests, not inferred from demo data. After this
+smoke the isolated test app was terminated and foreground automation released.
+The later source-access policy changes must show Cache only for disabled
+legacy integrations; this requires a subsequent renderer acceptance pass.
+## Account activity smoke (no live key required)
+
+The Data Sources view exposes **Refresh activity** beside metadata refresh.
+It is disabled in demo/offline mode and renders the selected account's
+cache-only status in the page subtitle. The worker is account-fingerprinted;
+switching accounts discards an in-flight result rather than publishing it to
+the new account. Automated mock coverage exercises available, empty,
+restricted, unauthorized, rate-limited, malformed and transport-failure
+responses. Native foreground acceptance with a real key/device is intentionally
+not claimed here.
+# Achievement progress acceptance
+
+- Open an owned Library game's details. The sheet remains interactive while
+  achievements load and displays Steam provenance, status and freshness.
+- With an authorized test key, compare zero, partial and complete achievement
+  sets against Steam. Confirm private/restricted profiles never become 0%.
+- Switch accounts while loading; previous-account progress must disappear.
+- Open the same game offline and without a key; cached evidence remains usable
+  and no requests occur. Unknown data remains unknown.
+- Exercise opening/closing the sheet with keyboard and controller on the
+  target device. Mock tests do not establish device or provider acceptance.
+
+## Bounded achievement coverage acceptance
+
+- Scan an account with 1,000+ owned games. The Library must render without
+  waiting for the bounded achievement worker. Select a game while it runs;
+  the existing worker must not be replaced by a competing inspection job.
+- Open Data Sources. Steam achievement coverage labels the active subset,
+  available/stale/unavailable/missing counts, pending games and stop reason.
+  **Refresh active games** prioritizes the selected owned game, then recent
+  owned games (at most 12 games and 24 paced requests, no retries).
+- Cancel during refresh. Cached evidence remains; controls stay busy until
+  worker exit. Change account during refresh: old coverage disappears and
+  old results never populate the new account. Toggle offline during live work
+  to cancel subsequent requests.
+- With no key or offline mode, scan/inspect cached evidence without network
+  requests or cache writes; live-refresh controls are disabled offline/demo.
+- Compare cache counts with `accounts achievement-coverage --format json`.
+  A restricted or failing provider must not become successful zero progress.
+
+Automated evidence: the 1,500-game prepared-Library/pending-worker test,
+offline/no-key worker test, cancellation/offline owner test and account-switch
+result test exercise state handling. API controlled transports cover request
+limits and provider failures. These are not native renderer, real Steam key,
+privacy or hardware/controller acceptance; run the steps above on target
+devices with an authorized test account before claiming those gates.
+
+### Session intent (#36)
+
+- In Recommendations, generate a 60-minute default session with a cached 40-hour
+  campaign, a short narrative title, a sandbox and unknown-length game. Long and
+  unknown games remain eligible. Full estimate/source/remaining-unknown reasons
+  must not imply exact session length.
+- Enable **Finish a short game** and Generate: only positive known full estimates
+  within 60 minutes qualify; playtime and achievements must not subtract hours.
+- Edit controls after generation: the generated-request label still identifies
+  the displayed picks. Tab/Space reaches the switch without new navigation.
+- Repeat offline/no IGDB and with installed/Deck options; verify cached/manual
+  provenance and missing duration honestly. This is not #27 rights acceptance.
+
+## Personal Record Inventory
+
+- With an offline selected account, open Data Sources > Personal records.
+- Verify activity/achievement/story/preference counts, local write times and
+  unknown/freshness explanations; zero local records must not imply no ownership.
+- Verify key status is boolean only and offline refresh is explicitly disabled.
+- Tab into the inventory; arrows/Page Up/Down/Home/End scroll; Escape closes.
+- Switch accounts and reopen: no retained previous-account inventory. Opening
+  or closing must not change personal files, shared metadata, Playlists or Steam.
+- No clear/delete acceptance is implied by this read-only dialog.
+
+## Confirmed Personal Cleanup
+
+- Use an isolated, disposable account fixture; inventory cached and authored
+  records first. Record another account, shared schemas/metadata, saved Playlists,
+  settings and Steam contents to verify preservation.
+- In Data Sources, open each clear preview. Verify its scope and permanent/no-undo
+  authored warning, then Cancel/Escape. Reopen to prove locks were released;
+  records must remain. Busy personal refresh must reject cleanup explicitly.
+- With explicit action-time authorization, confirm one scope. Cached must retain
+  story/preferences; authored must retain remote caches. Unrelated/other-account
+  files remain unchanged. Profile/traits/recommend/Discover must not show old
+  evidence or accept a late pre-clear result; cleared remote data stays unknown.
+- Restart and reopen inventory: deletion persists without automatic provider
+  repopulation. Switch accounts: no prior-account evidence or deletion.
+- A partial removal failure must say some records may be gone and invalidate old
+  in-memory evidence. Reopen inventory before retry; do not mask the error.
+- Automated API/CLI/app-state fixture checks are not a native confirmation,
+  real Steam/provider/privacy or physical-controller acceptance.

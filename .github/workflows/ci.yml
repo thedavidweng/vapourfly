@@ -60,6 +60,13 @@ jobs:
           toolchain: ${{ env.VAPOURFLY_CI_TOOLCHAIN }}
           components: rustfmt, clippy
 
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      - name: Test size inventory
+        run: python3 scripts/test-size-report.py
+
       - name: Cache cargo registry and target
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -109,8 +116,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake clang g++ pkg-config libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev libasound2-dev libssl-dev libfontconfig1-dev libudev-dev xvfb xdotool imagemagick squashfs-tools patchelf desktop-file-utils librsvg2-bin
       - run: cargo build --release -p vapourfly-gui
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
       - run: bash scripts/package-appimage.sh ci
       - run: xvfb-run -a bash scripts/smoke-appimage.sh dist/*.AppImage
+      - name: Distribution size summary (non-gating)
+        continue-on-error: true
+        run: cat dist/size-appimage.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vapourfly-appimage

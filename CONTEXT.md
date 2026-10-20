@@ -46,7 +46,7 @@ behind each template. The canonical templates are `deck-session` and
 `finish-it`. `deck-session` emits a rule Playlist (Installed + NotHidden +
 NotJunk + ProtonAtLeast Gold + ControllerSupportFull + HltbMaxMinutes);
 `finish-it` evaluates the library and emits an explicit-AppID Playlist (games
-whose playtime is 0.5–1.25× HLTB main story).
+whose playtime is 0.5–1.25× the effective completion time).
 
 A Dynamic Template is not itself a Playlist or a Collection. It is a generator.
 
@@ -59,8 +59,8 @@ evocative names; the underlying logic is Vapourfly's editorial judgment, not a
 user-configured filter.
 
 The seven canonical Editorial Moods, each backed by criteria computable from
-Vapourfly's available data (Steam Store, IGDB, RAWG, ProtonDB, PCGW, HLTB,
-local playtime). Names are canonical English; localized display names (e.g.
+Vapourfly's available data (Steam Store, IGDB, RAWG, ProtonDB, PCGW,
+legacy HLTB cache, local playtime). Names are canonical English; localized display names (e.g.
 Chinese) are a UI/localization concern, not part of the domain model:
 
 | Canonical name | Hidden criteria |
@@ -68,10 +68,10 @@ Chinese) are a UI/localization concern, not part of the domain model:
 | Today's Biggest Hits | Owned games currently on sale (`discount_percent > 0`). Games without Steam Store price data are excluded. |
 | Indie Rising | Indie (IGDB theme / Steam Store type) + high rating + recent |
 | Friday Party | Steam Store categories: Co-op / Local Multiplayer / Party |
-| Deck Guardians | ProtonDB Platinum/Gold + full controller + short HLTB |
+| Deck Guardians | ProtonDB Platinum/Gold + full controller + short completion time |
 | Unopened Treasures | Unplayed + high rating + not junk |
-| Weekend Marathon | Unplayed + long HLTB + high rating |
-| Quick Round | Unplayed + short HLTB + not junk |
+| Weekend Marathon | Unplayed + long completion time + high rating |
+| Quick Round | Unplayed + short completion time + not junk |
 
 An Editorial Mood compiles to a Playlist (manual AppID list, evaluated against
 the current library). It is a generator, like a Dynamic Template, but the
@@ -81,11 +81,10 @@ See [ADR-0004](docs/adr/0004-editorial-mood-replaces-tag-filter.md).
 ### Discover
 
 A playlist factory that produces a Playlist from taste similarity, optionally
-seeded by an AppID. Builds a taste vector from the user's high-playtime games
-(genre/theme/keyword overlap, log-scaled by playtime), filters to unplayed
-non-junk non-hidden games (excluding Application/Tool/DLC), and scores by:
-seed IGDB-similar membership (+5.0) + taste overlap (normalized) + high rating
-(+0.25). Output is a Manual Playlist with `created_by: "vapourfly"`.
+seeded by an AppID. Filters to unplayed non-junk non-hidden games (excluding
+Application/Tool/DLC) and ranks them with the shared canonical Taste Profile
+attribution; see "Personal Discover ranking". Output is a Manual Playlist with
+`created_by: "vapourfly"`.
 
 Discover owns the entire "similar picks" surface. Same shape as a Dynamic
 Template: a generator, not an artifact. See
@@ -99,14 +98,33 @@ overwrites that slot rather than creating a new Playlist id each time. The
 slot is a presentation/store convenience for “latest generation”; it is not a
 separate domain artifact type. See [ADR-0007](docs/adr/0007-generator-playlist-slots.md).
 
+### Taste Profile / Top Tags
+
+A derived, account-scoped summary of long-term and recent engagement with
+normalized game genres and descriptors, supported by cached/local activity and
+explicit Interested preferences. Top Tags are its inspectable presentation.
+Strength describes weighted engagement within this library; library-relative
+lift compares it to this library's descriptor coverage, never to other players.
+A Taste Profile is not a separate personal database or a Playlist ranker.
+
+### Player-style traits
+
+Original descriptive rules derived from the same eligible account evidence as
+Top Tags plus existing local story marks and fresh cached achievement counts.
+Completion-focused, Deep diver and Explorer are transparent threshold labels,
+not personality scores or comparisons with other players. Every rule exposes
+supporting, contrary and unknown titles; an absent story mark is unknown, not
+proof of an unfinished story. Ownership alone never supports a trait.
+
 ## Library and games
 
 ### Game
 
 A single Steam application **owned by the user** as Vapourfly models it:
 AppID, name, type, install state, playtime, Steam collection membership,
-hidden flag, junk flag, and optional enriched external data (HLTB, IGDB,
-RAWG, ProtonDB, PCGW, Steam Store).
+hidden flag, junk flag, and optional enriched external data (completion time,
+IGDB, RAWG, ProtonDB, PCGW, Steam Store). Existing HLTB values are legacy
+cache records and retain their original provenance.
 
 **Unowned games are not first-class entities.** Vapourfly's scope is the
 user's own library. Games the user does not own appear only in the playlist
@@ -119,7 +137,7 @@ playlist match report.
 ### Junk
 
 A classification applied to a Game indicating the user is unlikely to play it.
-Evaluated from three signals — **playtime**, **completion time** (HLTB),
+Evaluated from three signals — **playtime**, **effective completion time**,
 **rating** (RAWG/IGDB) — under one of three modes:
 
 - **Default**: low playtime + at least one other low signal + at least
@@ -132,8 +150,9 @@ Evaluated from three signals — **playtime**, **completion time** (HLTB),
   data count.
 
 Default is the canonical mode. A hard AND of all three signals is not used —
-it fails to classify most games because HLTB and RAWG coverage is incomplete.
-Manual overrides (`force_include`, `force_exclude`, manual HLTB, manual rating)
+it fails to classify most games because completion-time and RAWG coverage is
+incomplete. Manual overrides (`force_include`, `force_exclude`, manual
+completion time, manual rating)
 take precedence over signals. A Junk decision is explainable: it carries
 matched signals, missing signals, and a confidence score (fraction of signals
 available). A Game's junk flag is a derived, explainable decision — not a
@@ -142,30 +161,49 @@ permanent property of the game itself.
 ### Recommendation
 
 A scored suggestion of a Game to play next, produced by the recommendation
-engine from the current library. Seven weighted signals combine additively:
+engine from the current selected-account library and cache-only canonical Taste
+Profile. Signed, bounded contributions are shared by CLI and GUI:
 
-- `low_playtime` (+2.0): playtime under 120 min.
-- `deck_compatible` (Native +2.0 / Platinum +1.5 / Gold +1.0, deck mode only).
-- `time_match` (+1.5): a known main-story completion time (HLTB, falling back
-  to IGDB time-to-beat) fits the requested session length.
-- `high_rating` (+1.0): RAWG ≥ 4.0 or IGDB ≥ 80.
-- `taste_similarity` (+1.0): keyword overlap with the user's taste vector > 5%.
-- `recently_played_penalty` (−1.0): played within 14 days.
-- `likely_finished_penalty` (−0.5): playtime exceeds 1.5× HLTB main story.
+- `low_playtime` (+2): known lifetime playtime under 120 minutes; unknown is not zero.
+- `deck_compatible` (Native +2 / Platinum +1.5 / Gold +1, Deck mode only).
+- Default intent is a play Session: long campaigns and unknown full durations
+  remain eligible; no full-duration bonus applies. `session_heuristic` (+0.25)
+  uses only cached Arcade/Puzzle/Racing/Sport(s)/Roguelike concepts for 1-60
+  minute windows, not measured sitting length. Other evidence is neutral/unknown.
+- Explicit FinishShortGame intent requires a positive known full estimate no
+  longer than the window and adds `time_match` (+1.5). Cached IGDB normally,
+  legacy HLTB and manual provenance remain distinct; no playtime/achievement
+  subtraction fabricates remaining hours. This is not proof of #27 source rights.
+- `high_rating` (0..1): continuous above-midpoint maximum of normalized cached RAWG/IGDB quality; low and missing ratings are neutral.
+- `taste_similarity` (0..3) and `recent_taste` (0..0.5): fraction of canonical
+  profile mass covered by a candidate's cached concepts, not a binary bonus.
+- `recently_played_penalty` (-1..0): linearly decays over the last 14 days;
+  future timestamps are not recent play.
+- `story_completed` (-1.25) or fresh authoritative `perfected` (-1), otherwise
+  `achievement_progress` (0..0.5) for fresh partial counts. Neither achievements
+  nor HLTB/playtime infer narrative completion.
+- `local_interested` (+0.5) and explicit Steam `favorite` (+0.25).
+- `diversity` (-0.35..0): maximum canonical-concept Jaccard overlap with any
+  earlier pick, greedily reranked after eligibility and relevance scoring.
 
-Junk and hidden games are filtered out before scoring, not penalised. Optional
-seed makes selection deterministic via SplitMix64 perturbation.
+Unknown activity/progress and cache coverage limitations carry zero weight.
+Hidden/junk/non-game, installed-only, excluded collections and active Not
+interested/Not now are filtered first. Existing Deck scoring is retained;
+Recommendations do not add a new hard controller filter. The optional seed
+changes ties only, keyed by AppID, so input ordering cannot affect selection.
+Relative fit compares this result set, not probability or population percentiles.
 
 **Weights are fixed** — internal constants, not user-tunable. Users control
-only external parameters (available minutes, count, deck mode, seed, excluded
+only external parameters (intent, available minutes, count, deck mode, seed, excluded
 collections). The contract is "Vapourfly knows how to score; you pick the
 session shape." A Recommendation carries human-readable reason codes so the
 user can see *why* each game scored the way it did.
 
 ### Hydration
 
-The process of loading external metadata (HLTB, IGDB, RAWG, ProtonDB, PCGW,
-Steam Store) onto Game records before a workflow evaluates them. Two phases
+The process of loading external metadata (IGDB, RAWG, ProtonDB, PCGW, Steam
+Store, and legacy HLTB cache records) onto Game records before a workflow
+evaluates them. Two phases
 exist in the code:
 
 - **Populate** — fetches from the network and writes to the local disk cache
@@ -205,3 +243,15 @@ prefix is retained; the `1` is the format generation. See
 
 A Share Code decodes back into a PlaylistFile that can be imported, matched,
 and synced like any other playlist.
+
+### Personal Discover ranking
+
+Discover shares canonical personal attribution and deterministic diversity with
+Recommendations, but owns its existing owned/unplayed eligibility and Manual
+Playlist factory. It does not consume a session duration or Deck planner request.
+Optional seed relatedness is +0.75 only for two confirmed cached IGDB Steam
+mappings linked by the seed's similar IDs; missing seed evidence stays neutral.
+Known-lifetime novelty is bounded by +0.25, unknown activity is not zero. Keep
+eligible cold-start picks even at non-positive scores. CLI/GUI expose all signed
+reasons; story/preference changes invalidate late results without rewriting saved
+playlists. Existing generator slots, share format and Steam guards are unchanged.

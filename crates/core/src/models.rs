@@ -121,8 +121,8 @@ pub struct Game {
 impl Game {
     /// True when the scan could not resolve a real name and fell back to
     /// `"App <id>"` (no appmanifest, librarycache, or appinfo.vdf source —
-    /// common on machines with no games installed). Name-keyed lookups
-    /// (HLTB, RAWG) are meaningless for such games; Steam Store hydration
+    /// common on machines with no games installed). Name-keyed RAWG lookups
+    /// are meaningless for such games; Steam Store hydration
     /// backfills the real name by AppID.
     pub fn has_placeholder_name(&self) -> bool {
         self.name == format!("App {}", self.app_id)
@@ -384,9 +384,20 @@ pub enum PlaylistRule {
     Not(Box<PlaylistRule>),
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecommendIntent {
+    #[default]
+    Session,
+    FinishShortGame,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RecommendRequest {
     pub available_minutes: u32,
+    /// Old request JSON means a play session, not a completion-time filter.
+    #[serde(default)]
+    pub intent: RecommendIntent,
     pub count: usize,
     pub deck_mode: bool,
     pub include_installed_only: bool,
@@ -402,7 +413,7 @@ pub struct Recommendation {
     pub reasons: Vec<RecommendReason>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RecommendReason {
     pub code: String,
     pub description: String,
@@ -873,6 +884,7 @@ mod tests {
     fn recommend_request_snapshot() {
         let req = RecommendRequest {
             available_minutes: 120,
+            intent: crate::models::RecommendIntent::Session,
             count: 5,
             deck_mode: true,
             include_installed_only: false,
@@ -885,6 +897,11 @@ mod tests {
         assert_eq!(back.count, 5);
         assert!(back.deck_mode);
         assert_eq!(back.seed, Some(42));
+        assert_eq!(back.intent, RecommendIntent::Session);
+        let mut old = serde_json::to_value(&req).unwrap();
+        old.as_object_mut().unwrap().remove("intent");
+        let legacy: RecommendRequest = serde_json::from_value(old).unwrap();
+        assert_eq!(legacy.intent, RecommendIntent::Session);
     }
 
     #[test]

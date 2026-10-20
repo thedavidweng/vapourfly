@@ -44,8 +44,8 @@ Reading the report:
   accounts, pick one with `--account <id>` or `vapourfly settings set account`.
 - **Cloud storage** -- must say `available` before any write command can run.
   This is the file that holds your Steam collections.
-- **Cache root** -- where cached external metadata (ProtonDB ratings, HLTB
-  times, store prices) lives.
+- **Cache root** -- where cached external metadata (ProtonDB ratings,
+  completion times, store prices) lives.
 - **Credentials** -- optional API keys. Everything works without them;
   some enriched metadata needs them (see
   [Configure API credentials](../how-to/configure-api-credentials.md)).

@@ -38,30 +38,46 @@ const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 
 /// Per-source rate limits (requests per [`RATE_LIMIT_WINDOW`]).
 ///
-/// Sized to each provider's real tolerance: Steam's `appdetails` throttles
-/// around 200 requests / 5 min, IGDB's official limit is 4 req/s, ProtonDB
-/// and PCGW are static-file/MediaWiki hosts that tolerate far more than our
-/// background jobs send. Unknown sources fall back to
-/// [`RATE_LIMIT_DEFAULT_TOKENS`].
+/// Local pacing, not a grant of provider quota. Buckets have a capacity of
+/// one request so a new client cannot burst a minute's allowance at startup.
 fn rate_limit_for(source: &str) -> f64 {
     match source {
         "steam-store" => 30.0,
-        "igdb" => 200.0,
-        "protondb" | "pcgw" => 120.0,
-        // Scraped without an official API — stay extra polite.
-        "hltb" => 30.0,
+        "igdb" => 180.0,
+        "protondb" | "pcgw" => 60.0,
         "rawg" => 60.0,
         _ => RATE_LIMIT_DEFAULT_TOKENS,
     }
 }
 
+/// Audited live-access restrictions. Cached records remain readable.
+pub fn live_access_restriction(source: &str) -> Option<&'static str> {
+    match source {
+        "steam-store" => Some("Cache only: appdetails has no verified published API contract"),
+        "protondb" => Some("Cache only: summary API permission is unverified; ODbL covers exports"),
+        "pcgw" => Some("Cache only: Cargo requires a bot login not supported by this client"),
+        _ => None,
+    }
+}
+
 /// A simplified outgoing HTTP request.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HttpRequest {
     pub url: String,
     pub method: HttpMethod,
     pub headers: HashMap<String, String>,
     pub body: Option<Vec<u8>>,
+}
+
+impl fmt::Debug for HttpRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HttpRequest")
+            .field("method", &self.method)
+            .field("endpoint", &self.url.split('?').next().unwrap_or(""))
+            .field("header_names", &self.headers.keys().collect::<Vec<_>>())
+            .field("body_bytes", &self.body.as_ref().map(Vec::len))
+            .finish()
+    }
 }
 
 /// HTTP method.
@@ -159,6 +175,9 @@ impl<T> CacheRecord<T> {
 /// Trait abstracting HTTP transport. Implement this to provide real network
 /// access (e.g. wrapping `reqwest`) or to inject mock responses for tests.
 pub trait HttpBackend: Send + Sync {
+    fn access_restriction(&self, _source: &str) -> Option<&'static str> {
+        None
+    }
     /// Execute the given request and return a response, or an error if the
     /// transport itself fails (DNS, connection refused, etc.).
     fn execute(&self, request: &HttpRequest) -> Result<HttpResponse>;
@@ -247,7 +266,7 @@ struct TokenBucket {
 impl TokenBucket {
     fn new(max_tokens: f64) -> Self {
         Self {
-            tokens: max_tokens,
+            tokens: 1.0,
             max_tokens,
             last_refill: Instant::now(),
         }
@@ -271,7 +290,7 @@ impl TokenBucket {
         self.last_refill = Instant::now();
         let new_tokens =
             elapsed.as_secs_f64() * (self.max_tokens / RATE_LIMIT_WINDOW.as_secs_f64());
-        self.tokens = (self.tokens + new_tokens).min(self.max_tokens);
+        self.tokens = (self.tokens + new_tokens).min(1.0);
     }
 }
 
@@ -344,6 +363,7 @@ pub struct HttpClient {
     backend: Arc<dyn HttpBackend>,
     config: Arc<HttpClientConfig>,
     rate_limiter: Arc<RateLimiter>,
+    igdb_serial: Arc<Mutex<()>>,
 }
 
 impl std::fmt::Debug for HttpClient {
@@ -355,12 +375,31 @@ impl std::fmt::Debug for HttpClient {
 }
 
 impl HttpClient {
+    /// One paced attempt, with no retries or Retry-After sleeps. Explicit
+    /// account refreshes use this to keep their request budget bounded.
+    pub fn get_once(&self, source: &str, url: &str) -> Result<HttpResponse> {
+        if let Some(reason) = self.backend.access_restriction(source) {
+            return Err(VapourflyError::InvalidInput(reason.into()));
+        }
+        self.rate_limiter.acquire(source);
+        self.backend
+            .execute(&HttpRequest {
+                method: HttpMethod::Get,
+                url: url.to_owned(),
+                headers: HashMap::from([("user-agent".into(), self.config.user_agent.clone())]),
+                body: None,
+            })
+            .map_err(|_| VapourflyError::NetworkUnavailable {
+                source: Box::new(std::io::Error::other("HTTP transport failed")),
+            })
+    }
     /// Create a new client with the default ureq-based backend.
     pub fn new() -> Self {
         Self {
             backend: Arc::new(UreqBackend::new()),
             config: Arc::new(HttpClientConfig::default()),
             rate_limiter: Arc::new(RateLimiter::new()),
+            igdb_serial: Arc::new(Mutex::new(())),
         }
     }
 
@@ -370,6 +409,7 @@ impl HttpClient {
             backend: Arc::from(backend),
             config: Arc::new(HttpClientConfig::default()),
             rate_limiter: Arc::new(RateLimiter::new()),
+            igdb_serial: Arc::new(Mutex::new(())),
         }
     }
 
@@ -378,6 +418,13 @@ impl HttpClient {
     ///
     /// `source` is used as the rate-limiter key (e.g. "steam-store").
     pub fn request(&self, source: &str, mut request: HttpRequest) -> Result<HttpResponse> {
+        if let Some(reason) = self.backend.access_restriction(source) {
+            return Err(VapourflyError::InvalidInput(reason.into()));
+        }
+        // IGDB also limits open requests. Serializing this provider keeps
+        // slow responses within that limit across clones of this client.
+        let _igdb_guard =
+            (source == "igdb").then(|| self.igdb_serial.lock().expect("IGDB lock poisoned"));
         request
             .headers
             .entry("user-agent".to_string())
@@ -425,6 +472,7 @@ impl HttpClient {
                     attempt += 1;
                 }
                 Ok(response) => return Ok(response),
+                Err(e @ VapourflyError::InvalidInput(_)) => return Err(e),
                 Err(e) => {
                     if attempt >= self.config.max_retries {
                         return Err(e);
@@ -503,6 +551,10 @@ impl UreqBackend {
 }
 
 impl HttpBackend for UreqBackend {
+    fn access_restriction(&self, source: &str) -> Option<&'static str> {
+        live_access_restriction(source)
+    }
+
     fn execute(&self, request: &HttpRequest) -> Result<HttpResponse> {
         let response = match request.method {
             HttpMethod::Get => {
@@ -521,8 +573,8 @@ impl HttpBackend for UreqBackend {
                 req.send(body_bytes)
             }
         }
-        .map_err(|e| VapourflyError::NetworkUnavailable {
-            source: Box::new(std::io::Error::other(e.to_string())),
+        .map_err(|_| VapourflyError::NetworkUnavailable {
+            source: Box::new(std::io::Error::other("HTTP transport failed")),
         })?;
 
         let status = response.status().as_u16();
@@ -532,7 +584,13 @@ impl HttpBackend for UreqBackend {
                 resp_headers.insert(name.as_str().to_lowercase(), v.to_string());
             }
         }
-        let body = response.into_body().read_to_vec().unwrap_or_default();
+        let body =
+            response
+                .into_body()
+                .read_to_vec()
+                .map_err(|_| VapourflyError::NetworkUnavailable {
+                    source: Box::new(std::io::Error::other("HTTP response body read failed")),
+                })?;
         Ok(HttpResponse {
             status,
             headers: resp_headers,
@@ -551,6 +609,47 @@ fn backoff_delay(attempt: u32) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_unverified_sources_are_rejected_before_transport() {
+        let client = HttpClient::new();
+        for (source, url) in [
+            (
+                "steam-store",
+                "https://store.steampowered.com/api/appdetails?appids=10",
+            ),
+            (
+                "protondb",
+                "https://www.protondb.com/api/v1/reports/summaries/10.json",
+            ),
+            (
+                "pcgw",
+                "https://www.pcgamingwiki.com/w/api.php?action=cargoquery",
+            ),
+        ] {
+            let err = client.get(source, url).unwrap_err();
+            assert!(matches!(err, VapourflyError::InvalidInput(_)));
+            assert!(err.to_string().contains("Cache only"));
+        }
+    }
+
+    #[test]
+    fn igdb_pacing_has_no_startup_burst() {
+        let mut bucket = TokenBucket::new(rate_limit_for("igdb"));
+        assert!(bucket.try_acquire());
+        assert!(!bucket.try_acquire());
+        bucket.last_refill -= Duration::from_millis(250);
+        assert!(!bucket.try_acquire());
+        bucket.last_refill -= Duration::from_millis(100);
+        assert!(bucket.try_acquire());
+        assert!(!bucket.try_acquire());
+        bucket.last_refill -= Duration::from_secs(60);
+        assert!(bucket.try_acquire());
+        assert!(
+            !bucket.try_acquire(),
+            "idle time must not accumulate a burst"
+        );
+    }
 
     #[test]
     fn mock_backend_returns_registered_response() {

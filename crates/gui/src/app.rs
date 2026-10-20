@@ -19,7 +19,9 @@ use vapourfly_core::models::*;
 use vapourfly_core::mood::{self, EditorialMood};
 use vapourfly_core::playlist;
 use vapourfly_core::playlist_store;
-use vapourfly_core::recommend::recommend;
+use vapourfly_core::preferences::{self, Choice, Preferences};
+use vapourfly_core::recommend::recommend_personalized;
+use vapourfly_core::signal;
 use vapourfly_core::steam::BackupInfo;
 use vapourfly_core::steam::backup::list_backups;
 #[cfg(test)]
@@ -253,6 +255,13 @@ impl JunkModeChoice {
 static SCAN_RESULT: JobSlot<ScanResult> = JobSlot::new();
 static WRITE_RESULT: JobSlot<String> = JobSlot::new();
 static ENRICH_RESULT: JobSlot<vapourfly_api::enrichment::EnrichmentSummary> = JobSlot::new();
+static ACTIVITY_RESULT: JobSlot<Result<Option<vapourfly_api::activity::ActivitySnapshot>, String>> =
+    JobSlot::new();
+type AchievementResult = (
+    vapourfly_api::achievements::BatchSummary,
+    Vec<vapourfly_api::achievements::Progress>,
+);
+static ACHIEVEMENT_RESULT: JobSlot<AchievementResult> = JobSlot::new();
 static DRY_RUN_RESULT: JobSlot<vapourfly_core::write::PreviewedPlan> = JobSlot::new();
 static JUNK_PREVIEW_RESULT: JobSlot<Vec<JunkDecision>> = JobSlot::new();
 static RECOMMEND_RESULT: JobSlot<Vec<Recommendation>> = JobSlot::new();
@@ -260,10 +269,6 @@ static DISCOVER_RESULT: JobSlot<(Vec<DiscoverPick>, PlaylistFile)> = JobSlot::ne
 static DYNAMIC_RESULT: JobSlot<GeneratorJobResult> = JobSlot::new();
 static MOOD_RESULT: JobSlot<GeneratorJobResult> = JobSlot::new();
 static PLAYLIST_MATCH_RESULT: JobSlot<PlaylistMatchReport> = JobSlot::new();
-/// Background-prepared library snapshot (hydrated games, pre-junk-classification).
-/// Produced off the UI frame so the Library view does not re-hydrate from
-/// the disk cache every frame.
-static PREPARED_LIBRARY_RESULT: JobSlot<PreparedLibrarySnapshot> = JobSlot::new();
 
 /// Cached library snapshot: hydrated games + the manual overrides that were
 /// loaded alongside them, plus the fingerprint identifying the inputs used to
@@ -280,6 +285,9 @@ pub(crate) struct PreparedLibrarySnapshot {
     games: Arc<[Game]>,
     /// Manual overrides snapshot (for non-Default reclassification in background jobs).
     overrides: ManualOverrides,
+    progress: Result<std::collections::BTreeMap<u32, vapourfly_core::progress::Summary>, String>,
+    preferences: Result<Preferences, String>,
+    taste: Result<Arc<vapourfly_api::profile::AccountProfile>, String>,
 }
 
 pub(crate) struct VapourflyApp {
@@ -308,6 +316,10 @@ pub(crate) struct VapourflyApp {
     pub(crate) playlist_store_dir: Option<PathBuf>,
     /// Cache directory (temp dir in --ui-demo mode, default otherwise).
     pub(crate) cache_dir: PathBuf,
+    pub(crate) story_dir: PathBuf,
+    pub(crate) preferences_dir: PathBuf,
+    preferences_generation: u64,
+    pub(crate) progress_filter: vapourfly_core::progress::Filter,
     /// Optional override for the manual overrides JSON path. In --ui-demo mode
     /// this points inside the demo temp root so the real platform default path
     /// is never read.
@@ -369,6 +381,7 @@ pub(crate) struct VapourflyApp {
 
     // Recommendations view
     pub(crate) recommend_minutes: String,
+    pub(crate) recommend_finish_short_game: bool,
     pub(crate) recommend_count: String,
     pub(crate) recommend_seed: String,
     pub(crate) recommend_deck: bool,
@@ -463,6 +476,16 @@ pub(crate) struct VapourflyApp {
     pub(crate) has_rawg: bool,
     pub(crate) source_statuses: Vec<vapourfly_api::enrichment::SourceStatus>,
     pub(crate) offline_mode: bool,
+    pub(crate) activity_snapshot: Option<vapourfly_api::activity::ActivitySnapshot>,
+    pub(crate) activity_loading: bool,
+    pub(crate) activity_msg: Option<String>,
+    activity_account_id: Option<String>,
+    pub(crate) achievement_progress: HashMap<u32, vapourfly_api::achievements::Progress>,
+    pub(crate) achievement_msg: Option<String>,
+    pub(crate) achievement_coverage: Option<vapourfly_api::achievements::BatchSummary>,
+    pub(crate) achievement_pending: usize,
+    achievement_job_id: Option<JobTicket>,
+    achievement_control: vapourfly_api::activity::RefreshControl,
 
     // Backups (listed under Settings; not a top-level view)
     pub(crate) backups: Vec<BackupInfo>,
@@ -507,6 +530,7 @@ pub(crate) struct VapourflyApp {
     pub(crate) scan_job_id: Option<JobTicket>,
     pub(crate) write_job_id: Option<JobTicket>,
     pub(crate) enrich_job_id: Option<JobTicket>,
+    pub(crate) activity_job_id: Option<JobTicket>,
     pub(crate) dry_run_job_id: Option<JobTicket>,
     pub(crate) junk_preview_job_id: Option<JobTicket>,
     pub(crate) recommend_job_id: Option<JobTicket>,
@@ -518,6 +542,8 @@ pub(crate) struct VapourflyApp {
     /// Reused across frames when the fingerprint matches so the Library view
     /// does not re-hydrate from the disk cache every frame.
     pub(crate) prepared_snapshot: Option<PreparedLibrarySnapshot>,
+    /// Prepare workers can outlive an app; their results belong only to its slot.
+    prepare_result: Arc<JobSlot<PreparedLibrarySnapshot>>,
     /// JobId of an in-flight background library prepare.
     pub(crate) prepare_job_id: Option<JobTicket>,
     /// Fingerprint of the in-flight prepare (to set on the snapshot).
@@ -692,20 +718,7 @@ pub(crate) fn game_matches_library_filters(game: &Game, filters: &LibraryFilters
             return false;
         }
     }
-    // Prefer the canonical, normalized HLTB main_story_seconds; fall back
-    // to the raw IGDB time_to_beat.normally_seconds for games without HLTB.
-    let completion_minutes = || {
-        game.hltb
-            .as_ref()
-            .and_then(|h| h.main_story_seconds)
-            .or_else(|| {
-                game.igdb
-                    .as_ref()
-                    .and_then(|i| i.time_to_beat.as_ref())
-                    .and_then(|t| t.normally_seconds)
-            })
-            .map(|secs| secs / 60)
-    };
+    let completion_minutes = || signal::main_story_seconds(game).map(|secs| secs / 60);
     if let Some(max_minutes) = filters.hltb_max_minutes
         && completion_minutes().is_none_or(|m| m > max_minutes)
     {
@@ -756,16 +769,8 @@ pub(crate) fn project_library_games(games: &[Game], filters: &LibraryFilters) ->
             .cmp(&a.playtime_minutes.unwrap_or(0))
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
         LibrarySort::Hltb => {
-            let ha = a
-                .hltb
-                .as_ref()
-                .and_then(|h| h.main_story_seconds)
-                .unwrap_or(0);
-            let hb = b
-                .hltb
-                .as_ref()
-                .and_then(|h| h.main_story_seconds)
-                .unwrap_or(0);
+            let ha = signal::main_story_seconds(a).unwrap_or(0);
+            let hb = signal::main_story_seconds(b).unwrap_or(0);
             hb.cmp(&ha)
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         }
@@ -926,7 +931,6 @@ pub(crate) fn source_display_name(source_id: &str) -> &'static str {
         "rawg" => "RAWG",
         "protondb" => "ProtonDB",
         "pcgw" => "PCGW",
-        "hltb" => "HLTB",
         "steam-store" => "Steam Store",
         _ => "Unknown",
     }
@@ -939,10 +943,10 @@ pub(crate) enum CredentialSignal {
     Configured,
     /// IGDB/RAWG env credentials are missing.
     Missing,
-    /// Source never needs credentials (ProtonDB, PCGW, Steam Store).
+    /// Live access is disabled pending the audited provider requirements.
+    CacheOnly,
+    /// Source never needs credentials.
     NotRequired,
-    /// HLTB is optional / feature-gated — not a hard credential failure.
-    Optional,
 }
 
 impl CredentialSignal {
@@ -951,7 +955,7 @@ impl CredentialSignal {
             CredentialSignal::Configured => "Configured",
             CredentialSignal::Missing => "Missing",
             CredentialSignal::NotRequired => "None needed",
-            CredentialSignal::Optional => "Optional",
+            CredentialSignal::CacheOnly => "Cache only",
         }
     }
 }
@@ -962,6 +966,9 @@ pub(crate) fn source_credential_signal(
     has_igdb: bool,
     has_rawg: bool,
 ) -> CredentialSignal {
+    if vapourfly_api::http::live_access_restriction(source_id).is_some() {
+        return CredentialSignal::CacheOnly;
+    }
     match source_id {
         "igdb" => {
             if has_igdb {
@@ -977,7 +984,6 @@ pub(crate) fn source_credential_signal(
                 CredentialSignal::Missing
             }
         }
-        "hltb" => CredentialSignal::Optional,
         "protondb" | "pcgw" | "steam-store" => CredentialSignal::NotRequired,
         _ => CredentialSignal::NotRequired,
     }
@@ -996,10 +1002,8 @@ pub(crate) fn source_refresh_enabled(
         return false;
     }
     match source_credential_signal(source_id, has_igdb, has_rawg) {
-        CredentialSignal::Missing => false,
-        CredentialSignal::Configured
-        | CredentialSignal::NotRequired
-        | CredentialSignal::Optional => true,
+        CredentialSignal::Missing | CredentialSignal::CacheOnly => false,
+        CredentialSignal::Configured | CredentialSignal::NotRequired => true,
     }
 }
 
@@ -1181,6 +1185,18 @@ impl VapourflyApp {
 
             config,
             playlist_store_dir,
+            story_dir: demo_root
+                .as_ref()
+                .map_or_else(vapourfly_core::config::default_story_dir, |root| {
+                    root.join("personal/story")
+                }),
+            progress_filter: Default::default(),
+            preferences_dir: demo_root
+                .as_ref()
+                .map_or_else(vapourfly_core::config::default_preferences_dir, |root| {
+                    root.join("personal/preferences")
+                }),
+            preferences_generation: 0,
             cache_dir: cache_root,
             manual_overrides_path,
             demo_root,
@@ -1214,6 +1230,7 @@ impl VapourflyApp {
             junk_show_all_evaluated: false,
 
             recommend_minutes: "120".into(),
+            recommend_finish_short_game: false,
             recommend_count: "5".into(),
             recommend_seed: String::new(),
             recommend_deck: false,
@@ -1273,6 +1290,16 @@ impl VapourflyApp {
             has_rawg,
             source_statuses,
             offline_mode: false,
+            activity_snapshot: None,
+            activity_loading: false,
+            activity_msg: None,
+            activity_account_id: None,
+            achievement_progress: HashMap::new(),
+            achievement_msg: None,
+            achievement_coverage: None,
+            achievement_pending: 0,
+            achievement_job_id: None,
+            achievement_control: Default::default(),
 
             backups: Vec::new(),
 
@@ -1304,6 +1331,7 @@ impl VapourflyApp {
             scan_job_id: None,
             write_job_id: None,
             enrich_job_id: None,
+            activity_job_id: None,
             dry_run_job_id: None,
             junk_preview_job_id: None,
             recommend_job_id: None,
@@ -1312,6 +1340,7 @@ impl VapourflyApp {
             mood_job_id: None,
             playlist_match_job_id: None,
             prepared_snapshot: None,
+            prepare_result: Arc::new(JobSlot::new()),
             prepare_job_id: None,
             prepare_fingerprint: None,
             cache_refresh_generation: 0,
@@ -1785,8 +1814,8 @@ impl VapourflyApp {
                 name: DEMO_GAME_NAMES[4].into(),
                 score: 5.2,
                 reasons: vec![discover::DiscoverReason {
-                    code: "taste_overlap",
-                    description: "Same dark-fantasy action feel",
+                    code: "taste_overlap".into(),
+                    description: "Same dark-fantasy action feel".into(),
                     weight: 5.2,
                 }],
             },
@@ -1795,8 +1824,8 @@ impl VapourflyApp {
                 name: DEMO_GAME_NAMES[0].into(),
                 score: 4.7,
                 reasons: vec![discover::DiscoverReason {
-                    code: "taste_overlap",
-                    description: "Shares Shooter and Action",
+                    code: "taste_overlap".into(),
+                    description: "Shares Shooter and Action".into(),
                     weight: 4.7,
                 }],
             },
@@ -1805,8 +1834,8 @@ impl VapourflyApp {
                 name: DEMO_GAME_NAMES[6].into(),
                 score: 4.1,
                 reasons: vec![discover::DiscoverReason {
-                    code: "high_rating",
-                    description: "Critics' favourite in your backlog",
+                    code: "high_rating".into(),
+                    description: "Critics' favourite in your backlog".into(),
                     weight: 4.1,
                 }],
             },
@@ -1815,8 +1844,8 @@ impl VapourflyApp {
                 name: DEMO_GAME_NAMES[13].into(),
                 score: 3.8,
                 reasons: vec![discover::DiscoverReason {
-                    code: "taste_overlap",
-                    description: "Similar pacing and length",
+                    code: "taste_overlap".into(),
+                    description: "Similar pacing and length".into(),
                     weight: 3.8,
                 }],
             },
@@ -1825,8 +1854,8 @@ impl VapourflyApp {
                 name: DEMO_GAME_NAMES[15].into(),
                 score: 3.4,
                 reasons: vec![discover::DiscoverReason {
-                    code: "taste_overlap",
-                    description: "Players who love it also play this",
+                    code: "taste_overlap".into(),
+                    description: "Players who love it also play this".into(),
                     weight: 3.4,
                 }],
             },
@@ -1835,8 +1864,8 @@ impl VapourflyApp {
                 name: DEMO_GAME_NAMES[1].into(),
                 score: 3.0,
                 reasons: vec![discover::DiscoverReason {
-                    code: "high_rating",
-                    description: "ProtonDB Platinum",
+                    code: "high_rating".into(),
+                    description: "ProtonDB Platinum".into(),
                     weight: 3.0,
                 }],
             },
@@ -1845,8 +1874,8 @@ impl VapourflyApp {
                 name: DEMO_GAME_NAMES[19].into(),
                 score: 2.6,
                 reasons: vec![discover::DiscoverReason {
-                    code: "taste_overlap",
-                    description: "Fast, arcade-style sessions",
+                    code: "taste_overlap".into(),
+                    description: "Fast, arcade-style sessions".into(),
                     weight: 2.6,
                 }],
             },
@@ -1855,8 +1884,8 @@ impl VapourflyApp {
                 name: DEMO_GAME_NAMES[22].into(),
                 score: 2.2,
                 reasons: vec![discover::DiscoverReason {
-                    code: "taste_overlap",
-                    description: "Synth-heavy soundtrack",
+                    code: "taste_overlap".into(),
+                    description: "Synth-heavy soundtrack".into(),
                     weight: 2.2,
                 }],
             },
@@ -1877,7 +1906,6 @@ impl VapourflyApp {
             status("igdb", 22, 1, Some(5)),
             status("protondb", 24, 3, Some(30)),
             status("pcgw", 18, 0, Some(26)),
-            status("hltb", 16, 6, Some(170)),
             status("rawg", 0, 0, None),
         ];
         self.has_igdb = true;
@@ -2248,6 +2276,475 @@ impl VapourflyApp {
         self.start_enrich_job(source, true);
     }
 
+    /// Refresh the selected account's bounded Steam activity snapshot without
+    /// coupling it to library enrichment or first paint.
+    pub(crate) fn start_account_activity_refresh(&mut self) {
+        if self.activity_loading || self.ui_demo || self.offline_mode {
+            self.activity_msg = Some(if self.ui_demo {
+                "Account refresh is disabled in demo mode.".into()
+            } else if self.offline_mode {
+                "Offline mode is on; cached account activity is unchanged.".into()
+            } else {
+                "Account refresh is already running.".into()
+            });
+            return;
+        }
+        let Some(account) = self.active_account().cloned() else {
+            self.activity_msg = Some("Select a Steam account before refreshing activity.".into());
+            return;
+        };
+        let Some(key) = self
+            .steam_api_key_edit
+            .trim()
+            .is_empty()
+            .then(vapourfly_core::config::resolve_steam_api_key)
+            .flatten()
+            .or_else(|| Some(self.steam_api_key_edit.trim().to_string()).filter(|k| !k.is_empty()))
+        else {
+            self.activity_msg =
+                Some("Configure a Steam Web API key to refresh account activity.".into());
+            return;
+        };
+        self.activity_loading = true;
+        self.activity_msg = None;
+        let ticket = self
+            .job_runner
+            .next_ticket(WorkflowKind::AccountActivity, &account.steam_id64);
+        ACTIVITY_RESULT.clear();
+        let cache_root = self.cache_dir.clone();
+        let offline = self.offline_mode;
+        let repaint = self.repaint.clone();
+        self.activity_job_id = Some(ticket);
+        std::thread::spawn(move || {
+            let cache = vapourfly_api::cache::DiskCache::new(cache_root);
+            let result = vapourfly_api::activity::refresh(
+                &cache,
+                &vapourfly_api::http::HttpClient::new(),
+                Some(&key),
+                &account.steam_id64,
+                offline,
+                &vapourfly_api::activity::RefreshControl::default(),
+            )
+            .map_err(|e| e.to_string());
+            ACTIVITY_RESULT.set(ticket, Ok(result));
+            repaint.request();
+        });
+    }
+
+    pub(crate) fn inspect_achievements(&mut self, app_id: u32) {
+        let Some(id) = self.active_account().map(|a| a.steam_id64.clone()) else {
+            self.achievement_msg = Some("Select a matching Steam account.".into());
+            return;
+        };
+        let cache = vapourfly_api::cache::DiskCache::new(self.cache_dir.clone());
+        match vapourfly_api::achievements::load(&cache, &id, app_id) {
+            Ok(Some(progress)) => {
+                self.achievement_progress.insert(app_id, progress);
+            }
+            Ok(None) => {
+                self.achievement_progress.remove(&app_id);
+            }
+            Err(error) => {
+                self.achievement_msg = Some(format!("Achievement cache unavailable: {error}"));
+                return;
+            }
+        }
+        if self.ui_demo
+            || self.offline_mode
+            || self.achievement_job_id.is_some()
+            || self
+                .achievement_progress
+                .get(&app_id)
+                .is_some_and(|p| !p.automatic_refresh_due())
+        {
+            return;
+        }
+        self.start_achievement_job(vec![app_id], false);
+    }
+
+    /// Selection uses local/cache hints only; the worker performs all batch I/O.
+    pub(crate) fn start_achievement_coverage(&mut self, force: bool) {
+        if self.achievement_job_id.is_some() {
+            return;
+        }
+        let Some(account) = self.active_account() else {
+            self.achievement_msg =
+                Some("Select a Steam account before refreshing achievements.".into());
+            return;
+        };
+        let Some(scan) = self
+            .scan_result
+            .as_ref()
+            .filter(|scan| scan.account == account.account_name)
+        else {
+            self.achievement_msg = Some("Scan the selected account's Library first.".into());
+            return;
+        };
+        let recent = self
+            .activity_snapshot
+            .as_ref()
+            .filter(|snapshot| snapshot.steam_id64 == account.steam_id64)
+            .map_or(&[][..], |snapshot| snapshot.recent.games.as_slice());
+        match vapourfly_api::achievements::active_app_ids(
+            &scan.games,
+            recent,
+            self.library_selected_app_id,
+            vapourfly_api::achievements::DEFAULT_BATCH_LIMIT,
+        ) {
+            Ok(ids) => self.start_achievement_job(ids, force),
+            Err(error) => self.achievement_msg = Some(error.to_string()),
+        }
+    }
+
+    fn start_achievement_job(&mut self, ids: Vec<u32>, force: bool) {
+        if self.ui_demo || self.achievement_job_id.is_some() {
+            return;
+        }
+        let Some(id) = self
+            .active_account()
+            .map(|account| account.steam_id64.clone())
+        else {
+            return;
+        };
+        let key = self
+            .config
+            .as_ref()
+            .and_then(|config| config.steam_api_key.clone());
+        let offline = self.offline_mode;
+        self.achievement_msg = if offline {
+            Some("Offline mode; cached achievement evidence only.".into())
+        } else if key.is_none() {
+            Some("No Steam Web API key; cached achievement evidence only.".into())
+        } else {
+            None
+        };
+        self.achievement_pending = if offline || key.is_none() {
+            0
+        } else {
+            ids.len()
+        };
+        let ticket = self.job_runner.next_ticket(WorkflowKind::Achievements, &id);
+        let control = vapourfly_api::activity::RefreshControl::default();
+        self.achievement_control = control.clone();
+        self.achievement_job_id = Some(ticket);
+        ACHIEVEMENT_RESULT.clear();
+        let cache = vapourfly_api::cache::DiskCache::new(self.cache_dir.clone());
+        let repaint = self.repaint.clone();
+        std::thread::spawn(move || {
+            let result = vapourfly_api::achievements::refresh_batch(
+                &cache,
+                &vapourfly_api::http::HttpClient::new(),
+                key.as_deref(),
+                &id,
+                vapourfly_api::achievements::BatchOptions {
+                    app_ids: &ids,
+                    limit: vapourfly_api::achievements::DEFAULT_BATCH_LIMIT,
+                    force,
+                    offline,
+                },
+                &control,
+            )
+            .map_err(|e| e.to_string());
+            ACHIEVEMENT_RESULT.set(ticket, result);
+            repaint.request();
+        });
+    }
+
+    pub(crate) fn cancel_achievement_refresh(&mut self) {
+        self.achievement_control.cancel();
+        self.achievement_msg =
+            Some("Achievement refresh cancelled; cached evidence retained.".into());
+    }
+
+    pub(crate) fn achievement_refreshing(&self) -> bool {
+        self.achievement_job_id.is_some()
+    }
+
+    pub(crate) fn achievement_coverage_summary(&self) -> String {
+        let coverage = self.achievement_coverage.as_ref().map_or_else(
+            || "coverage not inspected".into(),
+            |coverage| format!(
+                "{} selected; {} available; {} stale; {} unavailable; {} missing; {} attempted; stop {:?}",
+                coverage.selected, coverage.available, coverage.stale, coverage.unavailable,
+                coverage.missing, coverage.attempted, coverage.stop_reason,
+            ),
+        );
+        format!(
+            "Steam achievements (active subset): {coverage}; {} pending",
+            self.achievement_pending
+        )
+    }
+
+    pub(crate) fn achievement_summary(&self, app_id: u32) -> String {
+        let summary = self.achievement_progress.get(&app_id).map_or_else(
+            || "Steam achievements: unknown / not fetched".into(),
+            |p| p.summary(),
+        );
+        if self.achievement_job_id.is_some() {
+            format!("{summary}; loading")
+        } else if let Some(message) = &self.achievement_msg {
+            format!("{summary}; {message}")
+        } else {
+            summary
+        }
+    }
+
+    pub(crate) fn game_progress(&self, app_id: u32) -> Option<&vapourfly_core::progress::Summary> {
+        let snapshot = self.prepared_snapshot.as_ref()?;
+        if snapshot.fingerprint != self.library_prepare_fingerprint() {
+            return None;
+        }
+        snapshot.progress.as_ref().ok()?.get(&app_id)
+    }
+
+    pub(crate) fn game_progress_summary(&self, app_id: u32) -> String {
+        let Some(snapshot) = self
+            .prepared_snapshot
+            .as_ref()
+            .filter(|s| s.fingerprint == self.library_prepare_fingerprint())
+        else {
+            return "Progress evidence loading".into();
+        };
+        match &snapshot.progress {
+            Ok(progress) => progress.get(&app_id).map_or_else(
+                || "Progress unavailable: game is not in the prepared Library".into(),
+                vapourfly_core::progress::Summary::label,
+            ),
+            Err(error) => format!("Progress unavailable: {error}"),
+        }
+    }
+
+    pub(crate) fn progress_coverage(&self) -> String {
+        let Some(snapshot) = self
+            .prepared_snapshot
+            .as_ref()
+            .filter(|s| s.fingerprint == self.library_prepare_fingerprint())
+        else {
+            return "Progress evidence loading".into();
+        };
+        match &snapshot.progress {
+            Ok(progress) => format!(
+                "Progress: {}/{} with achievement counts; {} unknown activity. Story marks are local; near-perfect requires fresh 90%..<100%.",
+                progress
+                    .values()
+                    .filter(|p| p.achievements.is_some())
+                    .count(),
+                progress.len(),
+                progress
+                    .values()
+                    .filter(|p| p.activity == vapourfly_core::progress::Activity::Unknown)
+                    .count(),
+            ),
+            Err(error) => format!("Progress unavailable: {error}"),
+        }
+    }
+
+    pub(crate) fn taste_profile(
+        &self,
+    ) -> Result<&Arc<vapourfly_api::profile::AccountProfile>, String> {
+        self.prepared_snapshot
+            .as_ref()
+            .filter(|s| s.fingerprint == self.library_prepare_fingerprint())
+            .ok_or_else(|| "Prepare the selected account's Library first.".to_string())?
+            .taste
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    fn prepared_preferences(&self) -> Result<&Preferences, String> {
+        self.prepared_snapshot
+            .as_ref()
+            .filter(|s| s.fingerprint == self.library_prepare_fingerprint())
+            .ok_or_else(|| "Prepare the selected account's Library first.".to_string())?
+            .preferences
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    pub(crate) fn preference_summary(&self, app_id: u32) -> String {
+        match self.prepared_preferences() {
+            Ok(prefs) => prefs.get(&app_id).map_or_else(
+                || "No explicit preference".into(),
+                |p| p.label(chrono::Utc::now().timestamp()),
+            ),
+            Err(error) => format!("Preferences unavailable: {error}"),
+        }
+    }
+
+    pub(crate) fn edit_preference(
+        &mut self,
+        app_id: Option<u32>,
+        choice: Option<Choice>,
+    ) -> Result<(), String> {
+        if self.ui_demo {
+            return Err("Preference edits are disabled in demo mode.".into());
+        }
+        let account = self.active_account().ok_or("Select a Steam account.")?;
+        let snapshot = self
+            .prepared_snapshot
+            .as_ref()
+            .filter(|s| s.fingerprint == self.library_prepare_fingerprint())
+            .ok_or("Prepare the selected account's Library first.")?;
+        if self
+            .scan_result
+            .as_ref()
+            .is_none_or(|s| s.account != account.account_name)
+        {
+            return Err("Scan the selected account's Library first.".into());
+        }
+        let id = account.steam_id64.clone();
+        let result = if let Some(app_id) = app_id {
+            if !snapshot.games.iter().any(|g| g.app_id == app_id) {
+                return Err("AppID is not in the selected account's Library.".into());
+            }
+            preferences::set(
+                &self.preferences_dir,
+                &id,
+                app_id,
+                choice,
+                chrono::Utc::now().timestamp(),
+            )
+            .map(|_| ())
+        } else {
+            if choice.is_some() {
+                return Err("Account-wide choices are not supported.".into());
+            }
+            preferences::reset_all(&self.preferences_dir, &id)
+        };
+        // Reload even on partial reset failure; never leave old feedback active in memory.
+        let loaded = preferences::load(&self.preferences_dir, &id).map_err(|e| e.to_string());
+        self.prepared_snapshot.as_mut().unwrap().preferences = loaded;
+        let snapshot = self.prepared_snapshot.as_mut().unwrap();
+        snapshot.taste = library_taste_profile(
+            &vapourfly_api::cache::DiskCache::new(self.cache_dir.clone()),
+            Some(&id),
+            &snapshot.games,
+            &snapshot.preferences,
+            &snapshot.progress,
+        );
+        self.preferences_generation = self.preferences_generation.wrapping_add(1);
+        let rerun_recommend = self.recommend_loading || !self.recommend_results.is_empty();
+        self.clear_personalized_results();
+        result.map_err(|e| e.to_string())?;
+        self.prepared_preferences()?;
+        if rerun_recommend {
+            self.start_recommend_preview();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn preview_personal_clear(
+        &self,
+        scope: vapourfly_api::personal_data::ClearScope,
+    ) -> Result<vapourfly_api::personal_data::ClearPlan, String> {
+        if self.ui_demo || self.activity_loading || self.achievement_refreshing() {
+            return Err("Cleanup unavailable in demo mode or during personal refresh; finish or cancel refresh first.".into());
+        }
+        let account = self.active_account().ok_or("Select a Steam account.")?;
+        vapourfly_api::personal_data::prepare_clear(
+            &vapourfly_api::cache::DiskCache::new(&self.cache_dir),
+            &self.story_dir,
+            &self.preferences_dir,
+            &account.steam_id64,
+            scope,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn confirm_personal_clear(
+        &mut self,
+        plan: vapourfly_api::personal_data::ClearPlan,
+    ) -> Result<(), String> {
+        if self.ui_demo
+            || self
+                .active_account()
+                .is_none_or(|a| !plan.is_for(&a.steam_id64))
+        {
+            return Err("Account changed or demo mode enabled; cleanup cancelled.".into());
+        }
+        if self.activity_loading || self.achievement_refreshing() {
+            return Err("Finish or cancel personal refresh before clearing records.".into());
+        }
+        let result = plan.clear().map_err(|error| error.to_string());
+        // A partial deletion also invalidates all derived/late results. Reload
+        // cache-only evidence, never rescan or automatically fetch cleared data.
+        self.activity_snapshot = None;
+        self.activity_account_id = None;
+        self.activity_msg = None;
+        self.achievement_progress.clear();
+        self.achievement_coverage = None;
+        self.achievement_pending = 0;
+        self.achievement_msg = None;
+        self.cache_refresh_generation = self.cache_refresh_generation.wrapping_add(1);
+        self.preferences_generation = self.preferences_generation.wrapping_add(1);
+        self.prepared_snapshot = None;
+        self.prepare_job_id = None;
+        self.prepare_fingerprint = None;
+        self.prepare_result.clear();
+        self.clear_personalized_results();
+        self.ensure_library_prepared();
+        result
+    }
+
+    fn clear_personalized_results(&mut self) {
+        self.recommend_results.clear();
+        self.recommend_selected = None;
+        self.recommend_job_id = None;
+        self.recommend_loading = false;
+        self.discover_results.clear();
+        self.discover_last_playlist = None;
+        self.discover_job_id = None;
+        self.discover_loading = false;
+    }
+
+    pub(crate) fn set_story_completed(
+        &mut self,
+        app_id: u32,
+        completed: bool,
+    ) -> Result<(), String> {
+        if self.ui_demo {
+            return Err("Story edits are disabled in demo mode.".into());
+        }
+        let account = self.active_account().ok_or("Select a Steam account.")?;
+        if self
+            .scan_result
+            .as_ref()
+            .is_none_or(|s| s.account != account.account_name)
+            || self.game_progress(app_id).is_none()
+        {
+            return Err("Prepare the selected account's owned Library first.".into());
+        }
+        vapourfly_core::progress::set_story_completed(
+            &self.story_dir,
+            &account.steam_id64,
+            app_id,
+            completed,
+        )
+        .map_err(|e| e.to_string())?;
+        if let Some(summary) = self
+            .prepared_snapshot
+            .as_mut()
+            .and_then(|s| s.progress.as_mut().ok())
+            .and_then(|p| p.get_mut(&app_id))
+        {
+            summary.story_completed = completed;
+        }
+        if let Some(snapshot) = self.prepared_snapshot.as_mut()
+            && let (Ok(profile), Ok(progress)) = (&mut snapshot.taste, &snapshot.progress)
+        {
+            let profile = Arc::make_mut(profile);
+            profile.traits = vapourfly_core::traits::derive(&profile.taste, progress);
+        }
+        // A story edit changes ranking evidence; late pre-edit jobs cannot be accepted.
+        self.preferences_generation = self.preferences_generation.wrapping_add(1);
+        let rerun_recommend = self.recommend_loading || !self.recommend_results.is_empty();
+        self.clear_personalized_results();
+        if rerun_recommend {
+            self.start_recommend_preview();
+        }
+        Ok(())
+    }
+
     /// Start the automatic background populate after a scan (ADR-0009):
     /// fetch missing/stale entries only, once per launch. Silent no-op in
     /// demo/offline mode or when a job is already running — the library is
@@ -2357,11 +2854,19 @@ impl VapourflyApp {
     }
 
     pub(crate) fn recommend_fp(&self, request: &RecommendRequest) -> String {
-        format!("recommend:{request:?}:lib={}", self.scan_generation)
+        format!(
+            "recommend:{request:?}:lib={}:prefs={}",
+            self.library_prepare_fingerprint(),
+            self.preferences_generation
+        )
     }
 
     pub(crate) fn discover_fp(&self, options: &DiscoverOptions) -> String {
-        format!("discover:{options:?}:lib={}", self.scan_generation)
+        format!(
+            "discover:{options:?}:lib={}:prefs={}",
+            self.library_prepare_fingerprint(),
+            self.preferences_generation
+        )
     }
 
     pub(crate) fn dynamic_fp(
@@ -2446,6 +2951,30 @@ impl VapourflyApp {
         };
 
         self.recommend_loading = true;
+        let preferences = match self.prepared_preferences() {
+            Ok(prefs) => prefs.clone(),
+            Err(error) => {
+                self.recommend_loading = false;
+                self.error = Some(error);
+                return;
+            }
+        };
+        let profile = match self.taste_profile() {
+            Ok(profile) => Arc::clone(profile),
+            Err(error) => {
+                self.recommend_loading = false;
+                self.error = Some(error);
+                return;
+            }
+        };
+        let progress = match &self.prepared_snapshot.as_ref().unwrap().progress {
+            Ok(progress) => progress.clone(),
+            Err(error) => {
+                self.recommend_loading = false;
+                self.error = Some(error.clone());
+                return;
+            }
+        };
         // The request is captured at start time (recommend_request_at_start)
         // so Match % is computed against the request the user actually
         // submitted, not the current inputs (e.g. if Deck mode changes mid-job).
@@ -2459,7 +2988,14 @@ impl VapourflyApp {
 
         let repaint = self.repaint.clone();
         std::thread::spawn(move || {
-            let results = recommend(&games, &request);
+            let results = recommend_personalized(
+                &games,
+                &request,
+                &preferences,
+                &profile.taste,
+                &progress,
+                chrono::Utc::now().timestamp(),
+            );
             repaint.request();
             RECOMMEND_RESULT.set(job_id, Ok(results));
         });
@@ -2470,6 +3006,8 @@ impl VapourflyApp {
         if self.discover_loading {
             return;
         }
+        self.discover_results.clear();
+        self.discover_last_playlist = None;
         let Some(options) = self.ok_or_err(self.discover_options_from_inputs()) else {
             return;
         };
@@ -2478,6 +3016,30 @@ impl VapourflyApp {
         };
 
         self.discover_loading = true;
+        let preferences = match self.prepared_preferences() {
+            Ok(prefs) => prefs.clone(),
+            Err(error) => {
+                self.discover_loading = false;
+                self.error = Some(error);
+                return;
+            }
+        };
+        let profile = match self.taste_profile() {
+            Ok(profile) => profile.clone(),
+            Err(error) => {
+                self.discover_loading = false;
+                self.error = Some(error);
+                return;
+            }
+        };
+        let progress = match &self.prepared_snapshot.as_ref().unwrap().progress {
+            Ok(progress) => progress.clone(),
+            Err(error) => {
+                self.discover_loading = false;
+                self.error = Some(error.clone());
+                return;
+            }
+        };
         let fingerprint = self.discover_fp(&options);
         let job_id = self
             .job_runner
@@ -2487,7 +3049,14 @@ impl VapourflyApp {
 
         let repaint = self.repaint.clone();
         std::thread::spawn(move || {
-            let picks = discover::rank_discover_picks(&games, &options);
+            let picks = discover::rank_discover_personalized(
+                &games,
+                &options,
+                &preferences,
+                &profile.taste,
+                &progress,
+                chrono::Utc::now().timestamp(),
+            );
             let pf = discover::playlist_from_discover_picks(&games, &options, &picks);
             repaint.request();
             DISCOVER_RESULT.set(job_id, Ok((picks, pf)));
@@ -2735,6 +3304,14 @@ impl VapourflyApp {
             sort_desc: self.library_sort_desc,
         };
         project_library_games(games, &filters)
+            .into_iter()
+            .filter(|game| {
+                self.progress_filter == vapourfly_core::progress::Filter::All
+                    || self
+                        .game_progress(game.app_id)
+                        .is_some_and(|p| p.matches(self.progress_filter))
+            })
+            .collect()
     }
 
     /// Reload source cache statuses from disk.
@@ -2959,13 +3536,16 @@ impl VapourflyApp {
         let scan_gen = self.scan_generation;
         let refresh_gen = self.cache_refresh_generation;
         let cache_dir = self.cache_dir.to_string_lossy();
+        let account = self.active_account().map(|a| a.steam_id64.as_str());
+        let story_dir = self.story_dir.to_string_lossy();
+        let preferences_dir = self.preferences_dir.to_string_lossy();
         let overrides = self
             .manual_overrides_path
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
         fingerprint_u64(&format!(
-            "prepare:scan_gen={scan_gen}:gen={refresh_gen}:cache={cache_dir}:ovr={overrides}"
+            "prepare:scan_gen={scan_gen}:gen={refresh_gen}:cache={cache_dir}:ovr={overrides}:account={account:?}:story={story_dir}:preferences={preferences_dir}"
         ))
     }
 
@@ -2990,7 +3570,8 @@ impl VapourflyApp {
             .next_ticket(WorkflowKind::Prepare, &format!("prepare:{fp}"));
         self.prepare_job_id = Some(job_id);
         self.prepare_fingerprint = Some(fp);
-        PREPARED_LIBRARY_RESULT.clear();
+        self.prepare_result.clear();
+        let prepare_result = Arc::clone(&self.prepare_result);
 
         let games = self
             .scan_result
@@ -2999,10 +3580,30 @@ impl VapourflyApp {
             .unwrap_or_default();
         let cache_dir = self.cache_dir.clone();
         let overrides_path = self.manual_overrides_path.clone();
+        let story_dir = self.story_dir.clone();
+        let preferences_dir = self.preferences_dir.clone();
+        let ui_demo = self.ui_demo;
+        let account = self
+            .active_account()
+            .filter(|a| {
+                self.scan_result
+                    .as_ref()
+                    .is_some_and(|s| s.account == a.account_name)
+            })
+            .map(|a| a.steam_id64.clone());
         let repaint = self.repaint.clone();
         std::thread::spawn(move || {
             let mut games = games;
             let cache = vapourfly_api::cache::DiskCache::new(cache_dir);
+            let progress = account
+                .as_deref()
+                .ok_or_else(|| "Scan the selected account's Library first.".to_string())
+                .and_then(|id| {
+                    vapourfly_api::achievements::library_progress(&cache, &story_dir, id, &games)
+                        .map_err(|e| e.to_string())
+                });
+            let preferences =
+                load_library_preferences(&preferences_dir, account.as_deref(), ui_demo);
             vapourfly_api::enrichment::hydrate_from_cache(&mut games, &cache);
             // Load overrides off-frame so prepared_games never touches the
             // overrides file on the UI frame.
@@ -3019,13 +3620,18 @@ impl VapourflyApp {
                 &overrides,
             );
             let games: Arc<[Game]> = Arc::from(games);
+            let taste =
+                library_taste_profile(&cache, account.as_deref(), &games, &preferences, &progress);
             repaint.request();
-            PREPARED_LIBRARY_RESULT.set(
+            prepare_result.set(
                 job_id,
                 Ok(PreparedLibrarySnapshot {
                     fingerprint: fp,
                     games,
                     overrides,
+                    progress,
+                    preferences,
+                    taste,
                 }),
             );
         });
@@ -3034,6 +3640,93 @@ impl VapourflyApp {
     /// Poll every background job slot and kick first-paint work. Called once
     /// per GPUI frame (and from tests that wait on jobs). Does not block.
     pub fn tick(&mut self) {
+        let active_account_id = self
+            .active_account()
+            .map(|account| account.steam_id64.clone());
+        if self.activity_account_id != active_account_id {
+            self.clear_personalized_results();
+            self.achievement_control.cancel();
+            self.achievement_job_id = None;
+            self.achievement_progress.clear();
+            self.achievement_msg = None;
+            self.achievement_coverage = None;
+            self.achievement_pending = 0;
+            self.library_selected_app_id = None;
+            self.activity_account_id = active_account_id.clone();
+            self.activity_msg = None;
+            self.activity_snapshot = active_account_id.as_deref().and_then(|id| {
+                match vapourfly_api::activity::load(
+                    &vapourfly_api::cache::DiskCache::new(self.cache_dir.clone()),
+                    id,
+                ) {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        self.activity_msg =
+                            Some(format!("Account activity cache unavailable: {error}"));
+                        None
+                    }
+                }
+            });
+        } else if self.activity_snapshot.as_ref().is_some_and(|snapshot| {
+            active_account_id
+                .as_deref()
+                .is_none_or(|id| id != snapshot.steam_id64)
+        }) {
+            self.activity_snapshot = None;
+            self.activity_msg = None;
+        }
+        if let Some(expected) = self.activity_job_id {
+            let current = self
+                .active_account()
+                .map(|a| fingerprint_u64(&a.steam_id64));
+            if current != Some(expected.fingerprint) {
+                self.activity_loading = false;
+                self.activity_job_id = None;
+                ACTIVITY_RESULT.clear();
+            } else if let Some(result) = ACTIVITY_RESULT.take_if(expected) {
+                self.activity_loading = false;
+                self.activity_job_id = None;
+                self.cache_refresh_generation = self.cache_refresh_generation.wrapping_add(1);
+                match result {
+                    Ok(Ok(snapshot)) => {
+                        self.activity_snapshot = snapshot;
+                        self.activity_msg = None;
+                    }
+                    Ok(Err(error)) => {
+                        self.activity_msg = Some(format!("Account refresh failed: {error}"));
+                    }
+                    Err(error) => {
+                        self.activity_msg = Some(format!("Account refresh failed: {error}"));
+                    }
+                }
+            }
+        }
+
+        if self.offline_mode && self.achievement_pending > 0 && self.achievement_job_id.is_some() {
+            self.achievement_control.cancel();
+        }
+        if let Some(ticket) = self.achievement_job_id
+            && let Some(result) = ACHIEVEMENT_RESULT.take_if(ticket)
+        {
+            self.achievement_job_id = None;
+            self.achievement_pending = 0;
+            match result {
+                Ok((coverage, progress)) => {
+                    self.cache_refresh_generation = self.cache_refresh_generation.wrapping_add(1);
+                    self.achievement_pending = coverage.pending;
+                    self.achievement_coverage = Some(coverage);
+                    for progress in progress {
+                        if Some(progress.steam_id64.as_str()) == active_account_id.as_deref() {
+                            self.achievement_progress.insert(progress.app_id, progress);
+                        }
+                    }
+                }
+                Err(error) => {
+                    self.achievement_msg = Some(format!("Achievements unavailable: {error}"));
+                }
+            }
+        }
+
         if self.loading
             && let Some(expected) = self.scan_job_id
         {
@@ -3054,6 +3747,7 @@ impl VapourflyApp {
                             Err(e) => self.error = Some(e),
                         }
                         self.start_background_populate();
+                        self.start_achievement_coverage(false);
                     }
                     Err(e) => self.error = Some(e),
                 }
@@ -3249,6 +3943,8 @@ impl VapourflyApp {
         self.loading
             || self.write_loading
             || self.cache_refresh_loading
+            || self.activity_loading
+            || self.achievement_job_id.is_some()
             || self.dry_run_loading
             || self.junk_preview_loading
             || self.recommend_loading
@@ -3262,7 +3958,7 @@ impl VapourflyApp {
     /// Consume a finished background library prepare result.
     pub(crate) fn poll_library_prepare(&mut self) {
         if let Some(expected) = self.prepare_job_id
-            && let Some(result) = PREPARED_LIBRARY_RESULT.take_if(expected)
+            && let Some(result) = self.prepare_result.take_if(expected)
         {
             self.prepare_job_id = None;
             self.prepare_fingerprint = None;
@@ -3337,6 +4033,23 @@ impl VapourflyApp {
             .unwrap_or_default();
         let cache = vapourfly_api::cache::DiskCache::new(self.cache_dir.clone());
         vapourfly_api::enrichment::hydrate_from_cache(&mut games, &cache);
+        let progress = self
+            .active_account()
+            .filter(|a| {
+                self.scan_result
+                    .as_ref()
+                    .is_some_and(|s| s.account == a.account_name)
+            })
+            .ok_or_else(|| "Scan the selected account's Library first.".to_string())
+            .and_then(|a| {
+                vapourfly_api::achievements::library_progress(
+                    &cache,
+                    &self.story_dir,
+                    &a.steam_id64,
+                    &games,
+                )
+                .map_err(|e| e.to_string())
+            });
         let overrides = self.manual_overrides();
         apply_junk_flags(
             &mut games,
@@ -3345,16 +4058,41 @@ impl VapourflyApp {
             &overrides,
         );
         let games: Arc<[Game]> = Arc::from(games);
+        let preferences = load_library_preferences(
+            &self.preferences_dir,
+            self.active_account()
+                .filter(|a| {
+                    self.scan_result
+                        .as_ref()
+                        .is_some_and(|s| s.account == a.account_name)
+                })
+                .map(|a| a.steam_id64.as_str()),
+            self.ui_demo,
+        );
         self.prepared_snapshot = Some(PreparedLibrarySnapshot {
             fingerprint: fp,
+            taste: library_taste_profile(
+                &cache,
+                self.active_account().map(|a| a.steam_id64.as_str()),
+                &games,
+                &preferences,
+                &progress,
+            ),
             games,
             overrides,
+            progress,
+            preferences,
         });
     }
 
     pub(crate) fn recommend_request_from_inputs(&self) -> Result<RecommendRequest, String> {
         Ok(RecommendRequest {
             available_minutes: parse_required("Available minutes", &self.recommend_minutes)?,
+            intent: if self.recommend_finish_short_game {
+                vapourfly_core::models::RecommendIntent::FinishShortGame
+            } else {
+                vapourfly_core::models::RecommendIntent::Session
+            },
             count: parse_required("Count", &self.recommend_count)?,
             deck_mode: self.recommend_deck,
             include_installed_only: self.recommend_installed_only,
@@ -3419,6 +4157,7 @@ impl VapourflyApp {
             Ok(accounts) => {
                 let count = accounts.len();
                 self.detected_accounts = accounts;
+                self.activity_account_id = None;
                 self.account_list_msg = Some(format!("{count} account(s) detected."));
             }
             Err(e) => {
@@ -3437,24 +4176,24 @@ impl VapourflyApp {
             && let Ok(accounts) = detect_accounts(&steam_dir)
         {
             self.detected_accounts = accounts;
+            self.activity_account_id = None;
         }
     }
 
     /// The account Vapourfly acts for: the configured one (matched by
     /// SteamID64, account name or persona), else Steam's most recent login.
+    /// An unmatched explicit selection must never expose another account.
     pub(crate) fn active_account(&self) -> Option<&SteamAccount> {
-        let preferred = self.account_edit.trim().to_lowercase();
-        let configured = (!preferred.is_empty())
-            .then(|| {
-                self.detected_accounts.iter().find(|a| {
-                    a.steam_id64 == preferred
-                        || a.account_name.to_lowercase() == preferred
-                        || a.persona_name.to_lowercase() == preferred
-                })
-            })
-            .flatten();
-        configured
-            .or_else(|| self.detected_accounts.iter().find(|a| a.most_recent))
+        if let Some(preferred) = self.config.as_ref().and_then(|c| c.account.as_deref()) {
+            return self.detected_accounts.iter().find(|a| {
+                a.steam_id64 == preferred
+                    || a.account_name.eq_ignore_ascii_case(preferred)
+                    || a.persona_name.eq_ignore_ascii_case(preferred)
+            });
+        }
+        self.detected_accounts
+            .iter()
+            .find(|a| a.most_recent)
             .or_else(|| self.detected_accounts.first())
     }
 
@@ -3808,7 +4547,20 @@ impl VapourflyApp {
         let games = self
             .prepared_games(JunkMode::Default)
             .ok_or_else(|| "Scan your library before generating.".to_string())?;
-        let picks = discover::rank_discover_picks(&games, &options);
+        let preferences = self.prepared_preferences()?;
+        let picks = discover::rank_discover_personalized(
+            &games,
+            &options,
+            preferences,
+            &self.taste_profile()?.taste,
+            self.prepared_snapshot
+                .as_ref()
+                .unwrap()
+                .progress
+                .as_ref()
+                .map_err(Clone::clone)?,
+            chrono::Utc::now().timestamp(),
+        );
         let pf = discover::playlist_from_discover_picks(&games, &options, &picks);
         let stored = self.store_generator_playlist(GeneratorIdentity::Discover, pf)?;
         self.discover_results = picks;
@@ -3818,6 +4570,41 @@ impl VapourflyApp {
         self.refresh_playlist_store_ids();
         Ok(stored)
     }
+}
+
+fn library_taste_profile(
+    cache: &vapourfly_api::cache::DiskCache,
+    account: Option<&str>,
+    games: &[Game],
+    preferences: &Result<Preferences, String>,
+    progress: &Result<std::collections::BTreeMap<u32, vapourfly_core::progress::Summary>, String>,
+) -> Result<Arc<vapourfly_api::profile::AccountProfile>, String> {
+    let id = account.ok_or("Scan the selected account's Library first.")?;
+    let preferences = preferences.as_ref().map_err(Clone::clone)?;
+    let progress = progress.as_ref().map_err(Clone::clone)?;
+    let activity = vapourfly_api::activity::load(cache, id).map_err(|e| e.to_string())?;
+    vapourfly_api::profile::derive(
+        id,
+        games,
+        preferences,
+        activity.as_ref(),
+        progress,
+        chrono::Utc::now().timestamp(),
+    )
+    .map(Arc::new)
+    .map_err(|e| e.to_string())
+}
+
+fn load_library_preferences(
+    root: &Path,
+    account: Option<&str>,
+    demo: bool,
+) -> Result<Preferences, String> {
+    if demo {
+        return Ok(Preferences::new());
+    }
+    let id = account.ok_or("Scan the selected account's Library first.")?;
+    preferences::load(root, id).map_err(|e| e.to_string())
 }
 
 /// Generate a [`WritePlan`] without executing it, so the GUI can display a
@@ -3901,7 +4688,6 @@ pub(crate) fn execute_backup_restore(
 /// cards without keeping a borrow on the scan result.
 #[derive(Clone, Default)]
 pub(crate) struct GameSummary {
-    pub(crate) playtime_minutes: u32,
     pub(crate) hltb_minutes: Option<u32>,
     pub(crate) rating_0_5: Option<f32>,
     pub(crate) proton_tier: Option<ProtonTier>,
@@ -3910,12 +4696,7 @@ pub(crate) struct GameSummary {
 impl From<&Game> for GameSummary {
     fn from(g: &Game) -> Self {
         Self {
-            playtime_minutes: g.playtime_minutes.unwrap_or(0),
-            hltb_minutes: g
-                .hltb
-                .as_ref()
-                .and_then(|h| h.main_story_seconds)
-                .map(|s| s / 60),
+            hltb_minutes: signal::main_story_seconds(g).map(|s| s / 60),
             rating_0_5: g.rawg.as_ref().and_then(|r| r.rating_0_5),
             proton_tier: g.protondb.as_ref().map(|p| p.tier),
         }
@@ -3968,13 +4749,8 @@ pub(crate) fn playlist_avg_hltb(
     let lookup: HashMap<u32, &Game> = games.iter().map(|g| (g.app_id, g)).collect();
     let hltbs: Vec<u32> = ids
         .iter()
-        .filter_map(|id| {
-            lookup
-                .get(id)
-                .and_then(|g| g.hltb.as_ref())
-                .and_then(|h| h.main_story_seconds)
-                .map(|s| s / 60)
-        })
+        .filter_map(|id| lookup.get(id).and_then(|g| signal::main_story_seconds(g)))
+        .map(|s| s / 60)
         .collect();
     if hltbs.is_empty() {
         return None;
@@ -4027,20 +4803,6 @@ pub(crate) fn game_shows_deck_badge(game: &Game) -> bool {
 
 pub(crate) fn empty_value_label() -> &'static str {
     "None"
-}
-
-/// Append a system CJK face so collection names and other user strings
-pub(crate) fn reason_badge_label(code: &str, description: &str) -> String {
-    let raw = if description.trim().is_empty() {
-        code.replace('_', " ")
-    } else {
-        description.to_string()
-    };
-    if raw.chars().count() > 24 {
-        format!("{}…", raw.chars().take(23).collect::<String>())
-    } else {
-        raw
-    }
 }
 
 pub(crate) fn parse_required<T: std::str::FromStr>(label: &str, input: &str) -> Result<T, String> {
@@ -4284,7 +5046,6 @@ mod tests {
     #[test]
     #[serial]
     pub(crate) fn library_prepare_snapshot_populates_and_is_reused() {
-        PREPARED_LIBRARY_RESULT.clear();
         let mut app = VapourflyApp::new(None, true);
         app.populate_demo_data();
 
@@ -4343,11 +5104,43 @@ mod tests {
         assert!(app.library_ready());
     }
 
+    #[test]
+    #[serial]
+    fn library_prepare_results_are_owned_by_each_app() {
+        let mut earlier = VapourflyApp::new(None, true);
+        let mut current = VapourflyApp::new(None, true);
+        let earlier_ticket = earlier
+            .job_runner
+            .next_ticket(WorkflowKind::Prepare, "same-input");
+        let current_ticket = current
+            .job_runner
+            .next_ticket(WorkflowKind::Prepare, "same-input");
+        assert_eq!(earlier_ticket, current_ticket);
+        earlier.prepare_job_id = Some(earlier_ticket);
+        current.prepare_job_id = Some(current_ticket);
+
+        // A worker can outlive its app. Its late result must not replace the
+        // current app's result, even when app-local tickets are identical.
+        current
+            .prepare_result
+            .set(current_ticket, Err("current owner".into()));
+        let earlier_worker_result = Arc::clone(&earlier.prepare_result);
+        drop(earlier);
+        earlier_worker_result.set(earlier_ticket, Err("earlier owner".into()));
+        assert_eq!(
+            current
+                .prepare_result
+                .take_if(current_ticket)
+                .unwrap()
+                .unwrap_err(),
+            "current owner"
+        );
+    }
+
     /// Cache refresh generation bump invalidates the snapshot.
     #[test]
     #[serial]
     pub(crate) fn cache_refresh_generation_invalidates_snapshot() {
-        PREPARED_LIBRARY_RESULT.clear();
         let mut app = VapourflyApp::new(None, true);
         app.populate_demo_data();
 
@@ -4357,6 +5150,9 @@ mod tests {
             fingerprint: fp,
             games: Arc::from(vec![]),
             overrides: ManualOverrides::default(),
+            progress: Ok(Default::default()),
+            preferences: Ok(Default::default()),
+            taste: Err("Test snapshot has no profile".into()),
         });
 
         // Bump the generation — fingerprint changes, snapshot is stale.
@@ -4383,7 +5179,6 @@ mod tests {
     #[test]
     #[serial]
     pub(crate) fn rescan_with_same_game_count_invalidates_snapshot() {
-        PREPARED_LIBRARY_RESULT.clear();
         let mut app = VapourflyApp::new(None, true);
         app.populate_demo_data();
         let game_count = app.scan_result.as_ref().unwrap().games.len();
@@ -4405,6 +5200,9 @@ mod tests {
             fingerprint: fp,
             games: Arc::from(vec![sentinel.clone()]),
             overrides: ManualOverrides::default(),
+            progress: Ok(Default::default()),
+            preferences: Ok(Default::default()),
+            taste: Err("Test snapshot has no profile".into()),
         });
 
         // Simulate a rescan accepted with the SAME game count but changed
@@ -5157,15 +5955,6 @@ mod tests {
     }
 
     #[test]
-    pub(crate) fn reason_badge_prefers_human_description() {
-        assert_eq!(
-            reason_badge_label("taste_overlap", "Taste vector overlap"),
-            "Taste vector overlap"
-        );
-        assert_eq!(reason_badge_label("HIGH_RATING", ""), "HIGH RATING");
-    }
-
-    #[test]
     pub(crate) fn discover_seed_resolves_name_or_app_id() {
         let mut app = VapourflyApp::new(None, false);
         app.scan_result = Some(ScanResult {
@@ -5354,11 +6143,15 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut app = VapourflyApp::new(Some(fixtures), false);
         app.playlist_store_dir = Some(dir.path().to_path_buf());
+        app.preferences_dir = dir.path().join("preferences");
+        app.config.as_mut().unwrap().account = Some("76561198000000000".into());
+        app.load_accounts_quietly();
+        let account = app.active_account().unwrap().account_name.clone();
 
         // Minimal scan so prepared_games has data (empty is fine for empty picks).
         app.scan_result = Some(ScanResult {
             steam_dir: "/tmp".into(),
-            account: "test".into(),
+            account,
             games: Vec::new(),
             warnings: Vec::new(),
         });
@@ -5803,12 +6596,11 @@ mod tests {
         assert_eq!(source_display_name("rawg"), "RAWG");
         assert_eq!(source_display_name("protondb"), "ProtonDB");
         assert_eq!(source_display_name("pcgw"), "PCGW");
-        assert_eq!(source_display_name("hltb"), "HLTB");
         assert_eq!(source_display_name("steam-store"), "Steam Store");
     }
 
     #[test]
-    pub(crate) fn source_credential_signals_cover_configured_missing_and_optional() {
+    pub(crate) fn source_credential_signals_cover_configured_missing_and_not_required() {
         assert_eq!(
             source_credential_signal("igdb", true, false),
             CredentialSignal::Configured
@@ -5827,15 +6619,11 @@ mod tests {
         );
         assert_eq!(
             source_credential_signal("protondb", false, false),
-            CredentialSignal::NotRequired
-        );
-        assert_eq!(
-            source_credential_signal("hltb", false, false),
-            CredentialSignal::Optional
+            CredentialSignal::CacheOnly
         );
         assert_eq!(
             source_credential_signal("steam-store", false, false),
-            CredentialSignal::NotRequired
+            CredentialSignal::CacheOnly
         );
     }
 
@@ -5845,8 +6633,7 @@ mod tests {
         assert!(!source_refresh_enabled("protondb", true, true, false, true));
         assert!(!source_refresh_enabled("igdb", false, true, false, false));
         assert!(source_refresh_enabled("igdb", true, false, false, false));
-        assert!(source_refresh_enabled("hltb", false, false, false, false));
-        assert!(source_refresh_enabled("pcgw", false, false, false, false));
+        assert!(!source_refresh_enabled("pcgw", false, false, false, false));
     }
 
     #[test]
@@ -5880,6 +6667,800 @@ mod tests {
     }
 
     #[test]
+    fn account_refresh_keeps_background_poll_alive() {
+        let mut app = VapourflyApp::new(None, true);
+        app.activity_loading = true;
+        assert!(app.has_background_work());
+    }
+
+    #[test]
+    #[serial]
+    fn taste_profile_recomputes_preferences_and_rejects_account_switch() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(temp.path());
+        app.ui_demo = false;
+        app.preferences_dir = temp.path().join("preferences");
+        for game in &mut app.scan_result.as_mut().unwrap().games {
+            game.playtime_minutes = Some(0);
+            game.playtime_2wks_minutes = Some(0);
+            game.is_hidden = false;
+            game.is_junk = false;
+        }
+        app.inject_prepared_snapshot();
+        assert_eq!(
+            app.taste_profile().unwrap().taste.long_term,
+            [] as [vapourfly_core::taste::TagStrength; 0]
+        );
+        let id = app
+            .prepared_snapshot
+            .as_ref()
+            .unwrap()
+            .games
+            .iter()
+            .find(|g| g.igdb.is_some() || g.rawg.is_some() || g.steam_store.is_some())
+            .unwrap()
+            .app_id;
+        app.edit_preference(Some(id), Some(Choice::Interested))
+            .unwrap();
+        assert_ne!(
+            app.taste_profile().unwrap().taste.long_term,
+            [] as [vapourfly_core::taste::TagStrength; 0]
+        );
+        assert_eq!(
+            app.taste_profile().unwrap().taste.recent,
+            [] as [vapourfly_core::taste::TagStrength; 0]
+        );
+        app.edit_preference(Some(id), None).unwrap();
+        assert_eq!(
+            app.taste_profile().unwrap().taste.long_term,
+            [] as [vapourfly_core::taste::TagStrength; 0]
+        );
+        app.config.as_mut().unwrap().account = Some("76561198000000002".into());
+        assert!(app.taste_profile().is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn taste_profile_activity_refresh_invalidates_prepared_snapshot() {
+        ACTIVITY_RESULT.clear();
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(temp.path());
+        let id = app.active_account().unwrap().steam_id64.clone();
+        let ticket = app
+            .job_runner
+            .next_ticket(WorkflowKind::AccountActivity, &id);
+        app.activity_job_id = Some(ticket);
+        app.activity_loading = true;
+        let generation = app.cache_refresh_generation;
+        ACTIVITY_RESULT.set(ticket, Ok(Ok(None)));
+        app.tick();
+        assert_ne!(app.cache_refresh_generation, generation);
+        assert!(
+            app.taste_profile().is_err(),
+            "old profile cannot remain visible after refresh"
+        );
+        ACTIVITY_RESULT.clear();
+    }
+
+    fn achievement_test_app(cache_dir: &std::path::Path) -> VapourflyApp {
+        let mut app = VapourflyApp::new(None, true);
+        app.populate_demo_data();
+        app.cache_dir = cache_dir.to_path_buf();
+        app.detected_accounts = vec![SteamAccount {
+            steam_id64: "76561198000000001".into(),
+            account_name: "alpha".into(),
+            persona_name: "Alpha".into(),
+            most_recent: true,
+        }];
+        app.config.as_mut().unwrap().account = Some("alpha".into());
+        app.config.as_mut().unwrap().steam_api_key = None;
+        app.activity_account_id = Some("76561198000000001".into());
+        app.scan_result.as_mut().unwrap().account = "alpha".into();
+        app.inject_prepared_snapshot();
+        app
+    }
+
+    #[test]
+    #[serial]
+    fn personal_clear_gui_cancel_switch_busy_confirm_and_partial_failure_reload() {
+        use vapourfly_api::personal_data::ClearScope;
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(&temp.path().join("cache"));
+        app.story_dir = temp.path().join("story");
+        app.preferences_dir = temp.path().join("preferences");
+        app.ui_demo = false;
+        app.offline_mode = true;
+        let id = "76561198000000001";
+        let game = app.scan_result.as_ref().unwrap().games[0].app_id;
+        vapourfly_core::progress::set_story_completed(&app.story_dir, id, game, true).unwrap();
+        preferences::set(&app.preferences_dir, id, game, Some(Choice::Interested), 1).unwrap();
+        app.inject_prepared_snapshot();
+        let plan = app.preview_personal_clear(ClearScope::Authored).unwrap();
+        drop(plan);
+        assert!(app.story_dir.join(id).exists());
+        assert!(
+            app.preview_personal_clear(ClearScope::Authored).is_ok(),
+            "cancel releases locks"
+        );
+        app.activity_loading = true;
+        assert!(app.preview_personal_clear(ClearScope::Cached).is_err());
+        app.activity_loading = false;
+        let plan = app.preview_personal_clear(ClearScope::Authored).unwrap();
+        app.config.as_mut().unwrap().account = Some("missing".into());
+        assert!(app.confirm_personal_clear(plan).is_err());
+        assert!(app.story_dir.join(id).exists());
+        app.config.as_mut().unwrap().account = Some("alpha".into());
+        let plan = app.preview_personal_clear(ClearScope::Authored).unwrap();
+        let generation = app.preferences_generation;
+        app.discover_loading = true;
+        app.recommend_loading = true;
+        app.confirm_personal_clear(plan).unwrap();
+        assert!(!app.story_dir.join(id).exists());
+        assert!(!app.preferences_dir.join(id).exists());
+        assert_ne!(app.preferences_generation, generation);
+        assert!(app.prepared_snapshot.is_none());
+        assert!(app.taste_profile().is_err());
+        assert!(!app.recommend_loading);
+        assert!(!app.discover_loading);
+        assert!(app.recommend_job_id.is_none());
+        assert!(app.discover_job_id.is_none());
+        app.inject_prepared_snapshot();
+        assert!(!app.game_progress(game).unwrap().story_completed);
+        assert_eq!(app.prepared_preferences().unwrap().len(), 0);
+        vapourfly_core::progress::set_story_completed(&app.story_dir, id, game, true).unwrap();
+        preferences::set(&app.preferences_dir, id, game, Some(Choice::Interested), 1).unwrap();
+        app.inject_prepared_snapshot();
+        let plan = app.preview_personal_clear(ClearScope::Authored).unwrap();
+        std::fs::remove_dir_all(app.preferences_dir.join(id)).unwrap();
+        assert!(
+            app.confirm_personal_clear(plan)
+                .unwrap_err()
+                .contains("some records may have been removed")
+        );
+        assert!(app.prepared_snapshot.is_none());
+        app.inject_prepared_snapshot();
+        assert!(!app.game_progress(game).unwrap().story_completed);
+    }
+
+    #[test]
+    #[serial]
+    fn discover_restart_drops_previous_results_even_when_preparation_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(&temp.path().join("cache"));
+        app.preferences_dir = temp.path().join("preferences");
+        app.ui_demo = false;
+        app.offline_mode = true;
+        app.inject_prepared_snapshot();
+        app.discover_results = vec![DiscoverPick {
+            app_id: 730,
+            name: "previous generation".into(),
+            score: 1.,
+            reasons: vec![],
+        }];
+        app.discover_last_playlist = Some(sample_generator_playlist("discover", vec![730]));
+        app.prepared_snapshot.as_mut().unwrap().preferences =
+            Err("Invalid local preferences".into());
+
+        app.start_discover_generate();
+
+        assert!(!app.discover_loading);
+        assert_eq!(app.discover_results, Vec::<DiscoverPick>::new());
+        assert!(app.discover_last_playlist.is_none());
+        assert_eq!(app.error.as_deref(), Some("Invalid local preferences"));
+
+        app.discover_results = vec![DiscoverPick {
+            app_id: 730,
+            name: "previous generation".into(),
+            score: 1.,
+            reasons: vec![],
+        }];
+        app.discover_last_playlist = Some(sample_generator_playlist("discover", vec![730]));
+        app.discover_count = "invalid".into();
+        app.start_discover_generate();
+        assert!(!app.discover_loading);
+        assert_eq!(app.discover_results, Vec::<DiscoverPick>::new());
+        assert!(app.discover_last_playlist.is_none());
+        assert!(app.error.as_deref().unwrap().contains("Discover count"));
+    }
+
+    #[test]
+    #[serial]
+    fn local_preferences_preserve_saved_discover_and_unsaved_editor() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(&temp.path().join("cache"));
+        app.preferences_dir = temp.path().join("preferences");
+        app.playlist_store_dir = Some(temp.path().join("playlists"));
+        app.ui_demo = false;
+        app.offline_mode = true;
+        app.inject_prepared_snapshot();
+        let id = app.scan_result.as_ref().unwrap().games[0].app_id;
+        let saved = sample_generator_playlist("discover", vec![id]);
+        let path = playlist_store::put(app.playlist_store_dir.as_ref().unwrap(), &saved).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        app.playlist_edit_id = "unsaved".into();
+        app.playlist_edit_name = "My unfinished edit".into();
+        app.playlist_edit_description = "Do not replace".into();
+        app.playlist_edit_app_ids = "730, 440".into();
+        app.playlist_edit_rules = "[]".into();
+        let options = app.discover_options_from_inputs().unwrap();
+        let old_fp = app.discover_fp(&options);
+        let ticket = app.job_runner.next_ticket(WorkflowKind::Discover, &old_fp);
+        app.discover_loading = true;
+        app.discover_job_id = Some(ticket);
+        app.discover_results = vec![DiscoverPick {
+            app_id: id,
+            name: "old picks".into(),
+            score: 1.,
+            reasons: vec![],
+        }];
+        app.discover_last_playlist = Some(saved.clone());
+
+        app.edit_preference(Some(id), Some(Choice::Interested))
+            .unwrap();
+
+        assert_eq!(app.discover_results, []);
+        assert!(app.discover_job_id.is_none());
+        assert!(!app.discover_loading);
+        assert!(app.discover_last_playlist.is_none());
+        assert_ne!(old_fp, app.discover_fp(&options));
+        // A late pre-edit result must not save a slot or adopt the editor either.
+        DISCOVER_RESULT.set(ticket, Ok((vec![], saved)));
+        app.discover_loading = true;
+        app.discover_job_id = Some(ticket);
+        app.tick();
+        assert!(app.discover_job_id.is_none());
+        assert!(!app.discover_loading);
+        assert_eq!(std::fs::read(path).unwrap(), before);
+        assert_eq!(app.playlist_edit_id, "unsaved");
+        assert_eq!(app.playlist_edit_name, "My unfinished edit");
+        assert_eq!(app.playlist_edit_description, "Do not replace");
+        assert_eq!(app.playlist_edit_app_ids, "730, 440");
+        assert_eq!(app.playlist_edit_rules, "[]");
+    }
+
+    #[test]
+    #[serial]
+    fn local_preferences_gui_edits_reset_and_reject_stale_account_results() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(&temp.path().join("cache"));
+        app.preferences_dir = temp.path().join("personal/preferences");
+        app.ui_demo = false;
+        app.offline_mode = true;
+        app.inject_prepared_snapshot();
+        let id = app.scan_result.as_ref().unwrap().games[0].app_id;
+        let request = app.recommend_request_from_inputs().unwrap();
+        let old_fp = app.recommend_fp(&request);
+        let ticket = app
+            .job_runner
+            .next_ticket(WorkflowKind::RecommendPreview, &old_fp);
+        app.edit_preference(Some(id), Some(Choice::NotInterested))
+            .unwrap();
+        assert_ne!(old_fp, app.recommend_fp(&request));
+        assert!(preferences::excludes(
+            app.prepared_preferences().unwrap(),
+            id,
+            chrono::Utc::now().timestamp()
+        ));
+        app.recommend_loading = true;
+        app.recommend_job_id = Some(ticket);
+        RECOMMEND_RESULT.set(
+            ticket,
+            Ok(vec![Recommendation {
+                app_id: id,
+                name: "stale".into(),
+                score: 100.,
+                reasons: vec![],
+            }]),
+        );
+        app.tick();
+        assert!(app.recommend_results.is_empty());
+        assert!(app.recommend_job_id.is_none());
+        app.inject_prepared_snapshot();
+        assert!(app.preference_summary(id).contains("Not interested"));
+        app.edit_preference(Some(id), None).unwrap();
+        assert!(app.prepared_preferences().unwrap().is_empty());
+        app.edit_preference(Some(id), Some(Choice::Interested))
+            .unwrap();
+        app.detected_accounts.push(SteamAccount {
+            steam_id64: "76561198000000002".into(),
+            account_name: "bravo".into(),
+            persona_name: "Bravo".into(),
+            most_recent: false,
+        });
+        app.config.as_mut().unwrap().account = Some("bravo".into());
+        assert!(app.prepared_preferences().is_err());
+        assert!(app.edit_preference(Some(id), None).is_err());
+        app.tick();
+        app.scan_result.as_mut().unwrap().account = "bravo".into();
+        app.inject_prepared_snapshot();
+        assert!(app.prepared_preferences().unwrap().is_empty());
+        app.edit_preference(Some(id), Some(Choice::NotNow)).unwrap();
+        app.edit_preference(None, None).unwrap();
+        assert!(app.prepared_preferences().unwrap().is_empty());
+        assert!(preferences::interested(
+            &preferences::load(&app.preferences_dir, "76561198000000001").unwrap(),
+            id,
+            0
+        ));
+        app.ui_demo = true;
+        assert!(app.edit_preference(Some(id), None).is_err());
+        assert!(!temp.path().join("cache").exists());
+    }
+
+    #[test]
+    #[serial]
+    fn personalized_discover_matches_core_and_rejects_late_story_results() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(&temp.path().join("cache"));
+        app.preferences_dir = temp.path().join("preferences");
+        app.story_dir = temp.path().join("story");
+        app.playlist_store_dir = Some(temp.path().join("playlists"));
+        app.ui_demo = false;
+        app.offline_mode = true;
+        app.discover_seed.clear();
+        app.inject_prepared_snapshot();
+        let options = app.discover_options_from_inputs().unwrap();
+        let snapshot = app.prepared_snapshot.as_ref().unwrap();
+        let expected = discover::rank_discover_personalized(
+            &snapshot.games,
+            &options,
+            snapshot.preferences.as_ref().unwrap(),
+            &snapshot.taste.as_ref().unwrap().taste,
+            snapshot.progress.as_ref().unwrap(),
+            chrono::Utc::now().timestamp(),
+        );
+        assert_ne!(
+            expected.iter().map(|p| p.app_id).collect::<Vec<_>>(),
+            Vec::<u32>::new()
+        );
+        app.start_discover_generate();
+        for _ in 0..1000 {
+            if !app.discover_loading {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            app.tick();
+        }
+        assert!(!app.discover_loading);
+        assert_eq!(app.discover_results, expected);
+        let stored = app.discover_last_playlist.clone().unwrap();
+        assert_eq!(stored.playlist.id, "discover");
+        let PlaylistContent::Manual { app_ids } = &stored.playlist.content else {
+            panic!("manual");
+        };
+        assert_eq!(
+            *app_ids,
+            expected.iter().map(|p| p.app_id).collect::<Vec<_>>()
+        );
+        let path = playlist_store::put(app.playlist_store_dir.as_ref().unwrap(), &stored).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let fp = app.discover_fp(&options);
+        let ticket = app.job_runner.next_ticket(WorkflowKind::Discover, &fp);
+        app.set_story_completed(expected[0].app_id, true).unwrap();
+        assert_ne!(fp, app.discover_fp(&options));
+        assert_eq!(app.discover_results, Vec::<DiscoverPick>::new());
+        app.discover_loading = true;
+        app.discover_job_id = Some(ticket);
+        DISCOVER_RESULT.set(ticket, Ok((expected, stored)));
+        app.tick();
+        assert!(app.discover_job_id.is_none());
+        assert_eq!(std::fs::read(path).unwrap(), before);
+        assert!(!temp.path().join("cache").exists());
+    }
+
+    #[test]
+    #[serial]
+    fn session_intent_gui_matches_core_without_remaining_time_inference() {
+        use vapourfly_core::models::{HltbData, HltbSource, RecommendIntent};
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(&temp.path().join("cache"));
+        app.story_dir = temp.path().join("story");
+        app.preferences_dir = temp.path().join("preferences");
+        app.ui_demo = false;
+        app.offline_mode = true;
+        app.recommend_minutes = "60".into();
+        app.recommend_count = "20".into();
+        let games = &mut app.scan_result.as_mut().unwrap().games;
+        let long_id = games[0].app_id;
+        for (game, seconds) in games.iter_mut().zip([40 * 3600, 1800, 0]) {
+            game.playtime_minutes = Some(180);
+            game.hltb = Some(HltbData {
+                main_story_seconds: Some(seconds),
+                main_extra_seconds: None,
+                completionist_seconds: None,
+                source: HltbSource::ManualOverride,
+            });
+        }
+        app.inject_prepared_snapshot();
+        let session = app.recommend_request_from_inputs().unwrap();
+        assert_eq!(session.intent, RecommendIntent::Session);
+        for finish in [false, true] {
+            app.recommend_finish_short_game = finish;
+            let request = app.recommend_request_from_inputs().unwrap();
+            let snapshot = app.prepared_snapshot.as_ref().unwrap();
+            let expected = recommend_personalized(
+                &snapshot.games,
+                &request,
+                snapshot.preferences.as_ref().unwrap(),
+                &snapshot.taste.as_ref().unwrap().taste,
+                snapshot.progress.as_ref().unwrap(),
+                chrono::Utc::now().timestamp(),
+            );
+            assert_eq!(expected.iter().any(|r| r.app_id == long_id), !finish);
+            app.start_recommend_preview();
+            for _ in 0..1000 {
+                if !app.recommend_loading {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                app.tick();
+            }
+            assert!(!app.recommend_loading);
+            assert_eq!(
+                serde_json::to_value(&app.recommend_results).unwrap(),
+                serde_json::to_value(&expected).unwrap()
+            );
+            assert_eq!(
+                app.recommend_request_at_start.as_ref().unwrap().intent,
+                request.intent
+            );
+        }
+        assert_ne!(
+            app.recommend_fp(&session),
+            app.recommend_fp(&app.recommend_request_from_inputs().unwrap())
+        );
+        assert!(!temp.path().join("cache").exists());
+    }
+
+    #[test]
+    #[serial]
+    fn personalized_recommendations_share_core_evidence_and_reject_late_story_jobs() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(&temp.path().join("cache"));
+        app.story_dir = temp.path().join("story");
+        app.preferences_dir = temp.path().join("preferences");
+        app.ui_demo = false;
+        app.offline_mode = true;
+        app.inject_prepared_snapshot();
+        let request = app.recommend_request_from_inputs().unwrap();
+        let snapshot = app.prepared_snapshot.as_ref().unwrap();
+        let expected = recommend_personalized(
+            &snapshot.games,
+            &request,
+            snapshot.preferences.as_ref().unwrap(),
+            &snapshot.taste.as_ref().unwrap().taste,
+            snapshot.progress.as_ref().unwrap(),
+            chrono::Utc::now().timestamp(),
+        );
+        assert_ne!(
+            expected.iter().map(|r| r.app_id).collect::<Vec<_>>(),
+            Vec::<u32>::new()
+        );
+        app.start_recommend_preview();
+        for _ in 0..1000 {
+            if !app.recommend_loading {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            app.tick();
+        }
+        assert!(!app.recommend_loading);
+        assert_eq!(
+            app.recommend_results
+                .iter()
+                .map(|r| r.app_id)
+                .collect::<Vec<_>>(),
+            expected.iter().map(|r| r.app_id).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            app.recommend_results[0]
+                .reasons
+                .iter()
+                .map(|r| r.code.as_str())
+                .collect::<Vec<_>>(),
+            expected[0]
+                .reasons
+                .iter()
+                .map(|r| r.code.as_str())
+                .collect::<Vec<_>>()
+        );
+        let old_fp = app.recommend_fp(&request);
+        let ticket = app
+            .job_runner
+            .next_ticket(WorkflowKind::RecommendPreview, &old_fp);
+        // Avoid starting a fresh worker; isolate rejection of a completed old job.
+        app.recommend_results.clear();
+        let id = expected[0].app_id;
+        app.set_story_completed(id, true).unwrap();
+        assert_ne!(old_fp, app.recommend_fp(&request));
+        app.recommend_loading = true;
+        app.recommend_job_id = Some(ticket);
+        RECOMMEND_RESULT.set(ticket, Ok(expected));
+        app.tick();
+        assert_eq!(
+            app.recommend_results
+                .iter()
+                .map(|r| r.app_id)
+                .collect::<Vec<_>>(),
+            Vec::<u32>::new()
+        );
+        assert!(app.recommend_job_id.is_none());
+        assert!(!temp.path().join("cache").exists());
+    }
+
+    #[test]
+    #[serial]
+    fn story_progress_gui_edit_undo_filters_and_account_switch_are_offline_safe() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(&temp.path().join("cache"));
+        app.story_dir = temp.path().join("personal/story");
+        app.ui_demo = false;
+        app.offline_mode = true;
+        let game = &mut app.scan_result.as_mut().unwrap().games[0];
+        game.playtime_minutes = Some(10);
+        let id = game.app_id;
+        app.inject_prepared_snapshot();
+        app.progress_filter = vapourfly_core::progress::Filter::Unfinished;
+        assert!(app.filtered_games().iter().any(|g| g.app_id == id));
+        app.set_story_completed(id, true).unwrap();
+        assert!(app.game_progress(id).unwrap().story_completed);
+        assert_eq!(app.taste_profile().unwrap().traits[0].supporting.len(), 1);
+        assert!(!app.game_progress(id).unwrap().perfected());
+        assert!(!app.filtered_games().iter().any(|g| g.app_id == id));
+        app.inject_prepared_snapshot();
+        assert!(
+            app.game_progress(id).unwrap().story_completed,
+            "persists across prepare"
+        );
+        app.set_story_completed(id, false).unwrap();
+        assert_eq!(app.taste_profile().unwrap().traits[0].supporting.len(), 0);
+        assert!(app.filtered_games().iter().any(|g| g.app_id == id));
+        app.progress_filter = vapourfly_core::progress::Filter::NearPerfect;
+        assert!(
+            app.filtered_games().is_empty(),
+            "missing achievements are not near-perfect"
+        );
+        app.set_story_completed(id, true).unwrap();
+        app.detected_accounts.push(SteamAccount {
+            steam_id64: "76561198000000002".into(),
+            account_name: "bravo".into(),
+            persona_name: "Bravo".into(),
+            most_recent: false,
+        });
+        app.config.as_mut().unwrap().account = Some("bravo".into());
+        assert!(
+            app.game_progress(id).is_none(),
+            "reject old account before next tick"
+        );
+        assert!(
+            app.set_story_completed(id, false).is_err(),
+            "old scan cannot edit new account"
+        );
+        app.scan_result.as_mut().unwrap().account = "bravo".into();
+        app.inject_prepared_snapshot();
+        assert!(!app.game_progress(id).unwrap().story_completed);
+        assert_eq!(app.taste_profile().unwrap().traits[0].supporting.len(), 0);
+        app.config.as_mut().unwrap().account = Some("alpha".into());
+        app.scan_result.as_mut().unwrap().account = "alpha".into();
+        app.inject_prepared_snapshot();
+        assert!(app.game_progress(id).unwrap().story_completed);
+        app.ui_demo = true;
+        assert!(app.set_story_completed(id, false).is_err());
+        assert!(
+            !temp.path().join("cache").exists(),
+            "offline edits do not create provider cache or requests"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn story_progress_gui_details_distinguish_failure_from_loading() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(&temp.path().join("cache"));
+        app.story_dir = temp.path().join("personal/story");
+        app.ui_demo = false;
+        let id = app.scan_result.as_ref().unwrap().games[0].app_id;
+        app.inject_prepared_snapshot();
+        app.set_story_completed(id, true).unwrap();
+        let record = app
+            .story_dir
+            .join("76561198000000001")
+            .join(format!("{id}.json"));
+        std::fs::write(record, "not json").unwrap();
+        app.inject_prepared_snapshot();
+        assert!(
+            app.game_progress_summary(id)
+                .starts_with("Progress unavailable:")
+        );
+        assert!(!app.game_progress_summary(id).contains("loading"));
+        assert!(app.game_progress(id).is_none());
+        assert!(app.set_story_completed(id, false).is_err());
+        app.prepared_snapshot = None;
+        assert_eq!(app.game_progress_summary(id), "Progress evidence loading");
+    }
+
+    #[test]
+    #[serial]
+    fn achievement_batch_first_paint_and_selection_do_not_wait_for_coverage() {
+        ACHIEVEMENT_RESULT.clear();
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(temp.path());
+        let scan = app.scan_result.as_mut().unwrap();
+        let base = scan.games[0].clone();
+        scan.games = (1..=1500)
+            .map(|id| Game {
+                app_id: id,
+                last_played_unix: Some(i64::from(id)),
+                ..base.clone()
+            })
+            .collect();
+        app.inject_prepared_snapshot();
+        let ticket = app
+            .job_runner
+            .next_ticket(WorkflowKind::Achievements, "76561198000000001");
+        app.achievement_job_id = Some(ticket);
+        app.achievement_pending = 12;
+        app.tick();
+        assert!(app.library_ready());
+        assert_eq!(app.prepared_games(JunkMode::Default).unwrap().len(), 1500);
+        assert!(app.has_background_work());
+        assert!(app.achievement_coverage_summary().contains("12 pending"));
+        app.start_achievement_coverage(true);
+        app.inspect_achievements(10);
+        assert_eq!(
+            app.achievement_job_id,
+            Some(ticket),
+            "inspection does not supersede the batch"
+        );
+        assert!(app.achievement_control.check().is_ok());
+        ACHIEVEMENT_RESULT.set(
+            ticket,
+            Ok((
+                vapourfly_api::achievements::BatchSummary {
+                    selected: 12,
+                    available: 2,
+                    stale: 1,
+                    unavailable: 1,
+                    missing: 8,
+                    attempted: 4,
+                    pending: 8,
+                    stop_reason: Some(vapourfly_api::achievements::Status::RateLimited),
+                },
+                vec![],
+            )),
+        );
+        app.tick();
+        assert!(!app.achievement_refreshing());
+        let summary = app.achievement_coverage_summary();
+        assert!(summary.contains("2 available; 1 stale; 1 unavailable; 8 missing"));
+        assert!(summary.contains("8 pending"));
+        assert!(!summary.contains("76561198000000001"));
+    }
+
+    #[test]
+    #[serial]
+    fn achievement_batch_offline_and_no_key_inspect_cache_without_writing() {
+        ACHIEVEMENT_RESULT.clear();
+        let temp = tempfile::tempdir().unwrap();
+        for offline in [false, true] {
+            let root = temp.path().join(if offline { "offline" } else { "no-key" });
+            let mut app = achievement_test_app(&root);
+            app.ui_demo = false;
+            app.offline_mode = offline;
+            app.library_selected_app_id = Some(app.scan_result.as_ref().unwrap().games[0].app_id);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            app.repaint = RepaintHook::new(move || {
+                sender.send(()).unwrap();
+            });
+            app.start_achievement_coverage(true);
+            assert!(app.achievement_refreshing());
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            app.tick();
+            assert!(!app.achievement_refreshing());
+            let coverage = app.achievement_coverage.as_ref().unwrap();
+            assert!(coverage.selected > 0 && coverage.selected <= 12);
+            assert_eq!(coverage.missing, coverage.selected);
+            assert_eq!(coverage.attempted, 0);
+            assert_eq!(app.achievement_pending, 0);
+            assert!(
+                !root.exists(),
+                "cache-only worker never creates a lock or cache record"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn achievement_batch_cancel_and_offline_keep_owner_until_worker_exits() {
+        ACHIEVEMENT_RESULT.clear();
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = achievement_test_app(temp.path());
+        let ticket = app
+            .job_runner
+            .next_ticket(WorkflowKind::Achievements, "76561198000000001");
+        app.achievement_job_id = Some(ticket);
+        app.achievement_pending = 12;
+        let control = vapourfly_api::activity::RefreshControl::default();
+        app.achievement_control = control.clone();
+        app.cancel_achievement_refresh();
+        assert!(control.check().is_err());
+        assert_eq!(app.achievement_job_id, Some(ticket));
+        ACHIEVEMENT_RESULT.set(ticket, Err("Account refresh cancelled".into()));
+        app.tick();
+        assert!(!app.achievement_refreshing());
+        assert_eq!(app.achievement_pending, 0);
+
+        app.achievement_control = Default::default();
+        let control = app.achievement_control.clone();
+        let ticket = app
+            .job_runner
+            .next_ticket(WorkflowKind::Achievements, "76561198000000001");
+        app.achievement_job_id = Some(ticket);
+        app.achievement_pending = 12;
+        app.offline_mode = true;
+        app.tick();
+        assert!(control.check().is_err());
+        assert_eq!(app.achievement_job_id, Some(ticket));
+        ACHIEVEMENT_RESULT.set(ticket, Err("Account refresh cancelled".into()));
+        app.tick();
+        assert!(!app.achievement_refreshing());
+    }
+
+    #[test]
+    #[serial]
+    fn achievement_account_switch_discards_old_result() {
+        let mut app = VapourflyApp::new(None, true);
+        app.populate_demo_data();
+        app.detected_accounts = vec![
+            SteamAccount {
+                steam_id64: "76561198000000001".into(),
+                account_name: "alpha".into(),
+                persona_name: "Alpha".into(),
+                most_recent: true,
+            },
+            SteamAccount {
+                steam_id64: "76561198000000002".into(),
+                account_name: "bravo".into(),
+                persona_name: "Bravo".into(),
+                most_recent: false,
+            },
+        ];
+        app.config.as_mut().unwrap().account = Some("alpha".into());
+        app.tick();
+        let control = vapourfly_api::activity::RefreshControl::default();
+        app.achievement_control = control.clone();
+        let ticket = app
+            .job_runner
+            .next_ticket(WorkflowKind::Achievements, "76561198000000001");
+        app.achievement_job_id = Some(ticket);
+        ACHIEVEMENT_RESULT.set(
+            ticket,
+            Ok((
+                vapourfly_api::achievements::BatchSummary::default(),
+                vec![vapourfly_api::achievements::Progress {
+                    steam_id64: "76561198000000001".into(),
+                    app_id: 10,
+                    status: vapourfly_api::achievements::Status::Available,
+                    total: Some(1),
+                    unlocked: Some(1),
+                    unlocks: Default::default(),
+                    checked_at: chrono::Utc::now(),
+                    fetched_at: Some(chrono::Utc::now()),
+                }],
+            )),
+        );
+        app.config.as_mut().unwrap().account = Some("bravo".into());
+        app.tick();
+        assert!(app.achievement_progress.is_empty());
+        assert!(app.achievement_job_id.is_none());
+        assert!(control.check().is_err());
+        assert!(app.achievement_summary(10).contains("unknown"));
+        ACHIEVEMENT_RESULT.clear();
+    }
+
+    #[test]
     fn active_account_prefers_configured_then_most_recent() {
         let account = |id: &str, name: &str, persona: &str, recent: bool| SteamAccount {
             steam_id64: id.into(),
@@ -5893,17 +7474,20 @@ mod tests {
             account("76561198000000002", "bravo", "Bravo", true),
         ];
 
-        app.account_edit = String::new();
+        app.config.as_mut().unwrap().account = None;
         assert_eq!(app.active_account().unwrap().account_name, "bravo");
 
-        app.account_edit = "76561198000000001".into();
+        app.config.as_mut().unwrap().account = Some("76561198000000001".into());
         assert_eq!(app.active_account().unwrap().account_name, "alpha");
 
-        app.account_edit = "ALPHA".into();
+        app.config.as_mut().unwrap().account = Some("ALPHA".into());
         assert_eq!(app.active_account().unwrap().account_name, "alpha");
 
-        app.account_edit = "nobody".into();
-        assert_eq!(app.active_account().unwrap().account_name, "bravo");
+        app.account_edit = "bravo".into();
+        assert_eq!(app.active_account().unwrap().account_name, "alpha");
+
+        app.config.as_mut().unwrap().account = Some("nobody".into());
+        assert!(app.active_account().is_none());
 
         app.detected_accounts.clear();
         assert!(app.active_account().is_none());
