@@ -20,8 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- CLI account listings show public persona names and the selected marker only,
-  never login names or Steam IDs, even with `--verbose`. Settings show/set omit
+- CLI account listings show anonymous presence and the selected marker only,
+  never persona/login names or Steam IDs, even with `--verbose`. Doctor reports
+  detected/selected status without account counts. Existing name/ID selectors
+  still work; account names can be looked up in Steam. Settings show/set omit
   account selectors and all Steam API key bytes, including masked suffixes.
   The settings JSON `account` field is now `"configured"` or `null`, not the
   configured selector; scripts needing selection should supply `--account`.
