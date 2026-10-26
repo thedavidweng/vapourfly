@@ -18,7 +18,8 @@ use std::sync::{Arc, Mutex};
 use gpui_kit::component::WindowExt;
 use gpui_kit::{
     App, AppContext, Context, FocusHandle, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers,
-    PlatformInput, ScrollDelta, ScrollWheelEvent, TouchPhase, WeakEntity, Window, point, px,
+    PlatformInput, ScrollDelta, ScrollEvent, ScrollSource, TouchPhase, WeakEntity, Window, point,
+    px,
 };
 
 use super::GuiRoot;
@@ -50,7 +51,7 @@ fn after_render(window: &Window, f: impl FnOnce(&mut Window, &mut App) + 'static
 }
 
 /// Press and release `key` as if typed. Returns whether a handler consumed it.
-fn press_key(key: &str, window: &mut Window, cx: &mut App) -> bool {
+fn press_key(key: &'static str, window: &mut Window, cx: &mut App) -> bool {
     let Ok(keystroke) = Keystroke::parse(key) else {
         return false;
     };
@@ -338,12 +339,13 @@ fn scroll_page(sidebar_width: f32, dy: f32, window: &mut Window, cx: &mut App) {
         sidebar_width + (w - sidebar_width) / 2.
     };
     window.dispatch_event(
-        PlatformInput::ScrollWheel(ScrollWheelEvent {
+        PlatformInput::Scroll(ScrollEvent {
             position: point(px(x), px(h * 0.55)),
             // GPUI wheel deltas are positive toward the top.
             delta: ScrollDelta::Pixels(point(px(0.), px(-dy))),
             modifiers: Modifiers::default(),
             touch_phase: TouchPhase::Moved,
+            source: ScrollSource::Pointer,
         }),
         cx,
     );
