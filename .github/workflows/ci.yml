@@ -60,7 +60,7 @@ jobs:
           toolchain: ${{ env.VAPOURFLY_CI_TOOLCHAIN }}
           components: rustfmt, clippy
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
 
@@ -80,7 +80,7 @@ jobs:
 
       - name: Install cargo-deny
         if: runner.os == 'Linux'
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-deny
 
@@ -116,7 +116,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake clang g++ pkg-config libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev libasound2-dev libssl-dev libfontconfig1-dev libudev-dev xvfb xdotool imagemagick squashfs-tools patchelf desktop-file-utils librsvg2-bin
       - run: cargo build --release -p vapourfly-gui
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
       - run: bash scripts/package-appimage.sh ci
