@@ -35,10 +35,10 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: '1.99'
+          toolchain: '1.99.1'
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: '3.12'
+          python-version: '3.15'
       - name: Linux native build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -83,7 +83,7 @@ jobs:
                   archive.writestr(entry, path.read_bytes(), compresslevel=9)
           PY
             report_command=(python3 scripts/size-report.py --stage "$stage" --asset "$stage.zip"
-              --target "$target" --revision "$GITHUB_SHA" --profile "$profile" --toolchain 1.99)
+              --target "$target" --revision "$GITHUB_SHA" --profile "$profile" --toolchain 1.99.1)
             if [[ "$profile" == release-size ]]; then
               report_command+=(--baseline size-experiment/report-release.json)
             fi

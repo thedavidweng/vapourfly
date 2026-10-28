@@ -41,7 +41,7 @@ class WorkflowReportInvocationTests(unittest.TestCase):
                 stage = f"size-experiment/{profile}"
                 expected = ["scripts/size-report.py", "--stage", stage, "--asset", stage + ".zip",
                             "--target", "fixture-target", "--revision", "fixture-revision",
-                            "--profile", profile, "--toolchain", "1.99"]
+                            "--profile", profile, "--toolchain", "1.99.1"]
                 if profile == "release-size":
                     expected += ["--baseline", "size-experiment/report-release.json"]
                 expected += ["--out", f"size-experiment/report-{profile}"]
@@ -141,13 +141,13 @@ class SizeReportTests(unittest.TestCase):
             result = subprocess.run([
                 sys.executable, str(Path(__file__).with_name("size-report.py")),
                 "--stage", str(stage), "--target", "fixture", "--revision", "fixture",
-                "--toolchain", "1.99", "--manifest", str(repository / "Cargo.toml"),
+                "--toolchain", "1.99.1", "--manifest", str(repository / "Cargo.toml"),
                 "--lockfile", str(repository / "Cargo.lock"), "--out", str(root / "report")],
                 capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads((root / "report.json").read_text())
             self.assertEqual(report["categories"]["cli"], (stage / "vapourfly").stat().st_size)
-            self.assertIn("rustc 1.99", report["rustc"])
+            self.assertIn("rustc 1.99.1", report["rustc"])
             self.assertEqual((root / "report.md").read_text(), result.stdout)
             self.assertIn("unavailable", result.stdout)
             self.assertNotIn(str(root), (root / "report.json").read_text())

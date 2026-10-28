@@ -10,7 +10,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  VAPOURFLY_CI_TOOLCHAIN: "1.99"
+  VAPOURFLY_CI_TOOLCHAIN: "1.99.1"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -96,7 +96,7 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         continue-on-error: true
         with:
-          python-version: '3.12'
+          python-version: '3.15'
 
       - name: Build release binaries
         run: cargo +${{ env.VAPOURFLY_CI_TOOLCHAIN }} build --release -p vapourfly-cli -p vapourfly-gui
