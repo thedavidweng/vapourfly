@@ -34,7 +34,7 @@ sha256sum "$LDAI_OUTPUT" "$LDAI_OUTPUT.zsync" > "$LDAI_OUTPUT.sha256"
 # read-only report never gates packaging and never mutates signed artifacts.
 if ! python3 "$root/scripts/size-report.py" --stage "$appdir" --asset "$LDAI_OUTPUT" \
   --target linux-x86_64-appimage --revision "${GITHUB_SHA:-$(git -C "$root" rev-parse HEAD)}" \
-  --toolchain "${VAPOURFLY_CI_TOOLCHAIN:-1.99}" --manifest "$root/Cargo.toml" \
+  --toolchain "${VAPOURFLY_CI_TOOLCHAIN:-1.99.1}" --manifest "$root/Cargo.toml" \
   --lockfile "$root/Cargo.lock" --out "$root/dist/size-appimage"; then
   echo "Size inventory failed; no size evidence is claimed." >&2
 fi
