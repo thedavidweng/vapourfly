@@ -193,7 +193,7 @@ a.sn__tab:hover { background: rgba(255, 255, 255, .08); }
 .hb__inner::-webkit-scrollbar { display: none; }
 .hb a {
   flex: none; padding: 8px;
-  color: #fff; font-size: 14px; font-weight: 500; line-height: 21px; white-space: nowrap;
+  color: #102333; font-size: 14px; font-weight: 500; line-height: 21px; white-space: nowrap;
 }
 .hb a:hover { text-decoration: underline; text-underline-offset: 3px; }
 
@@ -358,7 +358,7 @@ a.sn__tab:hover { background: rgba(255, 255, 255, .08); }
 .pill--black:hover { background: #2a2a2a; }
 .pill--accent { background: var(--accent); color: #000; font-weight: 600; }
 .pill--accent:hover { background: var(--accent-hi); }
-.pill--blue { background: var(--blue); color: #fff; }
+.pill--blue { background: #1c6cb8; color: #fff; }
 .pill--blue:hover { background: var(--blue-hi); }
 
 /* ───────────────────────── Promo cards ───────────────────────── */
@@ -523,7 +523,7 @@ a.sn__tab:hover { background: rgba(255, 255, 255, .08); }
 .ft__social a:hover { color: #fff; }
 .ft__social svg { width: 22px; height: 22px; }
 .ft__cols { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
-.ft__cols h4 { margin-bottom: 8px; color: #c6d4df; font-size: 11px; font-weight: 700; letter-spacing: .04em; }
+.ft__cols h2 { margin-bottom: 8px; color: #c6d4df; font-size: 11px; font-weight: 700; letter-spacing: .04em; }
 .ft__cols a { display: block; font-size: 11px; line-height: 24px; color: var(--steam-dim); }
 .ft__cols a:hover { color: #fff; }
 
