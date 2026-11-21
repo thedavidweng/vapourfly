@@ -11,6 +11,7 @@ ignore = [
     { id = "RUSTSEC-2026-0370", reason = "GPUI accesskit/ashpd/oo7 require zbus 5 and zvariant; migration awaits upstream zbus 6 adoption, no compatible patched version, maintenance notice only" },
     { id = "RUSTSEC-2026-0371", reason = "GPUI accesskit/ashpd/oo7 require zbus 5 and zbus_names; migration awaits upstream zbus 6 adoption, no compatible patched version, maintenance notice only" },
     { id = "RUSTSEC-2026-0372", reason = "GPUI zbus 5 stack requires zvariant_derive; migration awaits upstream zbus 6 adoption, no compatible patched version, maintenance notice only" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono is a GPUI transitive (gpui-base, gpui-component, gpui-pre); unmaintained notice only, no safe upgrade until upstream moves to jiff or time" },
 ]
 
 [licenses]
